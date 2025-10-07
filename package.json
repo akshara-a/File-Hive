@@ -1,0 +1,79 @@
+{
+  "name": "parquet-x",
+  "displayName": "parquetx",
+  "description": "View Parquet Files",
+  "version": "1.0.0",
+  "author": {
+    "name": "Akshara A",
+    "email": "akshararajan26@outlook.in"
+  },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "Apache Parquet",
+    "Data",
+    "Parquet Viewer",
+    "Data Visualization",
+    "Parquet"
+  ],
+  "activationEvents": [
+    "onCustomEditor:parquetViewer.parquetViewer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "parquetViewer.parquetViewer",
+        "displayName": "Parquet Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.parquet"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "parquetViewer.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "parquetViewer.showLogs",
+        "title": "Show Parquet Viewer Logs",
+        "category": "Parquet Viewer"
+      },
+      {
+        "command": "parquetViewer.resetEnvironment",
+        "title": "Reset Python Environment",
+        "category": "Parquet Viewer"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile && npm run copy-files",
+    "compile": "tsc -p ./",
+    "copy-files": "copyfiles -u 1 src/*.py out/",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.18.8",
+    "@types/vscode": "^1.104.0",
+    "@typescript-eslint/eslint-plugin": "^8.45.0",
+    "@typescript-eslint/parser": "^8.45.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "copyfiles": "^2.4.1",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.3"
+  }
+}
