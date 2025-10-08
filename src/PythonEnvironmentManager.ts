@@ -12,20 +12,18 @@ interface PythonExtension {
             path: string;
             version?: { major: number; minor: number; micro: number };
         }>;
-        getActive(): Promise<{ path: string } | undefined>;
+        getActive?(): Promise<{ path: string } | undefined>;
+        getActiveEnvironmentPath?(): string | { path: string };
     };
+    settings?: {
+        getExecutionCommand?(): { command?: string };
+        getInterpreterPath?(): string;
+    };
+    getActiveEnvironmentPath?(): Promise<string | { path: string }>;
 }
 
 /**
  * Checks if a file or directory exists at the given path.
- * 
- * This function returns a promise that resolves to true if the file or
- * directory exists, and false otherwise. If an error occurs during the
- * check, the promise is rejected with the error.
- * 
- * @param path The path to the file or directory to check.
- * @returns A promise that resolves to true if the file or directory exists,
- *          false otherwise.
  */
 const exists = async (path: string): Promise<boolean> => {
     try {
@@ -45,11 +43,6 @@ export class PythonEnvironmentManager {
     private isInitialized: boolean = false;
     private initializationPromise: Promise<boolean> | null = null;
 
-    /**
-     * Constructs a new PythonEnvironmentManager.
-     * 
-     * @param context The VS Code extension context.
-     */
     constructor(private readonly context: vscode.ExtensionContext) {
         this.outputChannel = vscode.window.createOutputChannel('Parquet Viewer');
         this.isWindows = os.platform() === WINDOWS_PLATFORM;
@@ -63,14 +56,9 @@ export class PythonEnvironmentManager {
             ? path.join(this.venvPath, 'Scripts', 'python.exe')
             : path.join(this.venvPath, 'bin', 'python');
         
-        // Validate state on startup
         this.validateState();
     }
 
-    /**
-     * Validates that the stored initialization state matches the actual environment state.
-     * If the state says initialized but the venv doesn't exist, resets the state.
-     */
     private async validateState(): Promise<void> {
         try {
             const storedState = this.context.globalState.get('parquetViewerInitialized');
@@ -84,14 +72,6 @@ export class PythonEnvironmentManager {
         }
     }
 
-    /**
-     * Initializes the isolated Python environment.
-     * This function sets up the isolated Python environment which is used by the Parquet Viewer extension.
-     * It creates a virtual environment at `.parquet-venv` in the extension directory and installs the required packages.
-     * The function returns a promise that resolves to true if the initialization is successful, and false otherwise.
-     * If the initialization is already in progress, the function returns the existing promise.
-     * @returns A promise that resolves to true if the initialization is successful, and false otherwise.
-     */
     public async initializeEnvironment(): Promise<boolean> {
         this.outputChannel.show(true);
         this.log('Starting environment initialization...');
@@ -106,48 +86,33 @@ export class PythonEnvironmentManager {
         return result;
     }
 
-    
-    /**
-     * Initializes the isolated Python environment.
-     * This function sets up the isolated Python environment which is used by the Parquet Viewer extension.
-     * It creates a virtual environment at `.parquet-venv` in the extension directory and installs the required packages.
-     * The function returns a promise that resolves to true if the initialization is successful, and false otherwise.
-     * If the initialization is already in progress, the function returns the existing promise.
-     * @returns A promise that resolves to true if the initialization is successful, and false otherwise.
-     */
     private async doInitialize(): Promise<boolean> {
         if (this.isInitialized) {
             this.log('Environment ready');
             return true;
         }
 
-        // Check existing venv
         if (await this.isVenvValid()) {
             this.log('Virtual environment ready');
             this.isInitialized = true;
             return true;
         }
 
-        // Get Python from extension first
         this.systemPythonPath = await this.getPythonFromExtension();
         
         if (!this.systemPythonPath) {
-            // If no Python from extension, try system Python
             this.systemPythonPath = await this.findSystemPython();
         }
 
         if (!this.systemPythonPath) {
-            // Only prompt for Python extension if no Python found at all
             const pythonExt = vscode.extensions.getExtension(VS_CODE_PYTHON_EXTENSION);
             if (!pythonExt) {
                 const installed = await this.promptForPythonExtension();
                 if (!installed) {
                     return false;
                 }
-                // After installation, try again
                 this.systemPythonPath = await this.getPythonFromExtension();
             } else {
-                // Extension exists but no Python found - help user select one
                 const configured = await this.promptForPythonSelection();
                 if (configured) {
                     this.systemPythonPath = await this.getPythonFromExtension();
@@ -162,19 +127,16 @@ export class PythonEnvironmentManager {
 
         this.log(`Using Python: ${this.systemPythonPath}`);
 
-        // Create venv
         const venvCreated = await this.createVirtualEnvironment();
         if (!venvCreated) {
             return false;
         }
 
-        // Install DuckDB
         const installed = await this.installDuckDB();
         if (!installed) {
             return false;
         }
 
-        // Verify
         const verified = await this.verifyDuckDB();
         if (verified) {
             this.isInitialized = true;
@@ -184,13 +146,6 @@ export class PythonEnvironmentManager {
         return verified;
     }
 
-    /**
-     * Checks if the virtual environment is valid by trying to import the DuckDB module.
-     * If the virtual environment path does not exist, the function returns false.
-     * If the import of the DuckDB module fails, the function returns false.
-     * If the import is successful, the function returns true.
-     * @returns A promise that resolves to true if the virtual environment is valid, false otherwise.
-     */
     private async isVenvValid(): Promise<boolean> {
         if (!(await exists(this.venvPythonPath))) {
             return false;
@@ -207,14 +162,6 @@ export class PythonEnvironmentManager {
         }
     }
 
-    /**
-     * Creates a virtual environment using the given system Python path.
-     * If the system Python path is null, the function returns false.
-     * If the virtual environment already exists, it is cleaned before creation.
-     * The virtual environment is created in the extension directory.
-     * If the creation is successful, the function returns true, otherwise false.
-     * @returns A promise that resolves to true if the virtual environment is created, false otherwise.
-     */
     private async createVirtualEnvironment(): Promise<boolean> {
         const systemPythonPath = this.systemPythonPath;
         if (!systemPythonPath) {
@@ -229,18 +176,15 @@ export class PythonEnvironmentManager {
             try {
                 progress.report({ message: 'Creating environment...' });
                 
-                // Clean old venv
                 if (await exists(this.venvPath)) {
                     await fs.promises.rm(this.venvPath, { recursive: true, force: true });
                 }
 
-                // Create venv
                 await this.runCommand(systemPythonPath, [
                     '-m', 'venv',
                     this.venvPath
                 ], 120000);
 
-                // Verify Python in venv
                 if (!(await exists(this.venvPythonPath))) {
                     const altPythonPath = this.isWindows 
                         ? path.join(this.venvPath, 'Scripts', 'python.exe')
@@ -253,7 +197,6 @@ export class PythonEnvironmentManager {
                     }
                 }
 
-                // Test venv Python
                 await this.runCommand(this.venvPythonPath, [
                     '-c', 'import sys'
                 ], 10000);
@@ -269,13 +212,6 @@ export class PythonEnvironmentManager {
         });
     }
 
-    /**
-     * Installs DuckDB in the virtual environment.
-     * If the virtual environment has not been created, this function will return false.
-     * If the installation of DuckDB fails, this function will return false and log an error message.
-     * The installation is performed with the --no-cache-dir and --quiet flags to avoid caching and suppress output.
-     * @returns A promise that resolves to true if the installation of DuckDB is successful, false otherwise.
-     */
     private async installDuckDB(): Promise<boolean> {
         return vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -285,7 +221,6 @@ export class PythonEnvironmentManager {
             try {
                 progress.report({ message: 'Installing DuckDB...' });
                 
-                // Upgrade pip
                 try {
                     await this.runCommand(this.venvPythonPath, [
                         '-m', 'pip', 'install', '--upgrade', 'pip', '--quiet'
@@ -294,7 +229,6 @@ export class PythonEnvironmentManager {
                     // Continue if pip upgrade fails
                 }
                 
-                // Install DuckDB
                 await this.runCommand(this.venvPythonPath, [
                     '-m', 'pip', 'install',
                     'duckdb',
@@ -312,13 +246,6 @@ export class PythonEnvironmentManager {
         });
     }
 
-    /**
-     * Verifies that DuckDB is installed and ready to use.
-     * This function runs a command to check the version of DuckDB installed in the virtual environment.
-     * If the version of DuckDB is successfully retrieved, this function will return true and log a success message.
-     * If the command fails, this function will return false and log an error message.
-     * @returns A promise that resolves to true if the verification of DuckDB is successful, false otherwise.
-     */
     private async verifyDuckDB(): Promise<boolean> {
         try {
             const version = await this.runCommand(this.venvPythonPath, [
@@ -335,14 +262,6 @@ export class PythonEnvironmentManager {
         }
     }
 
-    /**
-     * Retrieves the path to the Python executable from the 'ms-python.python'
-     * extension if available.
-     * If the extension is not available, or the active environment is not Python 3.x
-     * with the venv module, this function will return null.
-     * @returns A promise that resolves to the path to the Python executable from the
-     * 'ms-python.python' extension if available, or null otherwise.
-     */
     private async getPythonFromExtension(): Promise<string | null> {
         try {
             const pythonExt = vscode.extensions.getExtension(VS_CODE_PYTHON_EXTENSION);
@@ -351,48 +270,99 @@ export class PythonEnvironmentManager {
                 return null;
             }
 
-            // Activate extension if needed
             if (!pythonExt.isActive) {
                 await pythonExt.activate();
-                // Wait for activation
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
 
-            const api = pythonExt.exports as PythonExtension;
-            
-            // Wait for environments to be ready
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            const activeEnv = await api.environments.getActive();
-            
-            if (activeEnv?.path) {
-                this.log(`Found Python from VS Code: ${activeEnv.path}`);
-                
-                // Verify it's Python 3 and has venv module
+            const api = pythonExt.exports as any;
+            if (!api) {
+                this.log('Python extension API not available');
+                return null;
+            }
+
+            let pythonPath: string | undefined | null;
+
+            if (typeof api.getActiveEnvironmentPath === 'function') {
                 try {
-                    const version = await this.runCommand(activeEnv.path, [
-                        '-c',
-                        'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
-                    ], 5000);
-
-                    if (!version.trim().startsWith('3.')) {
-                        this.log('Python found but not version 3.x');
-                        return null;
+                    const envPath = await api.getActiveEnvironmentPath();
+                    pythonPath = typeof envPath === 'string' ? envPath : envPath?.path;
+                    if (pythonPath && pythonPath.trim()) {
+                        this.log(`Found Python via getActiveEnvironmentPath: ${pythonPath}`);
                     }
-
-                    // Verify venv module is available
-                    await this.runCommand(activeEnv.path, ['-c', 'import venv'], 5000);
-                    this.log('Python 3.x with venv module found');
-                    return activeEnv.path;
-
                 } catch (error) {
-                    this.log(`Python verification failed: ${error}`);
-                    return null;
+                    this.log(`getActiveEnvironmentPath failed: ${error}`);
                 }
             }
 
-            this.log('No active Python environment found in VS Code');
-            return null;
+            if (!pythonPath && api.settings) {
+                try {
+                    if (typeof api.settings.getExecutionCommand === 'function') {
+                        const executionCommand = api.settings.getExecutionCommand();
+                        pythonPath = executionCommand?.command;
+                        if (pythonPath) {
+                            this.log(`Found Python via getExecutionCommand: ${pythonPath}`);
+                        }
+                    }
+                    
+                    if (!pythonPath && typeof api.settings.getInterpreterPath === 'function') {
+                        pythonPath = api.settings.getInterpreterPath();
+                        if (pythonPath) {
+                            this.log(`Found Python via getInterpreterPath: ${pythonPath}`);
+                        }
+                    }
+                } catch (error) {
+                    this.log(`Settings method failed: ${error}`);
+                }
+            }
+
+            if (!pythonPath && api.environments) {
+                try {
+                    if (typeof api.environments.getActive === 'function') {
+                        const activeEnv = await api.environments.getActive();
+                        pythonPath = activeEnv?.path;
+                        if (pythonPath) {
+                            this.log(`Found Python via environments.getActive: ${pythonPath}`);
+                        }
+                    }
+                    
+                    if (!pythonPath && api.environments.known && Array.isArray(api.environments.known)) {
+                        const availableEnv = api.environments.known.find((env: { path: any; }) => 
+                            env.path && typeof env.path === 'string'
+                        );
+                        
+                        if (availableEnv?.path) {
+                            pythonPath = availableEnv.path;
+                            this.log(`Found Python via known environments: ${pythonPath}`);
+                        }
+                    }
+                } catch (error) {
+                    this.log(`Environments API failed: ${error}`);
+                }
+            }
+
+            if (!pythonPath) {
+                pythonPath = await this.getPythonFromCommand();
+            }
+
+            if (!pythonPath) {
+                try {
+                    const config = vscode.workspace.getConfiguration('python');
+                    pythonPath = config.get<string>('defaultInterpreterPath');
+                    if (pythonPath) {
+                        this.log(`Found Python via workspace config: ${pythonPath}`);
+                    }
+                } catch (error) {
+                    this.log(`Workspace config method failed: ${error}`);
+                }
+            }
+
+            if (!pythonPath) {
+                this.log('No Python path found from extension');
+                return null;
+            }
+
+            return await this.verifyPythonInstallation(pythonPath);
 
         } catch (error) {
             this.log(`Error getting Python from extension: ${error}`);
@@ -400,13 +370,22 @@ export class PythonEnvironmentManager {
         }
     }
 
-    /**
-     * Finds a system Python installation that has the venv module available.
-     * This function will try to find the first Python executable in the system's PATH
-     * that has the venv module available. If no such Python installation is found,
-     * this function will return null.
-     * @returns A promise that resolves to the path to the Python executable if found, or null otherwise.
-     */
+    private async getPythonFromCommand(): Promise<string | null> {
+        try {
+            const pythonPath = await vscode.commands.executeCommand('python.interpreterPath') as string;
+            
+            if (pythonPath && pythonPath.trim() && pythonPath !== 'python') {
+                this.log(`Found Python via command: ${pythonPath}`);
+                return pythonPath.trim();
+            }
+            
+            return null;
+        } catch (error) {
+            this.log(`Command method failed (normal if no workspace): ${error}`);
+            return null;
+        }
+    }
+
     private async findSystemPython(): Promise<string | null> {
         const commands = this.isWindows 
             ? ['python', 'python3', 'py -3', 'py'] 
@@ -414,7 +393,14 @@ export class PythonEnvironmentManager {
         
         for (const cmd of commands) {
             try {
-                // Check version using a more reliable method
+                if (this.isWindows && (cmd === 'python' || cmd === 'python3')) {
+                    const actualPath = await this.findWindowsPythonPath();
+                    if (actualPath) {
+                        this.log(`Found Windows Python at: ${actualPath}`);
+                        return actualPath;
+                    }
+                }
+
                 const versionCheck = await this.runCommand(cmd, [
                     '-c',
                     'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")'
@@ -433,11 +419,9 @@ export class PythonEnvironmentManager {
 
                 this.log(`Found Python ${versionCheck.trim()} at ${cmd}`);
 
-                // Verify venv module is available
                 try {
                     await this.runCommand(cmd, ['-c', 'import venv'], 5000);
                     
-                    // Get the full path to the Python executable
                     const fullPath = await this.runCommand(cmd, [
                         '-c',
                         'import sys; print(sys.executable)'
@@ -448,27 +432,189 @@ export class PythonEnvironmentManager {
                     return pythonPath;
 
                 } catch (error) {
-                    this.log(`Python at ${cmd} missing venv module (install python3-venv on Debian/Ubuntu)`);
+                    this.log(`Python at ${cmd} missing venv module: ${error}`);
                     continue;
                 }
 
             } catch (error) {
-                // Command not found or failed to execute
+                this.log(`Command ${cmd} failed: ${error}`);
                 continue;
             }
+        }
+        
+        if (this.isWindows) {
+            return await this.findWindowsPythonPath();
         }
         
         this.log('No suitable system Python found');
         return null;
     }
 
-    /**
-     * Prompts the user to install the Python extension if it's not already installed.
-     * If the user selects 'Install Python Extension', this function will execute the command to install the extension.
-     * If the installation is successful, this function will show a message to reload VS Code to complete setup.
-     * If the user selects 'Cancel', this function will return false.
-     * @returns A promise that resolves to true if the user selects 'Install Python Extension', or false otherwise.
-     */
+    private async findWindowsPythonPath(): Promise<string | null> {
+    try {
+        try {
+            const pyOutput = await this.runCommand('py', ['-3', '-c', 'import sys; print(sys.executable)'], 5000);
+            const pythonPath = pyOutput.trim();
+            if (pythonPath && await exists(pythonPath)) {
+                this.log(`Found Python via 'py -3': ${pythonPath}`);
+                const verified = await this.verifyPythonInstallation(pythonPath);
+                if (verified) return verified;
+            }
+        } catch (error) {
+            this.log(`'py -3' command failed: ${error}`);
+        }
+
+        try {
+            const listOutput = await this.runCommand('py', ['-0'], 5000);
+            const pythonVersions = listOutput.split('\n')
+                .filter(line => line.includes('Python') && line.includes('-'))
+                .map(line => {
+                    const match = line.match(/-(\d+)(?:-(\d+))?\s+/);
+                    return match ? parseInt(match[1]) : 0;
+                })
+                .filter(version => version === 3);
+
+            for (const version of pythonVersions) {
+                try {
+                    const pythonPathOutput = await this.runCommand('py', [`-${version}`, '-c', 'import sys; print(sys.executable)'], 5000);
+                    const pythonPath = pythonPathOutput.trim();
+                    if (pythonPath && await exists(pythonPath)) {
+                        this.log(`Found Python via 'py -${version}': ${pythonPath}`);
+                        const verified = await this.verifyPythonInstallation(pythonPath);
+                        if (verified) return verified;
+                    }
+                } catch (error) {
+                    continue;
+                }
+            }
+        } catch (error) {
+            this.log(`'py -0' command failed: ${error}`);
+        }
+
+        const commonPaths = [
+            path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python'),
+            path.join(process.env.ProgramFiles || '', 'Python'),
+            path.join(process.env.ProgramFiles || '', 'Python*'),
+            path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python'),
+            path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'Programs', 'Python*')
+        ];
+
+        for (const basePath of commonPaths) {
+            try {
+                if (basePath.includes('*')) {
+                    const parentDir = path.dirname(basePath);
+                    const pattern = path.basename(basePath);
+                    
+                    if (await exists(parentDir)) {
+                        const entries = await fs.promises.readdir(parentDir);
+                        const pythonDirs = entries.filter(async entry => 
+                            entry.startsWith('Python') && 
+                            await exists(path.join(parentDir, entry, 'python.exe'))
+                        ).sort().reverse();
+                        
+                        for (const dir of pythonDirs) {
+                            const pythonExe = path.join(parentDir, dir, 'python.exe');
+                            if (await exists(pythonExe)) {
+                                this.log(`Found Python in common location: ${pythonExe}`);
+                                const verified = await this.verifyPythonInstallation(pythonExe);
+                                if (verified) return verified;
+                            }
+                        }
+                    }
+                } else if (await exists(basePath)) {
+                    const entries = await fs.promises.readdir(basePath);
+                    for (const entry of entries) {
+                        const pythonExe = path.join(basePath, entry, 'python.exe');
+                        if (await exists(pythonExe)) {
+                            this.log(`Found Python in common location: ${pythonExe}`);
+                            const verified = await this.verifyPythonInstallation(pythonExe);
+                            if (verified) return verified;
+                        }
+                    }
+                }
+            } catch (error) {
+                continue;
+            }
+        }
+
+        return null;
+    } catch (error) {
+        this.log(`Windows Python discovery failed: ${error}`);
+        return null;
+    }
+}
+
+    private async verifyPythonInstallation(pythonPath: string): Promise<string | null> {
+        try {
+            if (!(await exists(pythonPath))) {
+                this.log(`Python path does not exist: ${pythonPath}`);
+                return null;
+            }
+
+            const version = await this.runCommand(pythonPath, [
+                '-c',
+                'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+            ], 5000);
+
+            const versionStr = version.trim();
+            if (!versionStr.startsWith('3.')) {
+                this.log(`Python found but not version 3.x (found ${versionStr})`);
+                return null;
+            }
+
+            await this.runCommand(pythonPath, ['-c', 'import venv'], 5000);
+            this.log(`Python ${versionStr} with venv module found at: ${pythonPath}`);
+            return pythonPath;
+
+        } catch (error: any) {
+            this.log(`Python verification failed for ${pythonPath}: ${error}`);
+            
+            if (this.isWindows && error.toString().includes('Microsoft Store')) {
+                this.log('Microsoft Store Python alias detected. Please install Python from python.org');
+            }
+            
+            return null;
+        }
+    }
+
+    private async promptUserForPythonInterpreter(): Promise<string | null> {
+        try {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders || workspaceFolders.length === 0) {
+                const choice = await vscode.window.showWarningMessage(
+                    'Please open a folder or workspace to select a Python interpreter, or use system Python.',
+                    'Open Folder',
+                    'Use System Python',
+                    'Cancel'
+                );
+
+                if (choice === 'Open Folder') {
+                    await vscode.commands.executeCommand('workbench.action.files.openFolder');
+                    return null;
+                } else if (choice === 'Use System Python') {
+                    return await this.findSystemPython();
+                }
+                return null;
+            }
+
+            await vscode.commands.executeCommand('python.setInterpreter');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const pythonPath = await this.getPythonFromExtension();
+                if (pythonPath) {
+                    return pythonPath;
+                }
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            return null;
+        } catch (error) {
+            this.log(`Failed to prompt for Python interpreter: ${error}`);
+            return null;
+        }
+    }
+
     private async promptForPythonExtension(): Promise<boolean> {
         const choice = await vscode.window.showWarningMessage(
             'Parquet Viewer requires Python to create an isolated environment. Install Python extension?',
@@ -502,15 +648,6 @@ export class PythonEnvironmentManager {
         return false;
     }
 
-    /**
-     * Prompts the user to select a Python 3.x interpreter in VS Code for
-     * the Parquet Viewer extension. If the user selects 'Select Python
-     * Interpreter', this function will execute the command to set the
-     * interpreter and return true. If the user selects 'Cancel', this
-     * function will return false.
-     * @returns A promise that resolves to true if the user selects 'Select
-     * Python Interpreter', or false if the user selects 'Cancel'.
-     */
     private async promptForPythonSelection(): Promise<boolean> {
         const choice = await vscode.window.showWarningMessage(
             'Please select a Python 3.x interpreter in VS Code for Parquet Viewer.',
@@ -519,21 +656,13 @@ export class PythonEnvironmentManager {
         );
 
         if (choice === 'Select Python Interpreter') {
-            await vscode.commands.executeCommand('python.setInterpreter');
-            return true;
+            const pythonPath = await this.promptUserForPythonInterpreter();
+            return pythonPath !== null;
         }
 
         return false;
     }
 
-    /**
-     * Runs a command with the given arguments and returns the output as a string.
-     * If the command does not complete within the given timeout, the process will be terminated and an error will be returned.
-     * @param command The command to run.
-     * @param args The arguments to pass to the command.
-     * @param timeout The timeout in milliseconds. Defaults to 30000ms.
-     * @returns A promise that resolves to the output of the command as a string, or rejects with an error if the command fails or times out.
-     */
     private async runCommand(
         command: string, 
         args: string[], 
@@ -579,22 +708,11 @@ export class PythonEnvironmentManager {
         });
     }
 
-    /**
-     * Logs a message to the output channel with a timestamp.
-     * 
-     * @param message The message to log.
-     */
     private log(message: string): void {
         const timestamp = new Date().toLocaleTimeString();
         this.outputChannel.appendLine(`[${timestamp}] ${message}`);
     }
 
-    /**
-     * Returns the path to the Python executable in the isolated environment.
-     * If the environment has not been initialized, an error is thrown.
-     * @returns The path to the Python executable in the isolated environment.
-     * @throws {Error} If the environment has not been initialized.
-     */
     public getPythonPath(): string {
         if (!this.isInitialized) {
             throw new Error('Environment not initialized yet.');
@@ -602,13 +720,6 @@ export class PythonEnvironmentManager {
         return this.venvPythonPath;
     }
 
-    /**
-     * Ensures that the environment is initialized.
-     * If the environment has not been initialized, this function will initialize it.
-     * If the environment initialization fails, an error is thrown.
-     * @returns A promise that resolves when the environment has been initialized.
-     * @throws {Error} If the environment initialization fails.
-     */
     public async ensureInitialized(): Promise<void> {
         if (!this.isInitialized) {
             const initialized = await this.initializeEnvironment();
@@ -618,34 +729,14 @@ export class PythonEnvironmentManager {
         }
     }
 
-    /**
-     * Returns true if the isolated Python environment has been initialized and is ready to use,
-     * false otherwise.
-     * @returns True if the environment is ready, false otherwise.
-     */
     public isEnvironmentReady(): boolean {
         return this.isInitialized;
     }
 
-    /**
-     * Shows the output channel for the environment.
-     * This is useful for debugging environment initialization issues.
-     */
     public showOutputChannel(): void {
         this.outputChannel.show(true);
     }
 
-    /**
-     * Resets the isolated Python environment.
-     * This function will delete the virtual environment directory and all its contents,
-     * and then re-initialize the environment.
-     * 
-     * This function is useful for debugging environment initialization issues or if the
-     * environment becomes corrupted.
-     * 
-     * @returns A promise that resolves to true if the environment was successfully reset,
-     * false otherwise.
-     */
     public async resetEnvironment(): Promise<boolean> {
         this.log('Resetting environment...');
         this.isInitialized = false;
@@ -663,12 +754,6 @@ export class PythonEnvironmentManager {
         return await this.initializeEnvironment();
     }
 
-    /**
-     * Retrieves information about the isolated Python environment.
-     * If the environment has not been initialized, the function will return 'Environment not initialized'.
-     * If the environment information is unavailable due to an error, the function will return 'Environment info unavailable'.
-     * @returns A promise that resolves to a string containing information about the isolated Python environment.
-     */
     public async getEnvironmentInfo(): Promise<string> {
         if (!this.isInitialized) {
             return 'Environment not initialized';
@@ -700,11 +785,6 @@ export class PythonEnvironmentManager {
         }
     }
 
-    /**
-     * Returns the path to the system Python executable, if one was found.
-     * If no system Python executable was found, null is returned.
-     * @returns The path to the system Python executable, if one was found, null otherwise.
-     */
     public getSystemPythonPath(): string | null {
         return this.systemPythonPath;
     }

@@ -12,6 +12,7 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 ## Installation
 1. Install the extension from the VS Code Marketplace
 2. Open any `.parquet` file - the extension will handle everything automatically
+3. Pelease note, initial setup takes a bit of time. Kindly have patience
 
 ## Usage
 
@@ -76,7 +77,7 @@ If extension fails to load:
 
 ## Feedback & Issues
 
-Found a bug or have a feature request? Please file an issue on our [GitHub repository](To be updated soon).
+Found a bug or have a feature request? Please file an issue on our |GitHub repository|(To be updated soon).
 
 ## Release Notes
 

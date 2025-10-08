@@ -2,7 +2,8 @@
   "name": "parquet-x",
   "displayName": "parquetx",
   "description": "View Parquet Files",
-  "version": "1.0.0",
+  "version": "1.0.2",
+  "publisher": "CosmicTechnoid",
   "author": {
     "name": "Akshara A",
     "email": "akshararajan26@outlook.in"
