@@ -403,17 +403,25 @@ export class PythonEnvironmentManager {
 
                 const versionCheck = await this.runCommand(cmd, [
                     '-c',
-                    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")'
+                    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
                 ], 5000);
 
-                const versionMatch = versionCheck.trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+                const versionMatch = versionCheck.trim().match(/^(\d+)\.(\d+)$/);
                 if (!versionMatch) {
                     continue;
                 }
 
                 const major = parseInt(versionMatch[1]);
+                const minor = parseInt(versionMatch[2]);
+                
                 if (major !== 3) {
                     this.log(`Found Python ${major}.x at ${cmd}, but need Python 3.x`);
+                    continue;
+                }
+
+                // Check if version is 3.14 or higher
+                if (minor > 13) {
+                    this.log(`Found Python ${versionCheck.trim()} at ${cmd}, but maximum supported version is 3.13`);
                     continue;
                 }
 
@@ -446,49 +454,51 @@ export class PythonEnvironmentManager {
             return await this.findWindowsPythonPath();
         }
         
-        this.log('No suitable system Python found');
+        this.log('No suitable system Python found (Python 3.13 or earlier required)');
         return null;
     }
 
     private async findWindowsPythonPath(): Promise<string | null> {
     try {
+        // Try py -3 first (usually gives latest Python 3)
         try {
-            const pyOutput = await this.runCommand('py', ['-3', '-c', 'import sys; print(sys.executable)'], 5000);
-            const pythonPath = pyOutput.trim();
-            if (pythonPath && await exists(pythonPath)) {
-                this.log(`Found Python via 'py -3': ${pythonPath}`);
-                const verified = await this.verifyPythonInstallation(pythonPath);
-                if (verified) return verified;
+            const pyOutput = await this.runCommand('py', ['-3', '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], 5000);
+            const versionStr = pyOutput.trim();
+            const [major, minor] = versionStr.split('.').map(Number);
+            
+            if (major === 3 && minor <= 13) {
+                const pythonPath = await this.runCommand('py', ['-3', '-c', 'import sys; print(sys.executable)'], 5000);
+                const verifiedPath = pythonPath.trim();
+                if (verifiedPath && await exists(verifiedPath)) {
+                    this.log(`Found Python ${versionStr} via 'py -3': ${verifiedPath}`);
+                    return verifiedPath;
+                }
+            } else {
+                this.log(`Python ${versionStr} via 'py -3' is too new, need 3.13 or earlier`);
             }
         } catch (error) {
             this.log(`'py -3' command failed: ${error}`);
         }
 
-        try {
-            const listOutput = await this.runCommand('py', ['-0'], 5000);
-            const pythonVersions = listOutput.split('\n')
-                .filter(line => line.includes('Python') && line.includes('-'))
-                .map(line => {
-                    const match = line.match(/-(\d+)(?:-(\d+))?\s+/);
-                    return match ? parseInt(match[1]) : 0;
-                })
-                .filter(version => version === 3);
-
-            for (const version of pythonVersions) {
-                try {
-                    const pythonPathOutput = await this.runCommand('py', [`-${version}`, '-c', 'import sys; print(sys.executable)'], 5000);
-                    const pythonPath = pythonPathOutput.trim();
-                    if (pythonPath && await exists(pythonPath)) {
-                        this.log(`Found Python via 'py -${version}': ${pythonPath}`);
-                        const verified = await this.verifyPythonInstallation(pythonPath);
-                        if (verified) return verified;
+        // Try specific Python 3 versions from highest to lowest (3.13 down to 3.0)
+        const supportedVersions = [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+        
+        for (const minor of supportedVersions) {
+            try {
+                const versionCheck = await this.runCommand('py', [`-3.${minor}`, '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'], 5000);
+                const versionStr = versionCheck.trim();
+                
+                if (versionStr === `3.${minor}`) {
+                    const pythonPath = await this.runCommand('py', [`-3.${minor}`, '-c', 'import sys; print(sys.executable)'], 5000);
+                    const verifiedPath = pythonPath.trim();
+                    if (verifiedPath && await exists(verifiedPath)) {
+                        this.log(`Found Python ${versionStr} via 'py -3.${minor}': ${verifiedPath}`);
+                        return verifiedPath;
                     }
-                } catch (error) {
-                    continue;
                 }
+            } catch (error) {
+                continue;
             }
-        } catch (error) {
-            this.log(`'py -0' command failed: ${error}`);
         }
 
         const commonPaths = [
@@ -507,9 +517,8 @@ export class PythonEnvironmentManager {
                     
                     if (await exists(parentDir)) {
                         const entries = await fs.promises.readdir(parentDir);
-                        const pythonDirs = entries.filter(async entry => 
-                            entry.startsWith('Python') && 
-                            await exists(path.join(parentDir, entry, 'python.exe'))
+                        const pythonDirs = entries.filter(entry => 
+                            entry.startsWith('Python')
                         ).sort().reverse();
                         
                         for (const dir of pythonDirs) {
@@ -545,37 +554,46 @@ export class PythonEnvironmentManager {
 }
 
     private async verifyPythonInstallation(pythonPath: string): Promise<string | null> {
-        try {
-            if (!(await exists(pythonPath))) {
-                this.log(`Python path does not exist: ${pythonPath}`);
-                return null;
-            }
-
-            const version = await this.runCommand(pythonPath, [
-                '-c',
-                'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
-            ], 5000);
-
-            const versionStr = version.trim();
-            if (!versionStr.startsWith('3.')) {
-                this.log(`Python found but not version 3.x (found ${versionStr})`);
-                return null;
-            }
-
-            await this.runCommand(pythonPath, ['-c', 'import venv'], 5000);
-            this.log(`Python ${versionStr} with venv module found at: ${pythonPath}`);
-            return pythonPath;
-
-        } catch (error: any) {
-            this.log(`Python verification failed for ${pythonPath}: ${error}`);
-            
-            if (this.isWindows && error.toString().includes('Microsoft Store')) {
-                this.log('Microsoft Store Python alias detected. Please install Python from python.org');
-            }
-            
+    try {
+        if (!(await exists(pythonPath))) {
+            this.log(`Python path does not exist: ${pythonPath}`);
             return null;
         }
+
+        const version = await this.runCommand(pythonPath, [
+            '-c',
+            'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+        ], 5000);
+
+        const versionStr = version.trim();
+        if (!versionStr.startsWith('3.')) {
+            this.log(`Python found but not version 3.x (found ${versionStr})`);
+            return null;
+        }
+
+        // Parse version components
+        const [major, minor] = versionStr.split('.').map(Number);
+        
+        // Restrict to Python 3.13 and below (3.0 - 3.13)
+        if (major === 3 && minor > 13) {
+            this.log(`Python ${versionStr} is too new. Maximum supported version is 3.13`);
+            return null;
+        }
+
+        await this.runCommand(pythonPath, ['-c', 'import venv'], 5000);
+        this.log(`Python ${versionStr} with venv module found at: ${pythonPath}`);
+        return pythonPath;
+
+    } catch (error: any) {
+        this.log(`Python verification failed for ${pythonPath}: ${error}`);
+        
+        if (this.isWindows && error.toString().includes('Microsoft Store')) {
+            this.log('Microsoft Store Python alias detected. Please install Python from python.org');
+        }
+        
+        return null;
     }
+}
 
     private async promptUserForPythonInterpreter(): Promise<string | null> {
         try {
@@ -650,7 +668,7 @@ export class PythonEnvironmentManager {
 
     private async promptForPythonSelection(): Promise<boolean> {
         const choice = await vscode.window.showWarningMessage(
-            'Please select a Python 3.x interpreter in VS Code for Parquet Viewer.',
+            'Please select a Python 3.x interpreter (version 3.13 or earlier) in VS Code for Parquet Viewer.',
             'Select Python Interpreter',
             'Cancel'
         );

@@ -4,6 +4,7 @@
   "description": "View Parquet Files",
   "version": "1.0.2",
   "publisher": "CosmicTechnoid",
+  "icon": "media/icons/logo.png",
   "author": {
     "name": "Akshara A",
     "email": "akshararajan26@outlook.in"
