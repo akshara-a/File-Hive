@@ -13,3 +13,9 @@
 ## [1.0.2] - 2025-10-08
 ### Updated
 - Enhanced support for python
+
+## [1.0.3] - 2025-10-08
+### Updated
+- Fixed support for python
+- Added new logo
+- Improved logs
