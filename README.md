@@ -90,7 +90,7 @@ Found a bug or have a feature request? Please file an issue on our |GitHub repos
 
 ## License
 
-[Soon to be updated]
+This project is licensed under the **MIT License** — you’re free to use, modify, and distribute it as long as proper credit is given.
 
 ## Author
 
