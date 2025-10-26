@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
-  "displayName": "parquetx",
+  "displayName": "parquetX",
   "description": "View Parquet Files",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "author": {

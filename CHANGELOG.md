@@ -19,3 +19,7 @@
 - Fixed support for python
 - Added new logo
 - Improved logs
+
+## [1.0.4] - 2025-10-26
+### Updated
+- Filter support

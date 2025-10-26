@@ -88,6 +88,13 @@ Found a bug or have a feature request? Please file an issue on our |GitHub repos
 - No additional dependencies required
 - Custom editor for `.parquet` files
 
+## 1.0.1 to 1.0.3
+
+- Enhanced support for python
+
+## 1.0.4
+- Filter support
+
 ## License
 
 This project is licensed under the **MIT License** — you’re free to use, modify, and distribute it as long as proper credit is given.
