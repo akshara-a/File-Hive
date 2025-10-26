@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import { IParquetReader } from './interfaces/IParquetReader';
 import { IWebviewRenderer } from './interfaces/IWebviewRenderer';
+import { MESSAGE_TYPE_REFRESH, VIEW_TYPE } from './common/constant';
 
 export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
-    public static readonly viewType = 'parquetViewer.parquetViewer';
+    public static readonly viewType = VIEW_TYPE;
 
     /**
      * Constructs a ParquetViewer object.
@@ -102,8 +103,8 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
     private setupMessageHandlers(webviewPanel: vscode.WebviewPanel, document: vscode.CustomDocument): void {
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
             switch (message.type) {
-                case 'refresh':
-                    await this.refreshWebviewContent(webviewPanel, document.uri); // ✅ Use document parameter
+                case MESSAGE_TYPE_REFRESH:
+                    await this.refreshWebviewContent(webviewPanel, document.uri); // Use document parameter
                     break;
             }
         });

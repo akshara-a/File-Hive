@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { MESSAGES, VS_CODE_PYTHON_EXTENSION, WINDOWS_PLATFORM } from './common/constant';
+import { BIN_FOLDER, EXTENSION_NAME, MESSAGES, PARQUET_VIEWER_INITIALIZED_STATE, PYTHON, PYTHON_EXE, SCRIPTS_FOLDER, VENV_FOLDER, VS_CODE_PYTHON_EXTENSION, WINDOWS_PLATFORM } from './common/constant';
 
 interface PythonExtension {
     environments: {
@@ -44,27 +44,27 @@ export class PythonEnvironmentManager {
     private initializationPromise: Promise<boolean> | null = null;
 
     constructor(private readonly context: vscode.ExtensionContext) {
-        this.outputChannel = vscode.window.createOutputChannel('Parquet Viewer');
+        this.outputChannel = vscode.window.createOutputChannel(EXTENSION_NAME);
         this.isWindows = os.platform() === WINDOWS_PLATFORM;
         
         this.venvPath = path.join(
             this.context.extensionPath,
-            '.parquet-venv'
+            VENV_FOLDER
         );
         
         this.venvPythonPath = this.isWindows
-            ? path.join(this.venvPath, 'Scripts', 'python.exe')
-            : path.join(this.venvPath, 'bin', 'python');
+            ? path.join(this.venvPath, SCRIPTS_FOLDER, PYTHON_EXE)
+            : path.join(this.venvPath, BIN_FOLDER, PYTHON);
         
         this.validateState();
     }
 
     private async validateState(): Promise<void> {
         try {
-            const storedState = this.context.globalState.get('parquetViewerInitialized');
+            const storedState = this.context.globalState.get(PARQUET_VIEWER_INITIALIZED_STATE);
             if (storedState && !(await exists(this.venvPythonPath))) {
-                this.log('State mismatch detected: venv missing but marked as initialized');
-                await this.context.globalState.update('parquetViewerInitialized', false);
+                this.log(MESSAGES.STATE_MISMATCH_DETECTED);
+                await this.context.globalState.update(PARQUET_VIEWER_INITIALIZED_STATE, false);
                 this.isInitialized = false;
             }
         } catch (error) {
