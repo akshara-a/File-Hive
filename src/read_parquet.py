@@ -5,6 +5,7 @@ import os
 
 MAX_RESULT_ROWS = 1000
 TABLE_NAME = "parquet_data"
+SCHEMA_ROOT_NAMES = ("schema", "root")
 
 def sql_string(value):
     return "'" + value.replace("'", "''") + "'"
@@ -49,6 +50,155 @@ def convert_rows_to_json(columns, result):
         data.append(row_dict)
     return data
 
+def safe_int(value):
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def is_truthy_text(value):
+    if value is None:
+        return None
+
+    text = str(value).lower()
+    if "true" in text or "utc=true" in text:
+        return True
+    if "false" in text or "utc=false" in text:
+        return False
+    return None
+
+def parse_timestamp_metadata(logical_type):
+    if not logical_type:
+        return {
+            "unit": None,
+            "isAdjustedToUTC": None,
+            "timezoneInterpretation": None
+        }
+
+    logical_text = str(logical_type)
+    lower_text = logical_text.lower()
+    if "timestamp" not in lower_text and "time" not in lower_text:
+        return {
+            "unit": None,
+            "isAdjustedToUTC": None,
+            "timezoneInterpretation": None
+        }
+
+    unit = None
+    for candidate in ("NANOS", "MICROS", "MILLIS"):
+        if candidate.lower() in lower_text:
+            unit = candidate
+            break
+
+    is_adjusted_to_utc = is_truthy_text(logical_text)
+    if is_adjusted_to_utc is True:
+        timezone_interpretation = "UTC normalized"
+    elif is_adjusted_to_utc is False:
+        timezone_interpretation = "Local or timezone-naive"
+    else:
+        timezone_interpretation = None
+
+    return {
+        "unit": unit,
+        "isAdjustedToUTC": is_adjusted_to_utc,
+        "timezoneInterpretation": timezone_interpretation
+    }
+
+def create_schema_node(row, path, parent_path, depth, definition_level, repetition_level):
+    repetition_type = row.get("repetition_type")
+    logical_type = row.get("logical_type") or row.get("converted_type")
+    timestamp = parse_timestamp_metadata(logical_type)
+
+    return {
+        "name": row.get("name") or "",
+        "path": path,
+        "parentPath": parent_path,
+        "depth": depth,
+        "physicalType": row.get("type"),
+        "logicalType": logical_type,
+        "convertedType": row.get("converted_type"),
+        "nullableStatus": "nullable" if repetition_type == "OPTIONAL" else "required" if repetition_type == "REQUIRED" else "repeated",
+        "repetitionType": repetition_type,
+        "repetitionLevel": repetition_level,
+        "definitionLevel": definition_level,
+        "decimalPrecision": safe_int(row.get("precision")),
+        "decimalScale": safe_int(row.get("scale")),
+        "timestampUnit": timestamp["unit"],
+        "timestampTimezoneInterpretation": timestamp["timezoneInterpretation"],
+        "timestampIsAdjustedToUTC": timestamp["isAdjustedToUTC"],
+        "numChildren": safe_int(row.get("num_children")) or 0,
+        "children": []
+    }
+
+def read_parquet_schema(conn, file_path):
+    schema_query = f"SELECT * FROM parquet_schema({sql_string(file_path)})"
+    schema_result = conn.execute(schema_query).fetchall()
+    schema_columns = [desc[0] for desc in conn.description]
+    schema_rows = [
+        {column: value for column, value in zip(schema_columns, row)}
+        for row in schema_result
+    ]
+
+    nodes = []
+    stack = []
+
+    for row in schema_rows:
+        name = row.get("name") or ""
+        num_children = safe_int(row.get("num_children")) or 0
+
+        while stack and stack[-1]["remainingChildren"] == 0:
+            stack.pop()
+
+        parent = stack[-1] if stack else None
+        is_root = parent is None and name.lower() in SCHEMA_ROOT_NAMES
+
+        parent_parts = [] if parent is None else parent["pathParts"]
+        path_parts = [] if is_root else parent_parts + [name]
+        path = ".".join(path_parts) if path_parts else name
+        parent_path = ".".join(parent_parts) if parent_parts else None
+
+        inherited_definition = 0 if parent is None else parent["definitionLevel"]
+        inherited_repetition = 0 if parent is None else parent["repetitionLevel"]
+        repetition_type = row.get("repetition_type")
+        definition_level = inherited_definition + (1 if repetition_type in ("OPTIONAL", "REPEATED") else 0)
+        repetition_level = inherited_repetition + (1 if repetition_type == "REPEATED" else 0)
+
+        node = create_schema_node(
+            row,
+            path,
+            parent_path,
+            len(path_parts),
+            definition_level,
+            repetition_level
+        )
+        nodes.append(node)
+
+        if parent is not None:
+            parent["node"]["children"].append(node)
+            parent["remainingChildren"] -= 1
+
+        if num_children > 0:
+            stack.append({
+                "node": node,
+                "pathParts": path_parts,
+                "remainingChildren": num_children,
+                "definitionLevel": definition_level,
+                "repetitionLevel": repetition_level
+            })
+
+    leaf_columns = [node for node in nodes if node["numChildren"] == 0]
+    root_nodes = [node for node in nodes if node["parentPath"] is None]
+
+    return {
+        "columns": leaf_columns,
+        "tree": root_nodes,
+        "raw": schema_rows,
+        "columnCount": len(leaf_columns)
+    }
+
 def read_parquet_file(file_path, user_query=None):
     """
     Read parquet file and return data as JSON
@@ -75,6 +225,7 @@ def read_parquet_file(file_path, user_query=None):
         print("DEBUG: DuckDB connected successfully", file=sys.stderr)
 
         create_parquet_view(conn, file_path)
+        schema = read_parquet_schema(conn, file_path)
         query = normalize_query(user_query)
         
         # Read data with limit
@@ -112,6 +263,7 @@ def read_parquet_file(file_path, user_query=None):
             'totalRows': total_rows,
             'query': query,
             'resultLimited': result_limited,
+            'schema': schema,
             'debug': {
                 'file_path': file_path,
                 'file_size': file_size,

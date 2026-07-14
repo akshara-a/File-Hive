@@ -26,10 +26,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         <body>
             <div class="container">
                 ${this.generateHeader()}
-                ${this.generateQueryContainer()}
+                ${this.generateViewTabs()}
                 ${this.generateErrorContainer()}
                 ${this.generateLoadingContainer()}
-                ${this.generateDataContainer()}
+                <div id="data-view" class="view-panel">
+                    ${this.generateQueryContainer()}
+                    ${this.generateDataContainer()}
+                </div>
+                ${this.generateSchemaContainer()}
             </div>
 
             <script nonce="${nonce}">
@@ -54,6 +58,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <span id="status" class="status status-loading">Loading...</span>
             </div>
         </header>`;
+    }
+
+    private generateViewTabs(): string {
+        return `
+        <div class="view-tabs" role="tablist">
+            <button id="data-tab" class="tab-btn active" role="tab" aria-selected="true">Data</button>
+            <button id="schema-tab" class="tab-btn" role="tab" aria-selected="false">Schema</button>
+        </div>`;
     }
 
     private generateQueryContainer(): string {
@@ -110,11 +122,50 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </div>`;
     }
 
+    private generateSchemaContainer(): string {
+        return `
+        <section id="schema-container" class="schema-container view-panel hidden">
+            <div class="schema-toolbar">
+                <div class="schema-search">
+                    <label for="schema-search-input">Search Columns</label>
+                    <input id="schema-search-input" type="search" placeholder="Column name, path, type" />
+                </div>
+                <div class="schema-actions">
+                    <button id="copy-schema-json-btn" class="btn">Copy JSON</button>
+                    <button id="generate-schema-docs-btn" class="btn btn-secondary">Generate Documentation</button>
+                </div>
+            </div>
+            <div class="schema-summary">
+                <div class="summary-item">Columns: <span id="schema-column-count">0</span></div>
+                <div class="summary-item">Nested Fields: <span id="schema-nested-count">0</span></div>
+            </div>
+            <div class="schema-layout">
+                <div class="schema-tree-panel">
+                    <h2>Nested Structure</h2>
+                    <div id="schema-tree"></div>
+                </div>
+                <div class="schema-column-panel">
+                    <h2>Columns</h2>
+                    <div id="schema-column-list"></div>
+                </div>
+            </div>
+            <div id="schema-docs-panel" class="schema-docs-panel hidden">
+                <div class="schema-docs-toolbar">
+                    <h2>Schema Documentation</h2>
+                    <button id="copy-schema-docs-btn" class="btn btn-secondary">Copy Documentation</button>
+                </div>
+                <textarea id="schema-docs-output" readonly></textarea>
+            </div>
+        </section>`;
+    }
+
     private getJavaScriptContent(): string {
         return `
         const vscode = acquireVsCodeApi();
         const DEFAULT_QUERY = 'SELECT * FROM parquet_data';
         let currentQuery = DEFAULT_QUERY;
+        let currentSchema = null;
+        let currentSchemaDocs = '';
 
         function initialize(data) {
             console.log('Webview initialized with data:', data);
@@ -132,6 +183,61 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
 
             return '0';
+        }
+
+        function valueOrDash(value) {
+            if (value === null || value === undefined || value === '') {
+                return '-';
+            }
+
+            return String(value);
+        }
+
+        function setActiveView(viewName) {
+            const dataTab = document.getElementById('data-tab');
+            const schemaTab = document.getElementById('schema-tab');
+            const dataView = document.getElementById('data-view');
+            const schemaContainer = document.getElementById('schema-container');
+
+            const showSchema = viewName === 'schema';
+            dataTab.classList.toggle('active', !showSchema);
+            schemaTab.classList.toggle('active', showSchema);
+            dataTab.setAttribute('aria-selected', String(!showSchema));
+            schemaTab.setAttribute('aria-selected', String(showSchema));
+            dataView.classList.toggle('hidden', showSchema);
+            schemaContainer.classList.toggle('hidden', !showSchema);
+        }
+
+        function writeTextToClipboard(text, successMessage) {
+            const statusElement = document.getElementById('status');
+            const fallbackCopy = () => {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                document.execCommand('copy');
+                textarea.remove();
+            };
+
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(() => {
+                        statusElement.textContent = successMessage;
+                    }).catch(() => {
+                        fallbackCopy();
+                        statusElement.textContent = successMessage;
+                    });
+                } else {
+                    fallbackCopy();
+                    statusElement.textContent = successMessage;
+                }
+            } catch (error) {
+                statusElement.textContent = 'Copy failed';
+                statusElement.className = 'status status-error';
+            }
         }
 
         function setLoading(message) {
@@ -187,6 +293,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (data.resultLimited) {
                 queryLimitMessage.classList.remove('hidden');
             }
+
+            if (data.schema) {
+                currentSchema = data.schema;
+                renderSchemaPanel(currentSchema);
+            }
             
             // Create table
             if (data.columns) {
@@ -204,6 +315,189 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 statusElement.textContent = 'No rows';
                 statusElement.classList.add('status-success');
             }
+        }
+
+        function renderSchemaPanel(schema) {
+            const columnCountElement = document.getElementById('schema-column-count');
+            const nestedCountElement = document.getElementById('schema-nested-count');
+            const searchInput = document.getElementById('schema-search-input');
+
+            columnCountElement.textContent = formatCount(schema.columnCount || 0);
+            nestedCountElement.textContent = formatCount(countNestedFields(schema.tree || []));
+            renderSchemaTree(schema.tree || []);
+            renderSchemaColumns(schema.columns || [], searchInput ? searchInput.value : '');
+        }
+
+        function countNestedFields(nodes) {
+            return nodes.reduce((count, node) => {
+                const childCount = node.children ? node.children.length : 0;
+                return count + (childCount > 0 ? 1 : 0) + countNestedFields(node.children || []);
+            }, 0);
+        }
+
+        function renderSchemaTree(nodes) {
+            const treeContainer = document.getElementById('schema-tree');
+            treeContainer.innerHTML = '';
+
+            if (!nodes.length) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-value';
+                empty.textContent = 'No schema metadata found';
+                treeContainer.appendChild(empty);
+                return;
+            }
+
+            treeContainer.appendChild(createSchemaTreeList(nodes));
+        }
+
+        function createSchemaTreeList(nodes) {
+            const list = document.createElement('ul');
+            list.className = 'schema-tree-list';
+
+            nodes.forEach((node) => {
+                const item = document.createElement('li');
+                const row = document.createElement('div');
+                row.className = 'schema-tree-row';
+                row.style.paddingLeft = Math.max(node.depth - 1, 0) * 12 + 'px';
+
+                const name = document.createElement('span');
+                name.className = 'schema-tree-name';
+                name.textContent = node.name || node.path;
+
+                const type = document.createElement('span');
+                type.className = 'schema-chip';
+                type.textContent = valueOrDash(node.logicalType || node.physicalType);
+
+                const mode = document.createElement('span');
+                mode.className = 'schema-chip schema-chip-muted';
+                mode.textContent = valueOrDash(node.repetitionType);
+
+                row.appendChild(name);
+                row.appendChild(type);
+                row.appendChild(mode);
+                item.appendChild(row);
+
+                if (node.children && node.children.length) {
+                    item.appendChild(createSchemaTreeList(node.children));
+                }
+
+                list.appendChild(item);
+            });
+
+            return list;
+        }
+
+        function renderSchemaColumns(columns, filterText) {
+            const list = document.getElementById('schema-column-list');
+            const normalizedFilter = (filterText || '').trim().toLowerCase();
+            const filteredColumns = normalizedFilter
+                ? columns.filter((column) => schemaColumnMatches(column, normalizedFilter))
+                : columns;
+
+            list.innerHTML = '';
+
+            if (!filteredColumns.length) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-value';
+                empty.textContent = 'No columns matched';
+                list.appendChild(empty);
+                return;
+            }
+
+            filteredColumns.forEach((column) => {
+                list.appendChild(createSchemaColumnCard(column));
+            });
+        }
+
+        function schemaColumnMatches(column, filterText) {
+            return [
+                column.name,
+                column.path,
+                column.physicalType,
+                column.logicalType,
+                column.convertedType,
+                column.nullableStatus,
+                column.repetitionType
+            ].some((value) => valueOrDash(value).toLowerCase().includes(filterText));
+        }
+
+        function createSchemaColumnCard(column) {
+            const card = document.createElement('article');
+            card.className = 'schema-column-card';
+
+            const header = document.createElement('div');
+            header.className = 'schema-column-header';
+
+            const title = document.createElement('div');
+            title.className = 'schema-column-title';
+            title.textContent = column.name || column.path;
+            title.title = column.path;
+
+            const path = document.createElement('code');
+            path.textContent = column.path;
+
+            header.appendChild(title);
+            header.appendChild(path);
+            card.appendChild(header);
+
+            const fields = [
+                ['Physical Type', column.physicalType],
+                ['Logical Type', column.logicalType],
+                ['Nullable', column.nullableStatus],
+                ['Repetition Level', column.repetitionLevel],
+                ['Definition Level', column.definitionLevel],
+                ['Decimal Precision', column.decimalPrecision],
+                ['Decimal Scale', column.decimalScale],
+                ['Timestamp Unit', column.timestampUnit],
+                ['Timezone', column.timestampTimezoneInterpretation]
+            ];
+
+            const grid = document.createElement('dl');
+            grid.className = 'schema-field-grid';
+            fields.forEach(([label, value]) => {
+                const term = document.createElement('dt');
+                term.textContent = label;
+                const detail = document.createElement('dd');
+                detail.textContent = valueOrDash(value);
+                grid.appendChild(term);
+                grid.appendChild(detail);
+            });
+            card.appendChild(grid);
+
+            return card;
+        }
+
+        function generateSchemaDocumentation(schema) {
+            const lines = ['# Parquet Schema', ''];
+            lines.push('Columns: ' + formatCount(schema.columnCount || 0));
+            lines.push('');
+            lines.push('| Path | Physical Type | Logical Type | Nullable | Repetition Level | Definition Level | Decimal | Timestamp |');
+            lines.push('| --- | --- | --- | --- | ---: | ---: | --- | --- |');
+
+            (schema.columns || []).forEach((column) => {
+                const decimal = column.decimalPrecision !== null && column.decimalPrecision !== undefined
+                    ? 'precision ' + column.decimalPrecision + ', scale ' + valueOrDash(column.decimalScale)
+                    : '-';
+                const timestamp = column.timestampUnit
+                    ? column.timestampUnit + ' / ' + valueOrDash(column.timestampTimezoneInterpretation)
+                    : '-';
+                lines.push([
+                    valueOrDash(column.path),
+                    valueOrDash(column.physicalType),
+                    valueOrDash(column.logicalType),
+                    valueOrDash(column.nullableStatus),
+                    valueOrDash(column.repetitionLevel),
+                    valueOrDash(column.definitionLevel),
+                    decimal,
+                    timestamp
+                ].map(escapeMarkdownTableCell).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+            });
+
+            return lines.join('\\n');
+        }
+
+        function escapeMarkdownTableCell(value) {
+            return String(value).replace(/\\|/g, '\\\\|').replace(/\\r?\\n/g, ' ');
         }
 
         function createTable(columns, data) {
@@ -272,9 +566,27 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         document.addEventListener('DOMContentLoaded', () => {
             
             const refreshBtn = document.getElementById('refresh-btn');
+            const dataTab = document.getElementById('data-tab');
+            const schemaTab = document.getElementById('schema-tab');
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
             const queryInput = document.getElementById('query-input');
+            const schemaSearchInput = document.getElementById('schema-search-input');
+            const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
+            const generateSchemaDocsBtn = document.getElementById('generate-schema-docs-btn');
+            const copySchemaDocsBtn = document.getElementById('copy-schema-docs-btn');
+
+            if (dataTab) {
+                dataTab.addEventListener('click', () => {
+                    setActiveView('data');
+                });
+            }
+
+            if (schemaTab) {
+                schemaTab.addEventListener('click', () => {
+                    setActiveView('schema');
+                });
+            }
             
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
@@ -312,6 +624,44 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                         currentQuery = queryInput.value.trim() || DEFAULT_QUERY;
                         setLoading('Running query...');
                         vscode.postMessage({ type: 'query', query: currentQuery });
+                    }
+                });
+            }
+
+            if (schemaSearchInput) {
+                schemaSearchInput.addEventListener('input', () => {
+                    if (currentSchema) {
+                        renderSchemaColumns(currentSchema.columns || [], schemaSearchInput.value);
+                    }
+                });
+            }
+
+            if (copySchemaJsonBtn) {
+                copySchemaJsonBtn.addEventListener('click', () => {
+                    if (currentSchema) {
+                        writeTextToClipboard(JSON.stringify(currentSchema, null, 2), 'Schema JSON copied');
+                    }
+                });
+            }
+
+            if (generateSchemaDocsBtn) {
+                generateSchemaDocsBtn.addEventListener('click', () => {
+                    if (!currentSchema) {
+                        return;
+                    }
+
+                    currentSchemaDocs = generateSchemaDocumentation(currentSchema);
+                    const docsPanel = document.getElementById('schema-docs-panel');
+                    const docsOutput = document.getElementById('schema-docs-output');
+                    docsOutput.value = currentSchemaDocs;
+                    docsPanel.classList.remove('hidden');
+                });
+            }
+
+            if (copySchemaDocsBtn) {
+                copySchemaDocsBtn.addEventListener('click', () => {
+                    if (currentSchemaDocs) {
+                        writeTextToClipboard(currentSchemaDocs, 'Schema documentation copied');
                     }
                 });
             }
@@ -366,6 +716,20 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .btn-secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
         .status { font-size: 12px; padding: 4px 8px; border-radius: 3px; }
+        .view-tabs {
+            display: flex; gap: 4px; margin-bottom: 14px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .tab-btn {
+            background: transparent; color: var(--vscode-descriptionForeground);
+            border: none; border-bottom: 2px solid transparent;
+            padding: 8px 12px; cursor: pointer;
+        }
+        .tab-btn.active {
+            color: var(--vscode-foreground);
+            border-bottom-color: var(--vscode-focusBorder);
+        }
+        .view-panel { width: 100%; }
         .status-loading { 
             background-color: var(--vscode-inputValidation-warningBackground); 
             color: var(--vscode-inputValidation-warningForeground); 
@@ -468,6 +832,118 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .empty-value {
             text-align: center; padding: 20px; color: var(--vscode-descriptionForeground);
+        }
+        .schema-container { display: flex; flex-direction: column; gap: 14px; }
+        .schema-toolbar {
+            display: flex; justify-content: space-between; align-items: flex-end;
+            gap: 12px; flex-wrap: wrap;
+        }
+        .schema-search {
+            display: flex; flex-direction: column; gap: 6px; min-width: 260px; flex: 1;
+        }
+        .schema-search label {
+            font-size: 12px; font-weight: 600; color: var(--vscode-descriptionForeground);
+            text-transform: uppercase;
+        }
+        #schema-search-input {
+            width: 100%; padding: 8px 10px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+        #schema-search-input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
+        .schema-actions, .schema-docs-toolbar {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .schema-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .schema-layout {
+            display: grid; grid-template-columns: minmax(260px, 34%) minmax(360px, 1fr);
+            gap: 14px; align-items: start;
+        }
+        .schema-tree-panel, .schema-column-panel, .schema-docs-panel {
+            border: 1px solid var(--vscode-panel-border); border-radius: 3px;
+            background-color: var(--vscode-sideBar-background);
+        }
+        .schema-tree-panel h2, .schema-column-panel h2, .schema-docs-toolbar h2 {
+            font-size: 13px; font-weight: 600; padding: 10px 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        #schema-tree {
+            max-height: 58vh; overflow: auto; padding: 8px;
+        }
+        .schema-tree-list {
+            list-style: none; margin: 0; padding: 0;
+        }
+        .schema-tree-row {
+            display: flex; align-items: center; gap: 6px; min-height: 28px;
+            border-radius: 3px; padding: 3px 4px;
+        }
+        .schema-tree-row:hover { background-color: var(--vscode-list-hoverBackground); }
+        .schema-tree-name {
+            font-family: var(--vscode-editor-font-family); font-weight: 600;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .schema-chip {
+            font-size: 11px; padding: 2px 6px; border-radius: 999px;
+            border: 1px solid var(--vscode-panel-border);
+            color: var(--vscode-textPreformat-foreground);
+            white-space: nowrap;
+        }
+        .schema-chip-muted { color: var(--vscode-descriptionForeground); }
+        #schema-column-list {
+            display: flex; flex-direction: column; gap: 10px;
+            max-height: 58vh; overflow: auto; padding: 10px;
+        }
+        .schema-column-card {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-editor-background);
+            padding: 10px;
+        }
+        .schema-column-header {
+            display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px;
+        }
+        .schema-column-title {
+            font-weight: 600; color: var(--vscode-foreground);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .schema-column-header code {
+            color: var(--vscode-descriptionForeground);
+            font-family: var(--vscode-editor-font-family);
+            word-break: break-all;
+        }
+        .schema-field-grid {
+            display: grid; grid-template-columns: minmax(130px, 0.45fr) minmax(160px, 1fr);
+            gap: 6px 10px; margin: 0;
+        }
+        .schema-field-grid dt {
+            color: var(--vscode-descriptionForeground);
+        }
+        .schema-field-grid dd {
+            margin: 0; font-family: var(--vscode-editor-font-family);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .schema-docs-panel { margin-top: 2px; }
+        .schema-docs-toolbar {
+            justify-content: space-between; border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .schema-docs-toolbar h2 { border-bottom: none; }
+        #schema-docs-output {
+            width: 100%; min-height: 220px; resize: vertical; padding: 10px;
+            border: none; background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-editor-font-family); line-height: 1.45;
+        }
+        @media (max-width: 820px) {
+            .schema-layout { grid-template-columns: 1fr; }
+            .schema-toolbar { align-items: stretch; }
+            .schema-actions { width: 100%; }
         }
         .icon { font-size: 14px; }
         `;
