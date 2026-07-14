@@ -26,6 +26,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         <body>
             <div class="container">
                 ${this.generateHeader()}
+                ${this.generateQueryContainer()}
                 ${this.generateErrorContainer()}
                 ${this.generateLoadingContainer()}
                 ${this.generateDataContainer()}
@@ -55,6 +56,24 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </header>`;
     }
 
+    private generateQueryContainer(): string {
+        return `
+        <section class="query-container">
+            <div class="query-toolbar">
+                <label for="query-input">SQL Query</label>
+                <div class="query-actions">
+                    <button id="run-query-btn" class="btn">Run Query</button>
+                    <button id="reset-query-btn" class="btn btn-secondary">Reset</button>
+                </div>
+            </div>
+            <textarea id="query-input" spellcheck="false">SELECT * FROM parquet_data</textarea>
+            <div class="query-meta">
+                Table: <code>parquet_data</code>
+                <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
+            </div>
+        </section>`;
+    }
+
     private generateErrorContainer(): string {
         return `
         <div id="error-container" class="error-container hidden">
@@ -77,7 +96,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         return `
         <div id="data-container" class="data-container hidden">
             <div class="summary">
-                <div class="summary-item">Total Rows: <span id="total-rows">0</span></div>
+                <div class="summary-item">Result Rows: <span id="total-rows">0</span></div>
                 <div class="summary-item">Showing: <span id="showing-rows">0</span> rows</div>
                 <div class="summary-item">Columns: <span id="column-count">0</span></div>
             </div>
@@ -94,10 +113,38 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
     private getJavaScriptContent(): string {
         return `
         const vscode = acquireVsCodeApi();
+        const DEFAULT_QUERY = 'SELECT * FROM parquet_data';
+        let currentQuery = DEFAULT_QUERY;
 
         function initialize(data) {
             console.log('Webview initialized with data:', data);
+            const queryInput = document.getElementById('query-input');
+            currentQuery = data.query || DEFAULT_QUERY;
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
             updateView(data);
+        }
+
+        function formatCount(value) {
+            if (typeof value === 'number') {
+                return value.toLocaleString();
+            }
+
+            return '0';
+        }
+
+        function setLoading(message) {
+            const statusElement = document.getElementById('status');
+            const loadingContainer = document.getElementById('loading-container');
+            const dataContainer = document.getElementById('data-container');
+            const errorContainer = document.getElementById('error-container');
+            
+            statusElement.textContent = message;
+            statusElement.className = 'status status-loading';
+            loadingContainer.classList.remove('hidden');
+            dataContainer.classList.add('hidden');
+            errorContainer.classList.add('hidden');
         }
 
         function updateView(data) {
@@ -106,6 +153,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const errorText = document.getElementById('error-text');
             const dataContainer = document.getElementById('data-container');
             const loadingContainer = document.getElementById('loading-container');
+            const queryLimitMessage = document.getElementById('query-limit-message');
 
             // Hide loading container
             loadingContainer.classList.add('hidden');
@@ -114,6 +162,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             errorContainer.classList.add('hidden');
             dataContainer.classList.add('hidden');
             statusElement.classList.remove('status-success', 'status-error', 'status-loading');
+            queryLimitMessage.classList.add('hidden');
 
             if (!data.success) {
                 errorText.textContent = data.error || 'Unknown error occurred';
@@ -124,22 +173,35 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             
             // Update summary information
-            document.getElementById('total-rows').textContent = data.totalRows?.toLocaleString() || '0';
-            document.getElementById('showing-rows').textContent = data.rowCount?.toLocaleString() || '0';
+            document.getElementById('total-rows').textContent = formatCount(data.totalRows);
+            document.getElementById('showing-rows').textContent = formatCount(data.rowCount);
             document.getElementById('column-count').textContent = data.columns ? data.columns.length : 0;
+            if (data.query) {
+                currentQuery = data.query;
+                const queryInput = document.getElementById('query-input');
+                if (queryInput) {
+                    queryInput.value = data.query;
+                }
+            }
+
+            if (data.resultLimited) {
+                queryLimitMessage.classList.remove('hidden');
+            }
             
             // Create table
-            if (data.data && data.data.length > 0) {
-                createTable(data.columns, data.data);
+            if (data.columns) {
+                createTable(data.columns, data.data || []);
                 dataContainer.classList.remove('hidden');
-                statusElement.textContent = \`Loaded \${data.rowCount} rows\`;
+                statusElement.textContent = 'Loaded ' + formatCount(data.rowCount) + ' rows';
+                if (data.resultLimited) {
+                    statusElement.textContent += ' (limited)';
+                }
                 statusElement.classList.add('status-success');
             } else {
                 const tableBody = document.getElementById('table-body');
-                const colCount = data.columns ? data.columns.length : 1;
-                tableBody.innerHTML = '<tr><td colspan="' + colCount + '" style="text-align: center; padding: 20px;">No data found in file</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="1" style="text-align: center; padding: 20px;">No data found in file</td></tr>';
                 dataContainer.classList.remove('hidden');
-                statusElement.textContent = 'File is empty';
+                statusElement.textContent = 'No rows';
                 statusElement.classList.add('status-success');
             }
         }
@@ -167,6 +229,17 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 headerRow.appendChild(th);
             });
             tableHeader.appendChild(headerRow);
+
+            if (data.length === 0) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = Math.max(columns.length, 1);
+                td.textContent = 'No rows matched this query';
+                td.className = 'empty-value';
+                tr.appendChild(td);
+                tableBody.appendChild(tr);
+                return;
+            }
             
             // Create data rows
             data.forEach((row, rowIndex) => {
@@ -199,25 +272,48 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         document.addEventListener('DOMContentLoaded', () => {
             
             const refreshBtn = document.getElementById('refresh-btn');
+            const runQueryBtn = document.getElementById('run-query-btn');
+            const resetQueryBtn = document.getElementById('reset-query-btn');
+            const queryInput = document.getElementById('query-input');
             
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
-                    const statusElement = document.getElementById('status');
-                    const loadingContainer = document.getElementById('loading-container');
-                    const dataContainer = document.getElementById('data-container');
-                    const errorContainer = document.getElementById('error-container');
-                    
-                    // Show loading state
-                    statusElement.textContent = 'Refreshing...';
-                    statusElement.className = 'status status-loading';
-                    loadingContainer.classList.remove('hidden');
-                    dataContainer.classList.add('hidden');
-                    errorContainer.classList.add('hidden');
-                    
-                    vscode.postMessage({ type: 'refresh' });
+                    currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : currentQuery;
+                    setLoading('Refreshing...');
+                    vscode.postMessage({ type: 'refresh', query: currentQuery });
                 });
             } else {
                 console.log('Refresh button not found!');
+            }
+
+            if (runQueryBtn) {
+                runQueryBtn.addEventListener('click', () => {
+                    currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : DEFAULT_QUERY;
+                    setLoading('Running query...');
+                    vscode.postMessage({ type: 'query', query: currentQuery });
+                });
+            }
+
+            if (resetQueryBtn) {
+                resetQueryBtn.addEventListener('click', () => {
+                    currentQuery = DEFAULT_QUERY;
+                    if (queryInput) {
+                        queryInput.value = currentQuery;
+                    }
+                    setLoading('Resetting query...');
+                    vscode.postMessage({ type: 'query', query: currentQuery });
+                });
+            }
+
+            if (queryInput) {
+                queryInput.addEventListener('keydown', (event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                        event.preventDefault();
+                        currentQuery = queryInput.value.trim() || DEFAULT_QUERY;
+                        setLoading('Running query...');
+                        vscode.postMessage({ type: 'query', query: currentQuery });
+                    }
+                });
             }
         });
 
@@ -264,6 +360,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             display: flex; align-items: center; gap: 5px; 
         }
         .btn:hover { background-color: var(--vscode-button-hoverBackground); }
+        .btn-secondary {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        .btn-secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
         .status { font-size: 12px; padding: 4px 8px; border-radius: 3px; }
         .status-loading { 
             background-color: var(--vscode-inputValidation-warningBackground); 
@@ -298,6 +399,40 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         .error-message h3 {
             color: var(--vscode-inputValidation-errorForeground); margin-bottom: 5px;
         }
+        .query-container {
+            display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .query-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+        }
+        .query-toolbar label {
+            font-size: 12px; font-weight: 600; color: var(--vscode-descriptionForeground);
+            text-transform: uppercase;
+        }
+        .query-actions { display: flex; align-items: center; gap: 8px; }
+        #query-input {
+            width: 100%; min-height: 96px; resize: vertical; padding: 10px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: var(--vscode-editor-font-size);
+            line-height: 1.45; border-radius: 3px;
+        }
+        #query-input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
+        .query-meta {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            font-size: 12px; color: var(--vscode-descriptionForeground);
+        }
+        .query-meta code {
+            font-family: var(--vscode-editor-font-family);
+            color: var(--vscode-textPreformat-foreground);
+        }
         .data-container { display: flex; flex-direction: column; gap: 15px; }
         .summary {
             display: flex; gap: 20px; padding: 15px;
@@ -330,6 +465,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-textPreformat-foreground);
             font-family: var(--vscode-editor-font-family); font-size: 11px;
             white-space: pre-wrap; max-height: 100px; overflow-y: auto;
+        }
+        .empty-value {
+            text-align: center; padding: 20px; color: var(--vscode-descriptionForeground);
         }
         .icon { font-size: 14px; }
         `;

@@ -103,7 +103,10 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
             switch (message.type) {
                 case 'refresh':
-                    await this.refreshWebviewContent(webviewPanel, document.uri); // ✅ Use document parameter
+                    await this.refreshWebviewContent(webviewPanel, document.uri, message.query);
+                    break;
+                case 'query':
+                    await this.queryWebviewContent(webviewPanel, document.uri, message.query);
                     break;
             }
         });
@@ -133,8 +136,22 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
      * @param uri The uri of the parquet file to refresh the content with.
      * @returns A promise that resolves when the webview content is refreshed.
      */
-    private async refreshWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
-        await this.updateWebviewContent(webviewPanel, uri);
+    private async refreshWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: unknown): Promise<void> {
+        const sqlQuery = typeof query === 'string' ? query : undefined;
+        await this.updateWebviewContent(webviewPanel, uri, sqlQuery);
+    }
+
+    /**
+     * Runs a SQL-like query against the parquet data and updates the existing webview.
+     *
+     * @param webviewPanel The webview panel to update.
+     * @param uri The parquet file URI to query.
+     * @param query The SQL query received from the webview.
+     */
+    private async queryWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: unknown): Promise<void> {
+        const sqlQuery = typeof query === 'string' ? query : undefined;
+        const parquetData = await this.parquetReader.readParquetFile(uri, sqlQuery);
+        await webviewPanel.webview.postMessage({ type: 'data', data: parquetData });
     }
 
         /**
@@ -148,8 +165,8 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
          * @param uri The uri of the parquet file to update the content with.
          * @returns A promise that resolves when the webview content is updated.
          */
-    private async updateWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
-        const parquetData = await this.parquetReader.readParquetFile(uri);
+    private async updateWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: string): Promise<void> {
+        const parquetData = await this.parquetReader.readParquetFile(uri, query);
         webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, parquetData);
     }
 }

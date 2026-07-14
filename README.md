@@ -6,6 +6,7 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 
 - **View Parquet Files** - Open and explore Parquet files with a custom viewer
 - **Data Visualization** - Browse your data in a clean, organized interface
+- **SQL Querying** - Run SQL-like `SELECT` queries against the open file
 - **Fast & Efficient** - Powered by DuckDB for quick data processing
 - **Easy Refresh** - Reload data with a single click
 
@@ -19,6 +20,19 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 ### Opening Parquet Files
 
 Simply click on any `.parquet` file in your workspace, and it will open in the Parquet Viewer.
+
+### Querying Data
+
+Use the SQL query box in the viewer to query the open file as the `parquet_data` table.
+
+Example:
+
+```sql
+SELECT *
+FROM parquet_data
+WHERE status = 'active'
+LIMIT 100;
+```
 
 ### Commands
 

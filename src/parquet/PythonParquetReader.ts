@@ -24,7 +24,7 @@ export class PythonParquetReader implements IParquetReader {
      * @param uri The URI of the parquet file to read.
      * @returns A promise that resolves to a ParquetDataResult.
      */
-    async readParquetFile(uri: vscode.Uri): Promise<ParquetDataResult> {
+    async readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult> {
         const pythonPath = this.pythonManager.getPythonPath();
 
         // Handle the null case
@@ -45,7 +45,7 @@ export class PythonParquetReader implements IParquetReader {
                 return;
             }
 
-            this.executePythonScript(pythonScriptPath, uri.fsPath, pythonPath, resolve);
+            this.executePythonScript(pythonScriptPath, uri.fsPath, pythonPath, resolve, query);
         });
     }
 
@@ -84,8 +84,17 @@ export class PythonParquetReader implements IParquetReader {
      * @param resolve The callback function to call with the result of the
      *            Python script execution.
      */
-    private executePythonScript(scriptPath: string, filePath: string, pythonPath: string, resolve: (result: ParquetDataResult) => void): void {
-        const pythonProcess = spawn(pythonPath, [scriptPath, filePath]);
+    private executePythonScript(
+        scriptPath: string,
+        filePath: string,
+        pythonPath: string,
+        resolve: (result: ParquetDataResult) => void,
+        query?: string
+    ): void {
+        const args = query && query.trim()
+            ? [scriptPath, filePath, query]
+            : [scriptPath, filePath];
+        const pythonProcess = spawn(pythonPath, args);
         let stdout = '';
         let stderr = '';
 
