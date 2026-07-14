@@ -6,6 +6,9 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 
 - **View Parquet Files** - Open and explore Parquet files with a custom viewer
 - **Data Visualization** - Browse your data in a clean, organized interface
+- **SQL Querying** - Run SQL-like `SELECT` queries against the open file
+- **Export Data** - Export the current result set to CSV, JSON, or SQLite
+- **Schema Explorer** - Inspect physical types, logical types, nullability, levels, decimals, timestamps, and nested structure
 - **Fast & Efficient** - Powered by DuckDB for quick data processing
 - **Easy Refresh** - Reload data with a single click
 
@@ -20,6 +23,48 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 
 Simply click on any `.parquet` file in your workspace, and it will open in the Parquet Viewer.
 
+### Querying Data
+
+Use the SQL query box in the viewer to query the open file as the `parquet_data` table.
+
+Only read-only `SELECT` and `WITH` queries are supported.
+
+Example:
+
+```sql
+SELECT *
+FROM parquet_data
+WHERE status = 'active'
+LIMIT 100;
+```
+
+### Exporting Data
+
+Use the export buttons in the query panel to save the current query result as:
+
+- CSV
+- JSON
+- SQLite database
+
+Exports use the current SQL query, so you can filter or select columns before saving.
+
+### Exploring Schema
+
+Open the **Schema** tab in the viewer to inspect the Parquet schema. The schema panel includes:
+
+- Searchable column list
+- Nested parent-child structure
+- Column name and full path
+- Physical Parquet type and logical type
+- Nullable, required, or repeated status
+- Repetition and definition levels
+- Decimal precision and scale
+- Timestamp unit and timezone interpretation
+- Copy schema as JSON
+- Generate schema documentation
+
+Logical types are shown because Parquet physical types do not always describe the actual data meaning. For example, strings may be stored physically as `BYTE_ARRAY` with a logical string annotation.
+
 ### Commands
 
 Access these commands via the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`):
@@ -29,10 +74,10 @@ Access these commands via the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`):
 
 ## How It Works
 
-1. **Native Performance**: Uses DuckDB compiled to WebAssembly for fast data processing
-2. **No Setup Required**: Everything works immediately after installation
-3. **File Processing**: Uses DuckDB to efficiently read and process Parquet files directly in the browser
-4. **Isolated Environment**: Runs securely within VS Code's extension host
+1. **Local Processing**: Uses a local isolated Python environment with DuckDB
+2. **File Processing**: Reads Parquet data and schema metadata locally
+3. **Query Execution**: Runs read-only SQL queries against the open file through DuckDB
+4. **Schema Metadata**: Uses Parquet schema metadata to show physical types, logical annotations, nesting, and levels
 
 ## Troubleshooting
 

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
-import { IParquetReader, ParquetDataResult } from '../interfaces/IParquetReader';
+import { IParquetReader, ParquetDataResult, ParquetExportFormat, ParquetExportResult } from '../interfaces/IParquetReader';
 
 export class PythonParquetReader implements IParquetReader {
     constructor(
@@ -24,7 +24,7 @@ export class PythonParquetReader implements IParquetReader {
      * @param uri The URI of the parquet file to read.
      * @returns A promise that resolves to a ParquetDataResult.
      */
-    async readParquetFile(uri: vscode.Uri): Promise<ParquetDataResult> {
+    async readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult> {
         const pythonPath = this.pythonManager.getPythonPath();
 
         // Handle the null case
@@ -45,7 +45,42 @@ export class PythonParquetReader implements IParquetReader {
                 return;
             }
 
-            this.executePythonScript(pythonScriptPath, uri.fsPath, pythonPath, resolve);
+            this.executePythonScript(pythonScriptPath, uri.fsPath, pythonPath, resolve, query);
+        });
+    }
+
+    async exportParquetFile(
+        uri: vscode.Uri,
+        format: ParquetExportFormat,
+        outputUri: vscode.Uri,
+        query?: string
+    ): Promise<ParquetExportResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            const args = [
+                pythonScriptPath,
+                uri.fsPath,
+                query && query.trim() ? query : '',
+                '--export',
+                format,
+                outputUri.fsPath
+            ];
+            this.executePythonScriptWithArgs(args, pythonPath, resolve, 120000);
         });
     }
 
@@ -84,8 +119,26 @@ export class PythonParquetReader implements IParquetReader {
      * @param resolve The callback function to call with the result of the
      *            Python script execution.
      */
-    private executePythonScript(scriptPath: string, filePath: string, pythonPath: string, resolve: (result: ParquetDataResult) => void): void {
-        const pythonProcess = spawn(pythonPath, [scriptPath, filePath]);
+    private executePythonScript(
+        scriptPath: string,
+        filePath: string,
+        pythonPath: string,
+        resolve: (result: ParquetDataResult) => void,
+        query?: string
+    ): void {
+        const args = query && query.trim()
+            ? [scriptPath, filePath, query]
+            : [scriptPath, filePath];
+        this.executePythonScriptWithArgs(args, pythonPath, resolve, 30000);
+    }
+
+    private executePythonScriptWithArgs(
+        args: string[],
+        pythonPath: string,
+        resolve: (result: ParquetDataResult | ParquetExportResult) => void,
+        timeoutMs: number
+    ): void {
+        const pythonProcess = spawn(pythonPath, args);
         let stdout = '';
         let stderr = '';
 
@@ -107,7 +160,7 @@ export class PythonParquetReader implements IParquetReader {
             resolve({ success: false, error: `Failed to execute Python script: ${error.message}` });
         });
 
-        this.setTimeoutHandler(pythonProcess, resolve);
+        this.setTimeoutHandler(pythonProcess, resolve, timeoutMs);
     }
 
     /**
@@ -129,7 +182,7 @@ export class PythonParquetReader implements IParquetReader {
         signal: NodeJS.Signals | null, 
         stdout: string, 
         stderr: string, 
-        resolve: (result: ParquetDataResult) => void
+        resolve: (result: ParquetDataResult | ParquetExportResult) => void
     ): void {
         console.log(`[PythonParquetReader] Python process exited with code: ${code}, signal: ${signal}`);
         
@@ -158,11 +211,15 @@ export class PythonParquetReader implements IParquetReader {
      * @param resolve The callback function to call with the result of the
      *            process execution.
      */
-    private setTimeoutHandler(process: any, resolve: (result: ParquetDataResult) => void): void {
+    private setTimeoutHandler(
+        process: any,
+        resolve: (result: ParquetDataResult | ParquetExportResult) => void,
+        timeoutMs: number
+    ): void {
         setTimeout(() => {
             process.kill();
-            console.log('[PythonParquetReader] Python process timed out after 30 seconds');
-            resolve({ success: false, error: 'Operation timed out after 30 seconds' });
-        }, 30000);
+            console.log(`[PythonParquetReader] Python process timed out after ${timeoutMs}ms`);
+            resolve({ success: false, error: `Operation timed out after ${timeoutMs / 1000} seconds` });
+        }, timeoutMs);
     }
 }
