@@ -76,6 +76,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="query-actions">
                     <button id="run-query-btn" class="btn">Run Query</button>
                     <button id="reset-query-btn" class="btn btn-secondary">Reset</button>
+                    <button id="export-csv-btn" class="btn btn-secondary">Export CSV</button>
+                    <button id="export-json-btn" class="btn btn-secondary">Export JSON</button>
+                    <button id="export-sqlite-btn" class="btn btn-secondary">Export SQLite</button>
                 </div>
             </div>
             <textarea id="query-input" spellcheck="false">SELECT * FROM parquet_data</textarea>
@@ -251,6 +254,35 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             loadingContainer.classList.remove('hidden');
             dataContainer.classList.add('hidden');
             errorContainer.classList.add('hidden');
+        }
+
+        function setStatus(message, statusClass) {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + statusClass;
+        }
+
+        function exportCurrentQuery(format) {
+            const queryInput = document.getElementById('query-input');
+            currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : DEFAULT_QUERY;
+            setStatus('Exporting ' + format.toUpperCase() + '...', 'status-loading');
+            vscode.postMessage({ type: 'export', format, query: currentQuery });
+        }
+
+        function handleExportResult(result) {
+            if (!result || !result.success) {
+                if (result && result.error === 'Export cancelled.') {
+                    setStatus('Export cancelled', 'status-success');
+                } else {
+                    setStatus(result && result.error ? result.error : 'Export failed', 'status-error');
+                }
+                return;
+            }
+
+            setStatus(
+                'Exported ' + formatCount(result.rowsExported) + ' rows to ' + result.format.toUpperCase(),
+                'status-success'
+            );
         }
 
         function updateView(data) {
@@ -570,6 +602,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const schemaTab = document.getElementById('schema-tab');
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
+            const exportCsvBtn = document.getElementById('export-csv-btn');
+            const exportJsonBtn = document.getElementById('export-json-btn');
+            const exportSqliteBtn = document.getElementById('export-sqlite-btn');
             const queryInput = document.getElementById('query-input');
             const schemaSearchInput = document.getElementById('schema-search-input');
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
@@ -628,6 +663,24 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (exportCsvBtn) {
+                exportCsvBtn.addEventListener('click', () => {
+                    exportCurrentQuery('csv');
+                });
+            }
+
+            if (exportJsonBtn) {
+                exportJsonBtn.addEventListener('click', () => {
+                    exportCurrentQuery('json');
+                });
+            }
+
+            if (exportSqliteBtn) {
+                exportSqliteBtn.addEventListener('click', () => {
+                    exportCurrentQuery('sqlite');
+                });
+            }
+
             if (schemaSearchInput) {
                 schemaSearchInput.addEventListener('input', () => {
                     if (currentSchema) {
@@ -673,6 +726,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             switch (message.type) {
                 case 'data':
                     updateView(message.data);
+                    break;
+                case 'exportResult':
+                    handleExportResult(message.result);
                     break;
                 default:
                     console.log('Unknown message type:', message.type);
@@ -775,7 +831,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             font-size: 12px; font-weight: 600; color: var(--vscode-descriptionForeground);
             text-transform: uppercase;
         }
-        .query-actions { display: flex; align-items: center; gap: 8px; }
+        .query-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
         #query-input {
             width: 100%; min-height: 96px; resize: vertical; padding: 10px;
             border: 1px solid var(--vscode-input-border);

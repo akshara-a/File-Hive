@@ -2,7 +2,15 @@ import * as vscode from 'vscode';
 
 export interface IParquetReader {
     readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult>;
+    exportParquetFile(
+        uri: vscode.Uri,
+        format: ParquetExportFormat,
+        outputUri: vscode.Uri,
+        query?: string
+    ): Promise<ParquetExportResult>;
 }
+
+export type ParquetExportFormat = 'csv' | 'json' | 'sqlite';
 
 export interface ParquetDataResult {
     success: boolean;
@@ -13,6 +21,16 @@ export interface ParquetDataResult {
     query?: string;
     resultLimited?: boolean;
     schema?: ParquetSchemaResult;
+    error?: string;
+    traceback?: string;
+}
+
+export interface ParquetExportResult {
+    success: boolean;
+    format?: ParquetExportFormat;
+    outputPath?: string;
+    rowsExported?: number;
+    query?: string;
     error?: string;
     traceback?: string;
 }

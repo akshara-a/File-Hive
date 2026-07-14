@@ -1,5 +1,7 @@
 import duckdb
+import csv
 import json
+import sqlite3
 import sys
 import os
 
@@ -49,6 +51,106 @@ def convert_rows_to_json(columns, result):
                 row_dict[col_name] = str(value)
         data.append(row_dict)
     return data
+
+def make_unique_column_names(columns):
+    seen = {}
+    unique_columns = []
+
+    for column in columns:
+        base_name = str(column) if column else "column"
+        count = seen.get(base_name, 0)
+        seen[base_name] = count + 1
+        unique_columns.append(base_name if count == 0 else f"{base_name}_{count + 1}")
+
+    return unique_columns
+
+def serialize_export_value(value):
+    if value is None or isinstance(value, (int, float, bool, str)):
+        return value
+
+    return str(value)
+
+def sqlite_identifier(value):
+    return '"' + str(value).replace('"', '""') + '"'
+
+def export_csv(cursor, columns, output_path):
+    row_count = 0
+    with open(output_path, "w", newline="", encoding="utf-8") as output_file:
+        writer = csv.writer(output_file)
+        writer.writerow(columns)
+
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+
+            for row in rows:
+                writer.writerow([serialize_export_value(value) for value in row])
+                row_count += 1
+
+    return row_count
+
+def export_json(cursor, columns, output_path):
+    row_count = 0
+    first_row = True
+
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        output_file.write("[\n")
+
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+
+            for row in rows:
+                if not first_row:
+                    output_file.write(",\n")
+
+                row_dict = {
+                    column: serialize_export_value(value)
+                    for column, value in zip(columns, row)
+                }
+                output_file.write(json.dumps(row_dict, ensure_ascii=False))
+                first_row = False
+                row_count += 1
+
+        output_file.write("\n]\n")
+
+    return row_count
+
+def export_sqlite(cursor, columns, output_path):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    unique_columns = make_unique_column_names(columns)
+    row_count = 0
+    sqlite_conn = sqlite3.connect(output_path)
+
+    try:
+        column_sql = ", ".join(f"{sqlite_identifier(column)}" for column in unique_columns)
+        placeholders = ", ".join("?" for _ in unique_columns)
+        sqlite_conn.execute(f"CREATE TABLE {sqlite_identifier(TABLE_NAME)} ({column_sql})")
+
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+
+            serialized_rows = [
+                [serialize_export_value(value) for value in row]
+                for row in rows
+            ]
+            sqlite_conn.executemany(
+                f"INSERT INTO {sqlite_identifier(TABLE_NAME)} VALUES ({placeholders})",
+                serialized_rows
+            )
+            row_count += len(serialized_rows)
+
+        sqlite_conn.commit()
+    finally:
+        sqlite_conn.close()
+
+    return row_count
 
 def safe_int(value):
     if value is None:
@@ -293,15 +395,93 @@ def read_parquet_file(file_path, user_query=None):
             }
         }
 
+def export_parquet_file(file_path, output_path, export_format, user_query=None):
+    print(f"DEBUG: Starting export for parquet file: {file_path}", file=sys.stderr)
+    print(f"DEBUG: Export format: {export_format}", file=sys.stderr)
+    print(f"DEBUG: Export output: {output_path}", file=sys.stderr)
+
+    if export_format not in ("csv", "json", "sqlite"):
+        return {
+            "success": False,
+            "error": f"Unsupported export format: {export_format}"
+        }
+
+    if not os.path.exists(file_path):
+        return {
+            "success": False,
+            "error": f"File does not exist: {file_path}"
+        }
+
+    conn = None
+
+    try:
+        conn = duckdb.connect()
+        create_parquet_view(conn, file_path)
+        query = normalize_query(user_query)
+        cursor = conn.execute(query)
+        columns = [desc[0] for desc in conn.description]
+
+        if export_format == "csv":
+            rows_exported = export_csv(cursor, columns, output_path)
+        elif export_format == "json":
+            rows_exported = export_json(cursor, make_unique_column_names(columns), output_path)
+        else:
+            rows_exported = export_sqlite(cursor, columns, output_path)
+
+        conn.close()
+        conn = None
+
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        print(f"DEBUG: Error exporting parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+
+        return {
+            "success": False,
+            "format": export_format,
+            "outputPath": output_path,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "query": user_query
+        }
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
+    if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query]'
+            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>]'
         }))
         sys.exit(1)
     
     file_path = sys.argv[1]
-    user_query = sys.argv[2] if len(sys.argv) == 3 else None
-    result = read_parquet_file(file_path, user_query)
+    args = sys.argv[2:]
+
+    if "--export" in args:
+        export_index = args.index("--export")
+        user_query = args[0] if export_index > 0 and args[0].strip() else None
+
+        if len(args) < export_index + 3:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> [query] --export csv|json|sqlite <output_path>'
+            }
+        else:
+            export_format = args[export_index + 1]
+            output_path = args[export_index + 2]
+            result = export_parquet_file(file_path, output_path, export_format, user_query)
+    else:
+        user_query = args[0] if len(args) == 1 else None
+        result = read_parquet_file(file_path, user_query)
+
     print(json.dumps(result))

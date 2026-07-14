@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { IParquetReader } from './interfaces/IParquetReader';
 import { IWebviewRenderer } from './interfaces/IWebviewRenderer';
 
@@ -108,6 +109,9 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                 case 'query':
                     await this.queryWebviewContent(webviewPanel, document.uri, message.query);
                     break;
+                case 'export':
+                    await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query);
+                    break;
             }
         });
     }
@@ -152,6 +156,75 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         const sqlQuery = typeof query === 'string' ? query : undefined;
         const parquetData = await this.parquetReader.readParquetFile(uri, sqlQuery);
         await webviewPanel.webview.postMessage({ type: 'data', data: parquetData });
+    }
+
+    /**
+     * Exports the current parquet query result to a user-selected file.
+     *
+     * @param webviewPanel The webview panel requesting the export.
+     * @param uri The parquet file URI to export from.
+     * @param format The requested export format.
+     * @param query The SQL query received from the webview.
+     */
+    private async exportWebviewContent(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        format?: unknown,
+        query?: unknown
+    ): Promise<void> {
+        if (format !== 'csv' && format !== 'json' && format !== 'sqlite') {
+            await webviewPanel.webview.postMessage({
+                type: 'exportResult',
+                result: { success: false, error: 'Unsupported export format.' }
+            });
+            return;
+        }
+
+        const defaultUri = this.getDefaultExportUri(uri, format);
+        const outputUri = await vscode.window.showSaveDialog({
+            defaultUri,
+            filters: this.getExportFilters(format),
+            saveLabel: `Export ${format.toUpperCase()}`
+        });
+
+        if (!outputUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'exportResult',
+                result: { success: false, error: 'Export cancelled.' }
+            });
+            return;
+        }
+
+        const sqlQuery = typeof query === 'string' ? query : undefined;
+        const result = await this.parquetReader.exportParquetFile(uri, format, outputUri, sqlQuery);
+
+        if (result.success) {
+            vscode.window.showInformationMessage(
+                `Exported ${result.rowsExported ?? 0} rows to ${outputUri.fsPath}`
+            );
+        } else {
+            vscode.window.showErrorMessage(result.error || 'Export failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'exportResult', result });
+    }
+
+    private getDefaultExportUri(uri: vscode.Uri, format: 'csv' | 'json' | 'sqlite'): vscode.Uri {
+        const extension = format === 'sqlite' ? 'sqlite' : format;
+        const parsedPath = path.parse(uri.fsPath);
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}.${extension}`));
+    }
+
+    private getExportFilters(format: 'csv' | 'json' | 'sqlite'): Record<string, string[]> {
+        if (format === 'csv') {
+            return { 'CSV Files': ['csv'] };
+        }
+
+        if (format === 'json') {
+            return { 'JSON Files': ['json'] };
+        }
+
+        return { 'SQLite Databases': ['sqlite', 'db'] };
     }
 
         /**
