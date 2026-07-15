@@ -34,6 +34,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     ${this.generateDataContainer()}
                 </div>
                 ${this.generateSchemaContainer()}
+                ${this.generateDoctorContainer()}
+                ${this.generateCompareContainer()}
             </div>
 
             <script nonce="${nonce}">
@@ -64,8 +66,77 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         return `
         <div class="view-tabs" role="tablist">
             <button id="data-tab" class="tab-btn active" role="tab" aria-selected="true">Data</button>
+            <button id="doctor-tab" class="tab-btn" role="tab" aria-selected="false">Doctor</button>
             <button id="schema-tab" class="tab-btn" role="tab" aria-selected="false">Schema</button>
+            <button id="compare-tab" class="tab-btn" role="tab" aria-selected="false">Compare</button>
         </div>`;
+    }
+
+    private generateDoctorContainer(): string {
+        return `
+        <section id="doctor-container" class="doctor-container view-panel hidden">
+            <div class="doctor-hero">
+                <div>
+                    <h2>Parquet Doctor</h2>
+                    <p>Integrity, schema, row group, statistics, data quality, compression, and dataset diagnostics.</p>
+                </div>
+                <div class="doctor-actions">
+                    <button id="doctor-schema-drift-btn" class="btn btn-secondary">Schema Drift</button>
+                    <button id="doctor-dataset-scan-btn" class="btn btn-secondary">Scan Dataset</button>
+                </div>
+                <div class="doctor-score">
+                    <span id="doctor-health-score">0</span>
+                    <small>Health Score</small>
+                </div>
+            </div>
+            <div class="doctor-summary">
+                <div class="summary-item">Errors: <span id="doctor-error-count">0</span></div>
+                <div class="summary-item">Warnings: <span id="doctor-warning-count">0</span></div>
+                <div class="summary-item">Passed: <span id="doctor-pass-count">0</span></div>
+            </div>
+            <div class="doctor-grid">
+                <section class="doctor-panel">
+                    <h3>File Integrity Check</h3>
+                    <div id="doctor-integrity"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Health Report with Suggested Fixes</h3>
+                    <div id="doctor-health-report"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Schema Validation</h3>
+                    <div id="doctor-schema-validation"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Column Statistics Check</h3>
+                    <div id="doctor-column-statistics"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Data Quality Validation</h3>
+                    <div id="doctor-data-quality"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Decimal and Timestamp Diagnostics</h3>
+                    <div id="doctor-decimal-timestamp"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Compression and Encoding Analysis</h3>
+                    <div id="doctor-compression-encoding"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Schema Drift Detection</h3>
+                    <div id="doctor-schema-drift"></div>
+                </section>
+            </div>
+            <section class="doctor-panel doctor-row-groups-panel">
+                <h3>Row Group Analysis</h3>
+                <div id="doctor-row-groups"></div>
+            </section>
+            <section class="doctor-panel doctor-row-groups-panel">
+                <h3>Dataset and Partition Analysis</h3>
+                <div id="doctor-dataset-analysis"></div>
+            </section>
+        </section>`;
     }
 
     private generateQueryContainer(): string {
@@ -85,6 +156,85 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <div class="query-meta">
                 Table: <code>parquet_data</code>
                 <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
+            </div>
+        </section>`;
+    }
+
+    private generateCompareContainer(): string {
+        return `
+        <section id="compare-container" class="compare-container view-panel hidden">
+            <div class="compare-toolbar">
+                <div>
+                    <h2>Compare Parquet Files</h2>
+                    <p>Strict compare requires matching column names and order. Custom mapping compares selected same-type columns by row order.</p>
+                </div>
+                <div class="compare-actions">
+                    <label class="compare-toggle">
+                        <input id="custom-compare-toggle" type="checkbox" />
+                        Custom mapping
+                    </label>
+                    <button id="select-compare-file-btn" class="btn">Choose Compare File</button>
+                    <button id="run-strict-compare-btn" class="btn btn-secondary">Run Strict Compare</button>
+                    <button id="run-custom-compare-btn" class="btn btn-secondary hidden">Run Custom Compare</button>
+                </div>
+            </div>
+            <div id="compare-error" class="compare-error hidden"></div>
+            <div id="compare-order-panel" class="compare-order-panel hidden">
+                <h3>Order Rows By</h3>
+                <div class="compare-order-controls">
+                    <label>
+                        Current file column
+                        <select id="compare-base-order-select"></select>
+                    </label>
+                    <label>
+                        Compare file column
+                        <select id="compare-other-order-select"></select>
+                    </label>
+                </div>
+            </div>
+            <div id="compare-mapping-panel" class="compare-mapping-panel hidden">
+                <div class="compare-mapping-header">
+                    <h3>Custom Column Mapping</h3>
+                    <span id="compare-selected-file">No compare file selected</span>
+                </div>
+                <div class="compare-column-lists">
+                    <div>
+                        <h4>Current File Columns</h4>
+                        <div id="compare-base-column-list" class="compare-column-list"></div>
+                    </div>
+                    <div>
+                        <h4>Compare File Columns</h4>
+                        <div id="compare-other-column-list" class="compare-column-list"></div>
+                    </div>
+                </div>
+                <div id="compare-mapping-list" class="compare-mapping-list"></div>
+            </div>
+            <div id="compare-summary" class="compare-summary hidden">
+                <div class="summary-item">Base Rows: <span id="compare-base-rows">0</span></div>
+                <div class="summary-item">Compare Rows: <span id="compare-other-rows">0</span></div>
+                <div class="summary-item">Rows Checked: <span id="compare-rows-checked">0</span></div>
+                <div class="summary-item">Mismatched Rows: <span id="compare-mismatch-count">0</span></div>
+            </div>
+            <div id="compare-empty" class="empty-value">Choose another Parquet file to compare.</div>
+            <div id="compare-results" class="compare-results hidden">
+                <div class="compare-pane">
+                    <h3>Current File</h3>
+                    <div class="compare-table-wrap">
+                        <table>
+                            <thead id="compare-base-header"></thead>
+                            <tbody id="compare-base-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="compare-pane">
+                    <h3>Compare File</h3>
+                    <div class="compare-table-wrap">
+                        <table>
+                            <thead id="compare-other-header"></thead>
+                            <tbody id="compare-other-body"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </section>`;
     }
@@ -169,6 +319,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentQuery = DEFAULT_QUERY;
         let currentSchema = null;
         let currentSchemaDocs = '';
+        let currentCompareResult = null;
+        let currentCompareMetadata = null;
+        let currentDoctorSchemaDrift = null;
+        let currentDoctorDataset = null;
 
         function initialize(data) {
             console.log('Webview initialized with data:', data);
@@ -198,17 +352,29 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
         function setActiveView(viewName) {
             const dataTab = document.getElementById('data-tab');
+            const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
+            const compareTab = document.getElementById('compare-tab');
             const dataView = document.getElementById('data-view');
+            const doctorContainer = document.getElementById('doctor-container');
             const schemaContainer = document.getElementById('schema-container');
+            const compareContainer = document.getElementById('compare-container');
 
+            const showDoctor = viewName === 'doctor';
             const showSchema = viewName === 'schema';
-            dataTab.classList.toggle('active', !showSchema);
+            const showCompare = viewName === 'compare';
+            dataTab.classList.toggle('active', !showDoctor && !showSchema && !showCompare);
+            doctorTab.classList.toggle('active', showDoctor);
             schemaTab.classList.toggle('active', showSchema);
-            dataTab.setAttribute('aria-selected', String(!showSchema));
+            compareTab.classList.toggle('active', showCompare);
+            dataTab.setAttribute('aria-selected', String(!showDoctor && !showSchema && !showCompare));
+            doctorTab.setAttribute('aria-selected', String(showDoctor));
             schemaTab.setAttribute('aria-selected', String(showSchema));
-            dataView.classList.toggle('hidden', showSchema);
+            compareTab.setAttribute('aria-selected', String(showCompare));
+            dataView.classList.toggle('hidden', showDoctor || showSchema || showCompare);
+            doctorContainer.classList.toggle('hidden', !showDoctor);
             schemaContainer.classList.toggle('hidden', !showSchema);
+            compareContainer.classList.toggle('hidden', !showCompare);
         }
 
         function writeTextToClipboard(text, successMessage) {
@@ -285,6 +451,782 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             );
         }
 
+        function handleCompareResult(result) {
+            if (result && result.error === 'Compare cancelled.') {
+                resetCompareState();
+                setStatus('Compare cancelled', 'status-success');
+                return;
+            }
+
+            currentCompareResult = result;
+            renderCompareResult(result);
+
+            if (!result || !result.success) {
+                setStatus(result && result.error ? result.error : 'Compare failed', 'status-error');
+                return;
+            }
+
+            setActiveView('compare');
+            setStatus(
+                'Found ' + formatCount(result.mismatchCount) + ' mismatched rows',
+                result.mismatchCount ? 'status-error' : 'status-success'
+            );
+        }
+
+        function resetCompareState() {
+            currentCompareResult = null;
+            currentCompareMetadata = null;
+
+            document.getElementById('compare-error').classList.add('hidden');
+            document.getElementById('compare-summary').classList.add('hidden');
+            document.getElementById('compare-results').classList.add('hidden');
+            document.getElementById('compare-order-panel').classList.add('hidden');
+            document.getElementById('compare-mapping-panel').classList.add('hidden');
+            document.getElementById('compare-empty').textContent = 'Choose another Parquet file to compare.';
+            document.getElementById('compare-empty').classList.remove('hidden');
+            document.getElementById('compare-selected-file').textContent = 'No compare file selected';
+            document.getElementById('compare-base-order-select').innerHTML = '';
+            document.getElementById('compare-other-order-select').innerHTML = '';
+            document.getElementById('compare-base-column-list').innerHTML = '';
+            document.getElementById('compare-other-column-list').innerHTML = '';
+            document.getElementById('compare-mapping-list').innerHTML = '';
+            clearCompareTables();
+        }
+
+        function handleCompareMetadata(result) {
+            currentCompareMetadata = result;
+
+            if (!result || !result.success) {
+                renderCompareResult(result);
+                setStatus(result && result.error ? result.error : 'Could not load compare columns', 'status-error');
+                return;
+            }
+
+            document.getElementById('compare-error').classList.add('hidden');
+            document.getElementById('compare-summary').classList.add('hidden');
+            document.getElementById('compare-results').classList.add('hidden');
+            document.getElementById('compare-empty').textContent = 'Select an order column, then run compare.';
+            document.getElementById('compare-empty').classList.remove('hidden');
+            clearCompareTables();
+            renderCompareMappingPanel(result);
+            setStatus('Compare file loaded', 'status-success');
+        }
+
+        function renderCompareMappingPanel(metadata) {
+            const mappingPanel = document.getElementById('compare-mapping-panel');
+            const selectedFile = document.getElementById('compare-selected-file');
+            selectedFile.textContent = metadata.comparePath || 'Compare file selected';
+            renderCompareOrderControls(metadata);
+            renderCompareColumnList('compare-base-column-list', metadata.baseColumns || []);
+            renderCompareColumnList('compare-other-column-list', metadata.compareColumns || []);
+            renderCompareMappingRows(metadata);
+
+            if (document.getElementById('custom-compare-toggle').checked) {
+                mappingPanel.classList.remove('hidden');
+            }
+        }
+
+        function renderCompareOrderControls(metadata) {
+            const orderPanel = document.getElementById('compare-order-panel');
+            const baseSelect = document.getElementById('compare-base-order-select');
+            const compareSelect = document.getElementById('compare-other-order-select');
+            const baseColumns = metadata.baseColumns || [];
+
+            baseSelect.innerHTML = '';
+            compareSelect.innerHTML = '';
+
+            const emptyOption = document.createElement('option');
+            emptyOption.value = '';
+            emptyOption.textContent = 'Select order column';
+            baseSelect.appendChild(emptyOption);
+
+            baseColumns.forEach((column) => {
+                const option = document.createElement('option');
+                option.value = column.name;
+                option.textContent = column.name + ' - ' + getCompareColumnTypeLabel(column);
+                baseSelect.appendChild(option);
+            });
+
+            baseSelect.onchange = () => {
+                populateCompareOrderOptions(metadata);
+            };
+
+            if (baseColumns.length) {
+                baseSelect.value = baseColumns[0].name;
+                populateCompareOrderOptions(metadata);
+            }
+
+            orderPanel.classList.remove('hidden');
+        }
+
+        function populateCompareOrderOptions(metadata) {
+            const baseSelect = document.getElementById('compare-base-order-select');
+            const compareSelect = document.getElementById('compare-other-order-select');
+            const customCompareToggle = document.getElementById('custom-compare-toggle');
+            const baseColumn = (metadata.baseColumns || []).find((column) => column.name === baseSelect.value);
+            compareSelect.innerHTML = '';
+
+            const emptyOption = document.createElement('option');
+            emptyOption.value = '';
+            emptyOption.textContent = 'Select order column';
+            compareSelect.appendChild(emptyOption);
+
+            if (!baseColumn) {
+                return;
+            }
+
+            (metadata.compareColumns || []).forEach((column) => {
+                const option = document.createElement('option');
+                option.value = column.name;
+                option.textContent = column.name + ' - ' + getCompareColumnTypeLabel(column);
+                option.disabled = column.typeSignature !== baseColumn.typeSignature;
+                compareSelect.appendChild(option);
+            });
+
+            const sameNameOption = Array.from(compareSelect.options).find((option) => option.value === baseColumn.name && !option.disabled);
+            if (sameNameOption) {
+                compareSelect.value = baseColumn.name;
+            }
+
+            compareSelect.disabled = !customCompareToggle.checked;
+        }
+
+        function renderCompareColumnList(elementId, columns) {
+            const list = document.getElementById(elementId);
+            list.innerHTML = '';
+
+            if (!columns.length) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-value';
+                empty.textContent = 'No columns found';
+                list.appendChild(empty);
+                return;
+            }
+
+            columns.forEach((column) => {
+                const item = document.createElement('div');
+                item.className = 'compare-column-item';
+
+                const name = document.createElement('span');
+                name.textContent = column.name;
+                name.title = column.path || column.name;
+
+                const type = document.createElement('code');
+                type.textContent = getCompareColumnTypeLabel(column);
+
+                item.appendChild(name);
+                item.appendChild(type);
+                list.appendChild(item);
+            });
+        }
+
+        function renderCompareMappingRows(metadata) {
+            const mappingList = document.getElementById('compare-mapping-list');
+            const baseColumns = metadata.baseColumns || [];
+            const compareColumns = metadata.compareColumns || [];
+            mappingList.innerHTML = '';
+
+            if (!baseColumns.length || !compareColumns.length) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-value';
+                empty.textContent = 'No columns available for mapping';
+                mappingList.appendChild(empty);
+                return;
+            }
+
+            const header = document.createElement('div');
+            header.className = 'compare-mapping-row compare-mapping-row-header';
+            ['Current column', 'Compare column', 'Type'].forEach((label) => {
+                const item = document.createElement('span');
+                item.textContent = label;
+                header.appendChild(item);
+            });
+            mappingList.appendChild(header);
+
+            baseColumns.forEach((baseColumn) => {
+                const row = document.createElement('div');
+                row.className = 'compare-mapping-row';
+
+                const base = document.createElement('div');
+                base.className = 'compare-mapping-base';
+                base.textContent = baseColumn.name;
+                base.title = getCompareColumnTypeLabel(baseColumn);
+
+                const select = document.createElement('select');
+                select.dataset.baseColumn = baseColumn.name;
+
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = 'Skip';
+                select.appendChild(emptyOption);
+
+                compareColumns.forEach((compareColumn) => {
+                    const option = document.createElement('option');
+                    option.value = compareColumn.name;
+                    option.textContent = compareColumn.name + ' - ' + getCompareColumnTypeLabel(compareColumn);
+                    option.disabled = baseColumn.typeSignature !== compareColumn.typeSignature;
+
+                    if (baseColumn.name === compareColumn.name && !option.disabled) {
+                        option.selected = true;
+                    }
+
+                    select.appendChild(option);
+                });
+
+                const type = document.createElement('code');
+                type.textContent = getCompareColumnTypeLabel(baseColumn);
+
+                row.appendChild(base);
+                row.appendChild(select);
+                row.appendChild(type);
+                mappingList.appendChild(row);
+            });
+        }
+
+        function getCompareColumnTypeLabel(column) {
+            return valueOrDash(column.logicalType || column.duckdbType || column.physicalType);
+        }
+
+        function collectCompareMappings() {
+            const selects = Array.from(document.querySelectorAll('#compare-mapping-list select'));
+            return selects
+                .filter((select) => select.value)
+                .map((select) => ({
+                    baseColumn: select.dataset.baseColumn,
+                    compareColumn: select.value
+                }));
+        }
+
+        function collectCompareOrderMapping() {
+            const baseSelect = document.getElementById('compare-base-order-select');
+            const compareSelect = document.getElementById('compare-other-order-select');
+
+            if (!baseSelect || !compareSelect || !baseSelect.value || !compareSelect.value) {
+                return null;
+            }
+
+            return {
+                baseColumn: baseSelect.value,
+                compareColumn: compareSelect.value
+            };
+        }
+
+        function renderCompareResult(result) {
+            const errorElement = document.getElementById('compare-error');
+            const summaryElement = document.getElementById('compare-summary');
+            const emptyElement = document.getElementById('compare-empty');
+            const resultsElement = document.getElementById('compare-results');
+
+            errorElement.classList.add('hidden');
+            summaryElement.classList.add('hidden');
+            resultsElement.classList.add('hidden');
+            emptyElement.classList.remove('hidden');
+
+            if (!result) {
+                emptyElement.textContent = 'Choose another Parquet file to compare.';
+                return;
+            }
+
+            if (!result.success) {
+                emptyElement.classList.add('hidden');
+                errorElement.textContent = result.error || 'Compare failed';
+                errorElement.classList.remove('hidden');
+                clearCompareTables();
+                setActiveView('compare');
+                return;
+            }
+
+            document.getElementById('compare-base-rows').textContent = formatCount(result.totalRowsBase);
+            document.getElementById('compare-other-rows').textContent = formatCount(result.totalRowsCompare);
+            document.getElementById('compare-rows-checked').textContent = formatCount(result.rowsCompared);
+            document.getElementById('compare-mismatch-count').textContent = formatCount(result.mismatchCount);
+            summaryElement.classList.remove('hidden');
+            emptyElement.classList.add('hidden');
+            resultsElement.classList.remove('hidden');
+
+            if (result.truncated) {
+                errorElement.textContent = 'Showing first ' + formatCount(result.mismatchLimit) + ' mismatches.';
+                errorElement.classList.remove('hidden');
+            }
+
+            createCompareTables(result.columns || [], result.mismatches || []);
+        }
+
+        function renderDoctorPanel(doctor) {
+            if (!doctor) {
+                return;
+            }
+
+            const report = doctor.healthReport || { healthScore: 0, errors: [], warnings: [], passedChecks: [], recommendations: [] };
+            document.getElementById('doctor-health-score').textContent = String(report.healthScore || 0);
+            document.getElementById('doctor-error-count').textContent = formatCount((report.errors || []).length);
+            document.getElementById('doctor-warning-count').textContent = formatCount((report.warnings || []).length);
+            document.getElementById('doctor-pass-count').textContent = formatCount((report.passedChecks || []).length);
+
+            renderDoctorIntegrity(doctor.integrity || {});
+            renderDoctorHealthReport(report);
+            renderDoctorSchemaValidation((doctor.schemaValidation && doctor.schemaValidation.columns) || []);
+            renderDoctorColumnStatistics((doctor.columnStatistics && doctor.columnStatistics.columns) || []);
+            renderDoctorDataQuality(doctor.dataQuality || {});
+            renderDoctorDecimalTimestamp((doctor.decimalTimestampDiagnostics && doctor.decimalTimestampDiagnostics.columns) || []);
+            renderDoctorCompressionEncoding((doctor.compressionEncodingAnalysis && doctor.compressionEncodingAnalysis.columns) || []);
+            renderDoctorRowGroups((doctor.rowGroupAnalysis && doctor.rowGroupAnalysis.rowGroups) || []);
+            renderDoctorSchemaDrift(currentDoctorSchemaDrift);
+            renderDoctorDatasetAnalysis(currentDoctorDataset);
+        }
+
+        function renderDoctorIntegrity(integrity) {
+            const container = document.getElementById('doctor-integrity');
+            const checks = [
+                ['Valid start magic bytes', integrity.startsWithParquetMagic],
+                ['Valid footer magic bytes', integrity.endsWithParquetMagic],
+                ['Footer present', integrity.footerPresent],
+                ['DuckDB readable', integrity.duckdbReadable],
+                ['Row groups readable', integrity.rowGroupsReadable]
+            ];
+            container.innerHTML = '';
+            checks.forEach(([label, passed]) => {
+                container.appendChild(createDoctorCheckRow(label, passed));
+            });
+            container.appendChild(createDoctorMetricRow('File size', formatBytes(integrity.fileSize || 0)));
+        }
+
+        function renderDoctorHealthReport(report) {
+            const container = document.getElementById('doctor-health-report');
+            container.innerHTML = '';
+            container.appendChild(createDoctorIssueList('Errors', report.errors || [], 'doctor-error'));
+            container.appendChild(createDoctorIssueList('Warnings', report.warnings || [], 'doctor-warning'));
+            container.appendChild(createDoctorRecommendations(report.recommendations || []));
+        }
+
+        function renderDoctorSchemaValidation(columns) {
+            const container = document.getElementById('doctor-schema-validation');
+            container.innerHTML = '';
+            const suspiciousColumns = columns.filter((column) => column.issues && column.issues.length);
+            if (!suspiciousColumns.length) {
+                container.appendChild(createDoctorEmpty('No suspicious type mappings detected.'));
+                return;
+            }
+            suspiciousColumns.forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.path || column.name || 'Column'));
+                card.appendChild(createDoctorMetricRow('Physical', valueOrDash(column.physicalType)));
+                card.appendChild(createDoctorMetricRow('Logical', valueOrDash(column.logicalType)));
+                card.appendChild(createDoctorMetricRow('Nullable', valueOrDash(column.nullableStatus)));
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorColumnStatistics(columns) {
+            const container = document.getElementById('doctor-column-statistics');
+            container.innerHTML = '';
+            const flaggedColumns = columns.filter((column) => column.issues && column.issues.length);
+            if (!flaggedColumns.length) {
+                container.appendChild(createDoctorEmpty('Column statistics look healthy.'));
+                return;
+            }
+            flaggedColumns.forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Null count', valueOrDash(column.nullCount)));
+                card.appendChild(createDoctorMetricRow('Distinct count', valueOrDash(column.distinctCount)));
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorDataQuality(dataQuality) {
+            const container = document.getElementById('doctor-data-quality');
+            container.innerHTML = '';
+            container.appendChild(createDoctorMetricRow('Total rows', formatCount(dataQuality.totalRows || 0)));
+            container.appendChild(createDoctorMetricRow('Distinct rows', formatCount(dataQuality.distinctRows || 0)));
+            container.appendChild(createDoctorMetricRow('Duplicate rows', formatCount(dataQuality.duplicateRowsEstimate || 0)));
+
+            const flaggedColumns = ((dataQuality && dataQuality.columns) || []).filter((column) => column.issues && column.issues.length);
+            if (!flaggedColumns.length) {
+                container.appendChild(createDoctorEmpty('No high-null columns, empty strings, suspicious defaults, or invalid ranges detected.'));
+                return;
+            }
+
+            flaggedColumns.slice(0, 25).forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Type', valueOrDash(column.duckdbType)));
+                card.appendChild(createDoctorMetricRow('Null ratio', valueOrDash(column.nullRatio)));
+                if (column.emptyStringCount !== undefined) {
+                    card.appendChild(createDoctorMetricRow('Empty strings', formatCount(column.emptyStringCount)));
+                }
+                if (column.suspiciousDefaultCount !== undefined) {
+                    card.appendChild(createDoctorMetricRow('Default-like values', formatCount(column.suspiciousDefaultCount)));
+                }
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorDecimalTimestamp(columns) {
+            const container = document.getElementById('doctor-decimal-timestamp');
+            container.innerHTML = '';
+            if (!columns.length) {
+                container.appendChild(createDoctorEmpty('Decimal and timestamp annotations look consistent.'));
+                return;
+            }
+
+            columns.forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Physical', valueOrDash(column.physicalType)));
+                card.appendChild(createDoctorMetricRow('Logical', valueOrDash(column.logicalType)));
+                card.appendChild(createDoctorMetricRow('Precision', valueOrDash(column.decimalPrecision)));
+                card.appendChild(createDoctorMetricRow('Scale', valueOrDash(column.decimalScale)));
+                card.appendChild(createDoctorMetricRow('Timestamp unit', valueOrDash(column.timestampUnit)));
+                card.appendChild(createDoctorMetricRow('Timezone', valueOrDash(column.timezoneInterpretation)));
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorCompressionEncoding(columns) {
+            const container = document.getElementById('doctor-compression-encoding');
+            container.innerHTML = '';
+            const flaggedColumns = columns.filter((column) => column.issues && column.issues.length);
+            if (!flaggedColumns.length) {
+                container.appendChild(createDoctorEmpty('Compression and encoding metadata look healthy.'));
+                return;
+            }
+
+            flaggedColumns.slice(0, 25).forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Compression', valueOrDash(column.compression)));
+                card.appendChild(createDoctorMetricRow('Ratio', valueOrDash(column.compressionRatio)));
+                card.appendChild(createDoctorMetricRow('Cardinality ratio', valueOrDash(column.cardinalityRatio)));
+                card.appendChild(createDoctorMetricRow('Encodings', valueOrDash(column.encodings)));
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorSchemaDrift(result) {
+            const container = document.getElementById('doctor-schema-drift');
+            container.innerHTML = '';
+            if (!result) {
+                container.appendChild(createDoctorEmpty('Choose a reference Parquet file to detect added, removed, renamed, or type-changed columns.'));
+                return;
+            }
+            if (!result.success) {
+                container.appendChild(createDoctorText(result.error || 'Schema drift check failed.'));
+                return;
+            }
+
+            const summary = result.summary || {};
+            container.appendChild(createDoctorMetricRow('Added', formatCount(summary.added || 0)));
+            container.appendChild(createDoctorMetricRow('Removed', formatCount(summary.removed || 0)));
+            container.appendChild(createDoctorMetricRow('Type changed', formatCount(summary.typeChanged || 0)));
+            container.appendChild(createDoctorMetricRow('Rename candidates', formatCount(summary.renameCandidates || 0)));
+            appendDoctorColumnList(container, 'Added Columns', result.addedColumns || [], 'name');
+            appendDoctorColumnList(container, 'Removed Columns', result.removedColumns || [], 'name');
+            appendDoctorColumnList(container, 'Type Changed Columns', result.typeChangedColumns || [], 'column');
+            appendDoctorColumnList(container, 'Rename Candidates', result.renameCandidates || [], 'referenceColumn', (item) => item.referenceColumn + ' -> ' + item.currentColumn);
+        }
+
+        function renderDoctorDatasetAnalysis(result) {
+            const container = document.getElementById('doctor-dataset-analysis');
+            container.innerHTML = '';
+            if (!result) {
+                container.appendChild(createDoctorEmpty('Choose a folder to scan parquet files for schema consistency, partition health, empty files, and small-file problems.'));
+                return;
+            }
+            if (!result.success) {
+                container.appendChild(createDoctorText(result.error || 'Dataset scan failed.'));
+                return;
+            }
+
+            container.appendChild(createDoctorMetricRow('Files', formatCount(result.fileCount || 0)));
+            container.appendChild(createDoctorMetricRow('Rows', formatCount(result.totalRows || 0)));
+            container.appendChild(createDoctorMetricRow('Size', formatBytes(result.totalSize || 0)));
+            container.appendChild(createDoctorMetricRow('Schema groups', formatCount((result.schemaGroups || []).length)));
+            container.appendChild(createDoctorMetricRow('Partition keys', (result.partitionKeys || []).join(', ') || '-'));
+            appendDoctorTextList(container, 'Warnings', result.warnings || []);
+            appendDoctorTextList(container, 'Recommendations', result.recommendations || []);
+            appendDoctorFileList(container, 'Empty Files', result.emptyFiles || []);
+            appendDoctorFileList(container, 'Small Files', result.smallFiles || []);
+            appendDoctorFileList(container, 'Unreadable Files', result.unreadableFiles || []);
+            appendDoctorColumnList(container, 'Missing Partition Keys', result.missingPartitions || [], 'file', (item) => item.file + ': ' + (item.missingKeys || []).join(', '));
+            if (result.unevenPartitionSizes) {
+                const uneven = result.unevenPartitionSizes;
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle('Uneven Partition Sizes'));
+                card.appendChild(createDoctorMetricRow('Smallest', formatBytes(uneven.smallestPartitionSize || 0)));
+                card.appendChild(createDoctorMetricRow('Largest', formatBytes(uneven.largestPartitionSize || 0)));
+                card.appendChild(createDoctorMetricRow('Ratio', valueOrDash(uneven.ratio)));
+                container.appendChild(card);
+            }
+        }
+
+        function renderDoctorRowGroups(rowGroups) {
+            const container = document.getElementById('doctor-row-groups');
+            container.innerHTML = '';
+            if (!rowGroups.length) {
+                container.appendChild(createDoctorEmpty('No row group metadata available.'));
+                return;
+            }
+
+            const table = document.createElement('table');
+            const header = document.createElement('thead');
+            header.innerHTML = '<tr><th>Row Group</th><th>Rows</th><th>Compressed</th><th>Uncompressed</th><th>Compression Ratio</th><th>Column Chunks</th><th>Warnings</th></tr>';
+            const body = document.createElement('tbody');
+            rowGroups.forEach((rowGroup) => {
+                const row = document.createElement('tr');
+                if (rowGroup.issues && rowGroup.issues.length) {
+                    row.className = 'doctor-warning-row';
+                }
+                [
+                    rowGroup.id,
+                    formatCount(rowGroup.rowCount),
+                    formatBytes(rowGroup.compressedSize || 0),
+                    formatBytes(rowGroup.uncompressedSize || 0),
+                    valueOrDash(rowGroup.compressionRatio),
+                    formatCount((rowGroup.columnChunks || []).length),
+                    (rowGroup.issues || []).join('; ') || '-'
+                ].forEach((value) => {
+                    const cell = document.createElement('td');
+                    cell.textContent = String(value);
+                    cell.title = String(value);
+                    row.appendChild(cell);
+                });
+                body.appendChild(row);
+            });
+            table.appendChild(header);
+            table.appendChild(body);
+            container.appendChild(table);
+        }
+
+        function appendDoctorColumnList(container, title, items, fallbackKey, formatter) {
+            if (!items.length) {
+                return;
+            }
+
+            const section = document.createElement('div');
+            section.className = 'doctor-issue-list';
+            section.appendChild(createDoctorCardTitle(title));
+            items.slice(0, 30).forEach((item) => {
+                section.appendChild(createDoctorText(formatter ? formatter(item) : valueOrDash(item[fallbackKey])));
+            });
+            if (items.length > 30) {
+                section.appendChild(createDoctorText('Showing first 30 of ' + formatCount(items.length) + '.'));
+            }
+            container.appendChild(section);
+        }
+
+        function appendDoctorTextList(container, title, items) {
+            if (!items.length) {
+                return;
+            }
+
+            const section = document.createElement('div');
+            section.className = 'doctor-issue-list';
+            section.appendChild(createDoctorCardTitle(title));
+            items.forEach((item) => {
+                section.appendChild(createDoctorText(item));
+            });
+            container.appendChild(section);
+        }
+
+        function appendDoctorFileList(container, title, items) {
+            appendDoctorColumnList(container, title, items, 'file', (item) => item.file);
+        }
+
+        function createDoctorCheckRow(label, passed) {
+            const row = document.createElement('div');
+            row.className = 'doctor-check-row ' + (passed ? 'doctor-pass' : 'doctor-error');
+            const status = document.createElement('span');
+            status.textContent = passed ? 'Pass' : 'Fail';
+            const text = document.createElement('span');
+            text.textContent = label;
+            row.appendChild(status);
+            row.appendChild(text);
+            return row;
+        }
+
+        function createDoctorMetricRow(label, value) {
+            const row = document.createElement('div');
+            row.className = 'doctor-metric-row';
+            const key = document.createElement('span');
+            key.textContent = label;
+            const val = document.createElement('strong');
+            val.textContent = String(value);
+            row.appendChild(key);
+            row.appendChild(val);
+            return row;
+        }
+
+        function createDoctorIssueList(title, issues, className) {
+            const section = document.createElement('div');
+            section.className = 'doctor-issue-list';
+            section.appendChild(createDoctorCardTitle(title));
+            if (!issues.length) {
+                section.appendChild(createDoctorEmpty('None'));
+                return section;
+            }
+            issues.forEach((issue) => {
+                const item = document.createElement('div');
+                item.className = 'doctor-issue ' + className;
+                item.textContent = issue.category + ': ' + issue.message;
+                section.appendChild(item);
+            });
+            return section;
+        }
+
+        function createDoctorRecommendations(recommendations) {
+            const section = document.createElement('div');
+            section.className = 'doctor-issue-list';
+            section.appendChild(createDoctorCardTitle('Suggested Fixes'));
+            if (!recommendations.length) {
+                section.appendChild(createDoctorEmpty('No fixes needed.'));
+                return section;
+            }
+            recommendations.forEach((recommendation) => {
+                section.appendChild(createDoctorText(recommendation));
+            });
+            return section;
+        }
+
+        function createDoctorCardTitle(title) {
+            const heading = document.createElement('h4');
+            heading.textContent = title;
+            return heading;
+        }
+
+        function createDoctorText(text) {
+            const paragraph = document.createElement('p');
+            paragraph.textContent = text;
+            return paragraph;
+        }
+
+        function createDoctorEmpty(text) {
+            const empty = document.createElement('div');
+            empty.className = 'empty-value';
+            empty.textContent = text;
+            return empty;
+        }
+
+        function formatBytes(value) {
+            const numberValue = Number(value || 0);
+            if (numberValue < 1024) {
+                return numberValue + ' B';
+            }
+            if (numberValue < 1024 * 1024) {
+                return (numberValue / 1024).toFixed(1) + ' KB';
+            }
+            if (numberValue < 1024 * 1024 * 1024) {
+                return (numberValue / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+            return (numberValue / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        }
+
+        function clearCompareTables() {
+            document.getElementById('compare-base-header').innerHTML = '';
+            document.getElementById('compare-base-body').innerHTML = '';
+            document.getElementById('compare-other-header').innerHTML = '';
+            document.getElementById('compare-other-body').innerHTML = '';
+        }
+
+        function createCompareTables(columns, mismatches) {
+            createCompareHeader(document.getElementById('compare-base-header'), columns);
+            createCompareHeader(document.getElementById('compare-other-header'), columns);
+
+            const baseBody = document.getElementById('compare-base-body');
+            const otherBody = document.getElementById('compare-other-body');
+            baseBody.innerHTML = '';
+            otherBody.innerHTML = '';
+
+            if (!mismatches.length) {
+                appendCompareEmptyRow(baseBody, columns.length + 1, 'No mismatches found');
+                appendCompareEmptyRow(otherBody, columns.length + 1, 'No mismatches found');
+                return;
+            }
+
+            mismatches.forEach((mismatch) => {
+                baseBody.appendChild(createCompareRow(columns, mismatch, mismatch.base, 'base'));
+                otherBody.appendChild(createCompareRow(columns, mismatch, mismatch.compare, 'compare'));
+            });
+        }
+
+        function createCompareHeader(headerElement, columns) {
+            headerElement.innerHTML = '';
+            const row = document.createElement('tr');
+            const rowIndexHeader = document.createElement('th');
+            rowIndexHeader.textContent = '#';
+            row.appendChild(rowIndexHeader);
+
+            columns.forEach((column) => {
+                const th = document.createElement('th');
+                th.textContent = column;
+                th.title = column;
+                row.appendChild(th);
+            });
+
+            headerElement.appendChild(row);
+        }
+
+        function createCompareRow(columns, mismatch, rowData, side) {
+            const row = document.createElement('tr');
+            row.className = 'compare-row-mismatch';
+
+            if ((side === 'base' && mismatch.type === 'missing_in_base') ||
+                (side === 'compare' && mismatch.type === 'missing_in_compare')) {
+                row.classList.add('compare-row-missing');
+            }
+
+            const rowIndexCell = document.createElement('td');
+            rowIndexCell.textContent = String(mismatch.rowIndex + 1);
+            rowIndexCell.className = 'compare-row-index';
+            row.appendChild(rowIndexCell);
+
+            columns.forEach((column) => {
+                const cell = document.createElement('td');
+                const value = rowData ? rowData[column] : undefined;
+                cell.textContent = value === null || value === undefined ? 'NULL' : String(value);
+                cell.title = cell.textContent;
+
+                if (mismatch.mismatchedColumns && mismatch.mismatchedColumns.includes(column)) {
+                    cell.classList.add('compare-cell-mismatch');
+                }
+
+                row.appendChild(cell);
+            });
+
+            return row;
+        }
+
+        function appendCompareEmptyRow(body, colspan, message) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = colspan;
+            cell.className = 'empty-value';
+            cell.textContent = message;
+            row.appendChild(cell);
+            body.appendChild(row);
+        }
+
         function updateView(data) {
             const statusElement = document.getElementById('status');
             const errorContainer = document.getElementById('error-container');
@@ -303,6 +1245,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             queryLimitMessage.classList.add('hidden');
 
             if (!data.success) {
+                if (data.doctor) {
+                    renderDoctorPanel(data.doctor);
+                }
                 errorText.textContent = data.error || 'Unknown error occurred';
                 errorContainer.classList.remove('hidden');
                 statusElement.textContent = 'Error';
@@ -329,6 +1274,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (data.schema) {
                 currentSchema = data.schema;
                 renderSchemaPanel(currentSchema);
+            }
+
+            if (data.doctor) {
+                renderDoctorPanel(data.doctor);
             }
             
             // Create table
@@ -599,12 +1548,20 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             
             const refreshBtn = document.getElementById('refresh-btn');
             const dataTab = document.getElementById('data-tab');
+            const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
+            const compareTab = document.getElementById('compare-tab');
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportJsonBtn = document.getElementById('export-json-btn');
             const exportSqliteBtn = document.getElementById('export-sqlite-btn');
+            const doctorSchemaDriftBtn = document.getElementById('doctor-schema-drift-btn');
+            const doctorDatasetScanBtn = document.getElementById('doctor-dataset-scan-btn');
+            const selectCompareFileBtn = document.getElementById('select-compare-file-btn');
+            const runStrictCompareBtn = document.getElementById('run-strict-compare-btn');
+            const runCustomCompareBtn = document.getElementById('run-custom-compare-btn');
+            const customCompareToggle = document.getElementById('custom-compare-toggle');
             const queryInput = document.getElementById('query-input');
             const schemaSearchInput = document.getElementById('schema-search-input');
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
@@ -617,9 +1574,21 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (doctorTab) {
+                doctorTab.addEventListener('click', () => {
+                    setActiveView('doctor');
+                });
+            }
+
             if (schemaTab) {
                 schemaTab.addEventListener('click', () => {
                     setActiveView('schema');
+                });
+            }
+
+            if (compareTab) {
+                compareTab.addEventListener('click', () => {
+                    setActiveView('compare');
                 });
             }
             
@@ -681,6 +1650,88 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (doctorSchemaDriftBtn) {
+                doctorSchemaDriftBtn.addEventListener('click', () => {
+                    setActiveView('doctor');
+                    setStatus('Choosing reference file...', 'status-loading');
+                    vscode.postMessage({ type: 'selectDoctorReferenceFile' });
+                });
+            }
+
+            if (doctorDatasetScanBtn) {
+                doctorDatasetScanBtn.addEventListener('click', () => {
+                    setActiveView('doctor');
+                    setStatus('Choosing dataset folder...', 'status-loading');
+                    vscode.postMessage({ type: 'selectDoctorDatasetFolder' });
+                });
+            }
+
+            if (selectCompareFileBtn) {
+                selectCompareFileBtn.addEventListener('click', () => {
+                    setActiveView('compare');
+                    setStatus('Choosing compare file...', 'status-loading');
+                    vscode.postMessage({
+                        type: 'selectCompareFile',
+                        customMappingEnabled: customCompareToggle ? customCompareToggle.checked : false
+                    });
+                });
+            }
+
+            if (runStrictCompareBtn) {
+                runStrictCompareBtn.addEventListener('click', () => {
+                    const orderMapping = collectCompareOrderMapping();
+                    if (!orderMapping) {
+                        setStatus('Select an order column before comparing', 'status-error');
+                        return;
+                    }
+
+                    setActiveView('compare');
+                    setStatus('Running strict compare...', 'status-loading');
+                    vscode.postMessage({ type: 'runStrictCompare', orderMapping });
+                });
+            }
+
+            if (runCustomCompareBtn) {
+                runCustomCompareBtn.addEventListener('click', () => {
+                    const mappings = collectCompareMappings();
+                    const orderMapping = collectCompareOrderMapping();
+                    if (mappings.length === 0) {
+                        setStatus('Select at least one same-type mapping', 'status-error');
+                        return;
+                    }
+
+                    if (!orderMapping) {
+                        setStatus('Select an order column before comparing', 'status-error');
+                        return;
+                    }
+
+                    setActiveView('compare');
+                    setStatus('Running custom compare...', 'status-loading');
+                    vscode.postMessage({ type: 'runCustomCompare', mappings, orderMapping });
+                });
+            }
+
+            if (customCompareToggle) {
+                customCompareToggle.addEventListener('change', () => {
+                    const mappingPanel = document.getElementById('compare-mapping-panel');
+                    if (customCompareToggle.checked) {
+                        if (runCustomCompareBtn) {
+                            runCustomCompareBtn.classList.remove('hidden');
+                        }
+                        mappingPanel.classList.toggle('hidden', !currentCompareMetadata || !currentCompareMetadata.success);
+                    } else {
+                        if (runCustomCompareBtn) {
+                            runCustomCompareBtn.classList.add('hidden');
+                        }
+                        mappingPanel.classList.add('hidden');
+                    }
+
+                    if (currentCompareMetadata && currentCompareMetadata.success) {
+                        populateCompareOrderOptions(currentCompareMetadata);
+                    }
+                });
+            }
+
             if (schemaSearchInput) {
                 schemaSearchInput.addEventListener('input', () => {
                     if (currentSchema) {
@@ -729,6 +1780,22 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     break;
                 case 'exportResult':
                     handleExportResult(message.result);
+                    break;
+                case 'compareResult':
+                    handleCompareResult(message.result);
+                    break;
+                case 'compareMetadata':
+                    handleCompareMetadata(message.result);
+                    break;
+                case 'doctorSchemaDriftResult':
+                    currentDoctorSchemaDrift = message.result;
+                    renderDoctorSchemaDrift(currentDoctorSchemaDrift);
+                    setStatus(message.result && message.result.success ? 'Schema drift check complete' : (message.result && message.result.error) || 'Schema drift check failed', message.result && message.result.success ? 'status-success' : 'status-error');
+                    break;
+                case 'doctorDatasetResult':
+                    currentDoctorDataset = message.result;
+                    renderDoctorDatasetAnalysis(currentDoctorDataset);
+                    setStatus(message.result && message.result.success ? 'Dataset scan complete' : (message.result && message.result.error) || 'Dataset scan failed', message.result && message.result.success ? 'status-success' : 'status-error');
                     break;
                 default:
                     console.log('Unknown message type:', message.type);
@@ -996,10 +2063,270 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-input-foreground);
             font-family: var(--vscode-editor-font-family); line-height: 1.45;
         }
+        .doctor-container { display: flex; flex-direction: column; gap: 14px; }
+        .doctor-hero {
+            display: flex; justify-content: space-between; align-items: center; gap: 16px;
+            padding: 14px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .doctor-hero h2 { font-size: 16px; margin-bottom: 4px; }
+        .doctor-hero p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .doctor-actions {
+            display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto;
+        }
+        .doctor-score {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            min-width: 92px; min-height: 72px; border-radius: 3px;
+            border: 1px solid var(--vscode-panel-border);
+            background-color: var(--vscode-editor-background);
+        }
+        .doctor-score span {
+            font-size: 28px; font-weight: 700;
+        }
+        .doctor-score small {
+            color: var(--vscode-descriptionForeground); font-size: 11px;
+        }
+        .doctor-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .doctor-grid {
+            display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr));
+            gap: 14px; align-items: start;
+        }
+        .doctor-panel {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            overflow: hidden;
+        }
+        .doctor-panel h3 {
+            font-size: 13px; padding: 10px 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .doctor-panel > div {
+            padding: 10px; display: flex; flex-direction: column; gap: 8px;
+            max-height: 360px; overflow: auto;
+        }
+        .doctor-row-groups-panel > div { max-height: 460px; }
+        .doctor-check-row, .doctor-metric-row {
+            display: flex; justify-content: space-between; align-items: center; gap: 10px;
+            padding: 6px 8px; border-radius: 3px;
+            background-color: var(--vscode-editor-background);
+        }
+        .doctor-check-row span:first-child {
+            font-weight: 700; min-width: 44px;
+        }
+        .doctor-pass span:first-child { color: var(--vscode-testing-iconPassed); }
+        .doctor-error span:first-child { color: var(--vscode-testing-iconFailed); }
+        .doctor-card, .doctor-issue-list {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; padding: 8px;
+            background-color: var(--vscode-editor-background);
+        }
+        .doctor-warning-card { border-color: var(--vscode-inputValidation-warningBorder); }
+        .doctor-card h4, .doctor-issue-list h4 {
+            font-size: 12px; margin-bottom: 6px;
+        }
+        .doctor-card p, .doctor-issue-list p {
+            color: var(--vscode-descriptionForeground); margin-top: 4px;
+        }
+        .doctor-issue {
+            padding: 6px 8px; border-radius: 3px; margin-top: 6px;
+        }
+        .doctor-issue.doctor-error {
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+        }
+        .doctor-issue.doctor-warning {
+            background-color: var(--vscode-inputValidation-warningBackground);
+            color: var(--vscode-inputValidation-warningForeground);
+        }
+        .doctor-warning-row {
+            background-color: rgba(220, 170, 60, 0.18);
+        }
+        .doctor-panel table {
+            min-width: 760px;
+        }
         @media (max-width: 820px) {
             .schema-layout { grid-template-columns: 1fr; }
             .schema-toolbar { align-items: stretch; }
             .schema-actions { width: 100%; }
+            .doctor-grid { grid-template-columns: 1fr; }
+            .doctor-hero { align-items: stretch; flex-direction: column; }
+            .doctor-actions { margin-left: 0; }
+        }
+        .compare-container { display: flex; flex-direction: column; gap: 14px; }
+        .compare-toolbar {
+            display: grid; grid-template-columns: minmax(240px, 1fr) auto; align-items: center;
+            gap: 12px; flex-wrap: wrap;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .compare-toolbar h2 {
+            font-size: 15px; margin-bottom: 4px;
+        }
+        .compare-toolbar p {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .compare-actions {
+            display: grid; grid-template-columns: repeat(2, max-content);
+            align-items: center; justify-content: end;
+            gap: 8px;
+        }
+        .compare-toggle {
+            display: flex; align-items: center; gap: 6px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .compare-order-panel {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            padding: 12px; display: flex; flex-direction: column; gap: 10px;
+        }
+        .compare-order-panel h3 {
+            font-size: 14px;
+        }
+        .compare-order-controls {
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 10px;
+        }
+        .compare-order-controls label {
+            display: flex; flex-direction: column; gap: 6px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .compare-order-controls select {
+            width: 100%; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+        }
+        .compare-mapping-panel {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            padding: 12px; display: flex; flex-direction: column; gap: 12px;
+        }
+        .compare-mapping-header {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 10px; flex-wrap: wrap;
+        }
+        .compare-mapping-header h3 {
+            font-size: 14px;
+        }
+        .compare-mapping-header span {
+            color: var(--vscode-descriptionForeground);
+            font-size: 12px; word-break: break-all;
+        }
+        .compare-column-lists {
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px;
+        }
+        .compare-column-lists h4 {
+            font-size: 12px; color: var(--vscode-descriptionForeground);
+            margin-bottom: 6px; text-transform: uppercase;
+        }
+        .compare-column-list {
+            border: 1px solid var(--vscode-panel-border); border-radius: 3px;
+            max-height: 180px; overflow: auto; background-color: var(--vscode-editor-background);
+        }
+        .compare-column-item {
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(90px, 0.7fr);
+            gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .compare-column-item span {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .compare-column-item code {
+            color: var(--vscode-descriptionForeground);
+            font-family: var(--vscode-editor-font-family); font-size: 11px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .compare-mapping-list {
+            display: flex; flex-direction: column; gap: 6px;
+            max-height: 260px; overflow: auto;
+        }
+        .compare-mapping-row {
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 1.2fr) minmax(90px, 0.7fr);
+            gap: 8px; align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .compare-mapping-row-header {
+            color: var(--vscode-descriptionForeground);
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            padding-top: 0;
+        }
+        .compare-mapping-base {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            font-family: var(--vscode-editor-font-family);
+        }
+        .compare-mapping-row select {
+            width: 100%; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+        }
+        .compare-mapping-row code {
+            color: var(--vscode-descriptionForeground);
+            font-family: var(--vscode-editor-font-family); font-size: 11px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .compare-error {
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .compare-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .compare-results {
+            display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+            gap: 14px; align-items: start;
+        }
+        .compare-pane {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            min-width: 0;
+        }
+        .compare-pane h3 {
+            font-size: 13px; padding: 10px 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .compare-table-wrap {
+            max-height: 64vh; overflow: auto;
+        }
+        .compare-table-wrap table {
+            min-width: 100%; width: max-content;
+        }
+        .compare-row-index {
+            color: var(--vscode-descriptionForeground);
+            font-family: var(--vscode-editor-font-family);
+            font-weight: 600;
+        }
+        .compare-row-mismatch {
+            background-color: rgba(180, 40, 40, 0.18);
+        }
+        .compare-row-mismatch:hover {
+            background-color: rgba(180, 40, 40, 0.26);
+        }
+        .compare-row-missing {
+            background-color: rgba(180, 40, 40, 0.3);
+        }
+        .compare-cell-mismatch {
+            background-color: rgba(220, 170, 60, 0.38);
+            color: var(--vscode-editor-foreground);
+            font-weight: 600;
+            outline: 1px solid rgba(220, 170, 60, 0.7);
+            outline-offset: -1px;
+        }
+        @media (max-width: 980px) {
+            .compare-toolbar { grid-template-columns: 1fr; }
+            .compare-actions { justify-content: stretch; grid-template-columns: 1fr; }
+            .compare-results { grid-template-columns: 1fr; }
+            .compare-column-lists { grid-template-columns: 1fr; }
+            .compare-mapping-row { grid-template-columns: 1fr; }
+            .compare-order-controls { grid-template-columns: 1fr; }
         }
         .icon { font-size: 14px; }
         `;

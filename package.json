@@ -2,13 +2,22 @@
   "name": "parquet-x",
   "displayName": "parquetx",
   "description": "View Parquet Files",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
+  "license": "MIT",
   "author": {
     "name": "Akshara A",
     "email": "akshararajan26@outlook.in"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akshara-a/Parquet-X.git"
+  },
+  "bugs": {
+    "url": "https://github.com/akshara-a/Parquet-X/issues"
+  },
+  "homepage": "https://github.com/akshara-a/Parquet-X#readme",
   "engines": {
     "vscode": "^1.104.0"
   },

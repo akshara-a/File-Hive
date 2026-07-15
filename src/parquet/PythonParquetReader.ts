@@ -2,7 +2,18 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
-import { IParquetReader, ParquetDataResult, ParquetExportFormat, ParquetExportResult } from '../interfaces/IParquetReader';
+import {
+    IParquetReader,
+    ParquetCompareMapping,
+    ParquetCompareOrderMapping,
+    ParquetCompareMetadataResult,
+    ParquetCompareResult,
+    ParquetDataResult,
+    ParquetDatasetAnalysisResult,
+    ParquetExportFormat,
+    ParquetExportResult,
+    ParquetSchemaDriftResult
+} from '../interfaces/IParquetReader';
 
 export class PythonParquetReader implements IParquetReader {
     constructor(
@@ -84,6 +95,130 @@ export class PythonParquetReader implements IParquetReader {
         });
     }
 
+    async getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--compare-metadata', compareUri.fsPath],
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async compareParquetFile(
+        uri: vscode.Uri,
+        compareUri: vscode.Uri,
+        mappings?: ParquetCompareMapping[],
+        orderMapping?: ParquetCompareOrderMapping
+    ): Promise<ParquetCompareResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            const args = [pythonScriptPath, uri.fsPath, '--compare', compareUri.fsPath];
+            if (mappings && mappings.length > 0) {
+                args.push(JSON.stringify(mappings));
+            } else {
+                args.push('');
+            }
+
+            if (orderMapping) {
+                args.push(JSON.stringify(orderMapping));
+            }
+
+            this.executePythonScriptWithArgs(
+                args,
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--schema-drift', referenceUri.fsPath],
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--dataset-scan', folderUri.fsPath],
+                pythonPath,
+                resolve,
+                180000
+            );
+        });
+    }
+
     /**
      * Checks if a Python script exists at the given path.
      * If the script does not exist, a message is logged to the console.
@@ -129,13 +264,13 @@ export class PythonParquetReader implements IParquetReader {
         const args = query && query.trim()
             ? [scriptPath, filePath, query]
             : [scriptPath, filePath];
-        this.executePythonScriptWithArgs(args, pythonPath, resolve, 30000);
+        this.executePythonScriptWithArgs(args, pythonPath, resolve, 120000);
     }
 
     private executePythonScriptWithArgs(
         args: string[],
         pythonPath: string,
-        resolve: (result: ParquetDataResult | ParquetExportResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
         timeoutMs: number
     ): void {
         const pythonProcess = spawn(pythonPath, args);
@@ -182,7 +317,7 @@ export class PythonParquetReader implements IParquetReader {
         signal: NodeJS.Signals | null, 
         stdout: string, 
         stderr: string, 
-        resolve: (result: ParquetDataResult | ParquetExportResult) => void
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void
     ): void {
         console.log(`[PythonParquetReader] Python process exited with code: ${code}, signal: ${signal}`);
         
@@ -204,7 +339,7 @@ export class PythonParquetReader implements IParquetReader {
     }
 
     /**
-     * Kills the given Python process after a timeout period of 30 seconds and
+     * Kills the given Python process after the configured timeout period and
      * resolves the given callback function with an error message indicating that
      * the operation timed out.
      * @param process The Python process to kill.
@@ -213,7 +348,7 @@ export class PythonParquetReader implements IParquetReader {
      */
     private setTimeoutHandler(
         process: any,
-        resolve: (result: ParquetDataResult | ParquetExportResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
         timeoutMs: number
     ): void {
         setTimeout(() => {

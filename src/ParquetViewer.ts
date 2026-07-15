@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { IParquetReader } from './interfaces/IParquetReader';
+import { IParquetReader, ParquetCompareMapping, ParquetCompareOrderMapping } from './interfaces/IParquetReader';
 import { IWebviewRenderer } from './interfaces/IWebviewRenderer';
 
 export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'parquetViewer.parquetViewer';
+    private readonly compareFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
 
     /**
      * Constructs a ParquetViewer object.
@@ -111,6 +112,21 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                     break;
                 case 'export':
                     await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query);
+                    break;
+                case 'selectCompareFile':
+                    await this.selectCompareFile(webviewPanel, document.uri, message.customMappingEnabled);
+                    break;
+                case 'runStrictCompare':
+                    await this.runCompare(webviewPanel, document.uri, undefined, message.orderMapping);
+                    break;
+                case 'runCustomCompare':
+                    await this.runCompare(webviewPanel, document.uri, message.mappings, message.orderMapping);
+                    break;
+                case 'selectDoctorReferenceFile':
+                    await this.selectDoctorReferenceFile(webviewPanel, document.uri);
+                    break;
+                case 'selectDoctorDatasetFolder':
+                    await this.selectDoctorDatasetFolder(webviewPanel, document.uri);
                     break;
             }
         });
@@ -225,6 +241,167 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         return { 'SQLite Databases': ['sqlite', 'db'] };
+    }
+
+    private async selectCompareFile(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        customMappingEnabled?: unknown
+    ): Promise<void> {
+        const selectedFiles = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: { 'Parquet Files': ['parquet'] },
+            openLabel: 'Compare With'
+        });
+
+        if (!selectedFiles || selectedFiles.length === 0) {
+            this.compareFiles.delete(webviewPanel);
+            await webviewPanel.webview.postMessage({
+                type: 'compareResult',
+                result: { success: false, error: 'Compare cancelled.' }
+            });
+            return;
+        }
+
+        const compareUri = selectedFiles[0];
+        this.compareFiles.set(webviewPanel, compareUri);
+
+        const metadataResult = await this.parquetReader.getParquetCompareMetadata(uri, compareUri);
+        await webviewPanel.webview.postMessage({ type: 'compareMetadata', result: metadataResult });
+
+        if (!metadataResult.success) {
+            vscode.window.showErrorMessage(metadataResult.error || 'Could not read compare columns.');
+            return;
+        }
+    }
+
+    private async runCompare(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        mappings?: unknown,
+        orderMapping?: unknown
+    ): Promise<void> {
+        const compareUri = this.compareFiles.get(webviewPanel);
+
+        if (!compareUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'compareResult',
+                result: { success: false, error: 'Choose a compare file first.' }
+            });
+            return;
+        }
+
+        const compareMappings = this.parseCompareMappings(mappings);
+        const compareOrderMapping = this.parseCompareOrderMapping(orderMapping);
+
+        if (!compareOrderMapping) {
+            await webviewPanel.webview.postMessage({
+                type: 'compareResult',
+                result: { success: false, error: 'Select an order column before comparing.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.compareParquetFile(
+            uri,
+            compareUri,
+            compareMappings,
+            compareOrderMapping
+        );
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Parquet compare failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'compareResult', result });
+    }
+
+    private parseCompareMappings(mappings?: unknown): ParquetCompareMapping[] | undefined {
+        if (!Array.isArray(mappings)) {
+            return undefined;
+        }
+
+        const parsedMappings = mappings
+            .filter((mapping): mapping is { baseColumn: unknown; compareColumn: unknown } => {
+                return typeof mapping === 'object' && mapping !== null &&
+                    'baseColumn' in mapping && 'compareColumn' in mapping;
+            })
+            .map((mapping) => ({
+                baseColumn: String(mapping.baseColumn),
+                compareColumn: String(mapping.compareColumn)
+            }))
+            .filter((mapping) => mapping.baseColumn && mapping.compareColumn);
+
+        return parsedMappings.length > 0 ? parsedMappings : undefined;
+    }
+
+    private parseCompareOrderMapping(orderMapping?: unknown): ParquetCompareOrderMapping | undefined {
+        if (typeof orderMapping !== 'object' || orderMapping === null ||
+            !('baseColumn' in orderMapping) || !('compareColumn' in orderMapping)) {
+            return undefined;
+        }
+
+        const parsedOrderMapping = {
+            baseColumn: String(orderMapping.baseColumn),
+            compareColumn: String(orderMapping.compareColumn)
+        };
+
+        return parsedOrderMapping.baseColumn && parsedOrderMapping.compareColumn
+            ? parsedOrderMapping
+            : undefined;
+    }
+
+    private async selectDoctorReferenceFile(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const selectedFiles = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: { 'Parquet Files': ['parquet'] },
+            openLabel: 'Use as Reference'
+        });
+
+        if (!selectedFiles || selectedFiles.length === 0) {
+            await webviewPanel.webview.postMessage({
+                type: 'doctorSchemaDriftResult',
+                result: { success: false, error: 'Schema drift check cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.detectSchemaDrift(uri, selectedFiles[0]);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Schema drift check failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'doctorSchemaDriftResult', result });
+    }
+
+    private async selectDoctorDatasetFolder(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const selectedFolders = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: 'Scan Dataset'
+        });
+
+        if (!selectedFolders || selectedFolders.length === 0) {
+            await webviewPanel.webview.postMessage({
+                type: 'doctorDatasetResult',
+                result: { success: false, error: 'Dataset scan cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.scanParquetDataset(uri, selectedFolders[0]);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Dataset scan failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'doctorDatasetResult', result });
     }
 
         /**
