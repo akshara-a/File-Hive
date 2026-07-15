@@ -4,6 +4,9 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 import {
     IParquetReader,
+    ParquetCompareMapping,
+    ParquetCompareOrderMapping,
+    ParquetCompareMetadataResult,
     ParquetCompareResult,
     ParquetDataResult,
     ParquetExportFormat,
@@ -90,7 +93,7 @@ export class PythonParquetReader implements IParquetReader {
         });
     }
 
-    async compareParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult> {
+    async getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult> {
         const pythonPath = this.pythonManager.getPythonPath();
 
         if (!pythonPath) {
@@ -109,7 +112,50 @@ export class PythonParquetReader implements IParquetReader {
             }
 
             this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--compare', compareUri.fsPath],
+                [pythonScriptPath, uri.fsPath, '--compare-metadata', compareUri.fsPath],
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async compareParquetFile(
+        uri: vscode.Uri,
+        compareUri: vscode.Uri,
+        mappings?: ParquetCompareMapping[],
+        orderMapping?: ParquetCompareOrderMapping
+    ): Promise<ParquetCompareResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            const args = [pythonScriptPath, uri.fsPath, '--compare', compareUri.fsPath];
+            if (mappings && mappings.length > 0) {
+                args.push(JSON.stringify(mappings));
+            } else {
+                args.push('');
+            }
+
+            if (orderMapping) {
+                args.push(JSON.stringify(orderMapping));
+            }
+
+            this.executePythonScriptWithArgs(
+                args,
                 pythonPath,
                 resolve,
                 120000
@@ -168,7 +214,7 @@ export class PythonParquetReader implements IParquetReader {
     private executePythonScriptWithArgs(
         args: string[],
         pythonPath: string,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult) => void,
         timeoutMs: number
     ): void {
         const pythonProcess = spawn(pythonPath, args);
@@ -215,7 +261,7 @@ export class PythonParquetReader implements IParquetReader {
         signal: NodeJS.Signals | null, 
         stdout: string, 
         stderr: string, 
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult) => void
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult) => void
     ): void {
         console.log(`[PythonParquetReader] Python process exited with code: ${code}, signal: ${signal}`);
         
@@ -246,7 +292,7 @@ export class PythonParquetReader implements IParquetReader {
      */
     private setTimeoutHandler(
         process: any,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult) => void,
         timeoutMs: number
     ): void {
         setTimeout(() => {

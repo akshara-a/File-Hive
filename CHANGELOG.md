@@ -4,7 +4,8 @@
 ### Added
 - Added SQL-like querying for opened Parquet files using the `parquet_data` table alias
 - Added CSV, JSON, and SQLite export for the current query result
-- Added Parquet-to-Parquet comparison with same-column validation and highlighted row/value mismatches
+- Added Parquet-to-Parquet comparison with mandatory order column selection, same-column validation, custom same-type column mapping, and highlighted row/value mismatches
+- Added the first Parquet Doctor diagnostics: file integrity checks, schema validation, row group analysis, column statistics checks, and health report recommendations
 - Added a dedicated schema panel with searchable columns and nested structure
 - Added schema metadata for physical types, logical types, nullability, repetition levels, definition levels, decimals, and timestamps
 - Added copy schema as JSON and generate schema documentation actions

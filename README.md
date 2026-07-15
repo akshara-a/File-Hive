@@ -8,7 +8,8 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 - **Data Visualization** - Browse your data in a clean, organized interface
 - **SQL Querying** - Run SQL-like `SELECT` queries against the open file
 - **Export Data** - Export the current result set to CSV, JSON, or SQLite
-- **Compare Parquet Files** - Compare two files with matching columns and highlight row/value mismatches
+- **Compare Parquet Files** - Compare matching files or custom same-type column mappings with highlighted row/value mismatches
+- **Parquet Doctor** - Diagnose file integrity, schema quality, row groups, statistics, and suggested fixes
 - **Schema Explorer** - Inspect physical types, logical types, nullability, levels, decimals, timestamps, and nested structure
 - **Fast & Efficient** - Powered by DuckDB for quick data processing
 - **Easy Refresh** - Reload data with a single click
@@ -53,7 +54,21 @@ Exports use the current SQL query, so you can filter or select columns before sa
 
 Open the **Compare** tab and choose another `.parquet` file to compare with the current file.
 
-The compare workflow validates that both Parquet files have the same column names in the same order before comparison starts. Rows are compared by row order. Mismatched rows are marked in red, and mismatched values are highlighted inside the split current-file and compare-file tables.
+Strict compare validates that both Parquet files have the same column names in the same order before comparison starts. Before running compare, choose the column that should be used to order rows in both files.
+
+For files with different column names, enable **Custom mapping** to list columns from both files and map columns manually. Custom mapped columns must have the same type before comparison runs, including the selected order columns.
+
+Rows are sorted by the selected order column and then compared by row order. Mismatched rows are marked in red, and mismatched values are highlighted inside the split current-file and compare-file tables.
+
+### Running Parquet Doctor
+
+Open the **Doctor** tab to review the file health report. Parquet Doctor includes:
+
+- File integrity checks for magic bytes, missing footers, unreadable row groups, and incomplete writes
+- Schema validation for physical types, logical types, nullability, decimals, and timestamps
+- Row group analysis with row counts, sizes, compression ratio, and column-chunk details
+- Column statistics checks for min/max, null count, distinct count, all-null columns, constant-value columns, and missing statistics
+- Health score with errors, warnings, passed checks, and suggested fixes
 
 ### Exploring Schema
 
