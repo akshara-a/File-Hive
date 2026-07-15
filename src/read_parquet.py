@@ -6,7 +6,9 @@ import sys
 import os
 
 MAX_RESULT_ROWS = 1000
+MAX_COMPARE_MISMATCHES = 1000
 TABLE_NAME = "parquet_data"
+COMPARE_TABLE_NAME = "compare_data"
 SCHEMA_ROOT_NAMES = ("schema", "root")
 
 def sql_string(value):
@@ -35,6 +37,13 @@ def create_parquet_view(conn, file_path):
     parquet_path = sql_string(file_path)
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {TABLE_NAME} AS "
+        f"SELECT * FROM read_parquet({parquet_path})"
+    )
+
+def create_named_parquet_view(conn, table_name, file_path):
+    parquet_path = sql_string(file_path)
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {table_name} AS "
         f"SELECT * FROM read_parquet({parquet_path})"
     )
 
@@ -69,6 +78,21 @@ def serialize_export_value(value):
         return value
 
     return str(value)
+
+def serialize_compare_value(value):
+    if value is None or isinstance(value, (int, float, bool, str)):
+        return value
+
+    return str(value)
+
+def row_to_dict(columns, row):
+    if row is None:
+        return None
+
+    return {
+        column: serialize_compare_value(value)
+        for column, value in zip(columns, row)
+    }
 
 def sqlite_identifier(value):
     return '"' + str(value).replace('"', '""') + '"'
@@ -456,18 +480,162 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
             "query": user_query
         }
 
+def compare_parquet_files(base_path, compare_path):
+    print(f"DEBUG: Starting parquet compare: {base_path} vs {compare_path}", file=sys.stderr)
+
+    if not os.path.exists(base_path):
+        return {
+            "success": False,
+            "error": f"Base file does not exist: {base_path}"
+        }
+
+    if not os.path.exists(compare_path):
+        return {
+            "success": False,
+            "error": f"Compare file does not exist: {compare_path}"
+        }
+
+    base_conn = None
+    compare_conn = None
+
+    try:
+        base_conn = duckdb.connect()
+        compare_conn = duckdb.connect()
+        create_named_parquet_view(base_conn, TABLE_NAME, base_path)
+        create_named_parquet_view(compare_conn, TABLE_NAME, compare_path)
+
+        base_cursor = base_conn.execute(f"SELECT * FROM {TABLE_NAME} LIMIT 0")
+        base_columns = [desc[0] for desc in base_cursor.description]
+        compare_cursor = compare_conn.execute(f"SELECT * FROM {TABLE_NAME} LIMIT 0")
+        compare_columns = [desc[0] for desc in compare_cursor.description]
+
+        if base_columns != compare_columns:
+            base_conn.close()
+            compare_conn.close()
+            base_conn = None
+            compare_conn = None
+            return {
+                "success": False,
+                "basePath": base_path,
+                "comparePath": compare_path,
+                "error": "Only Parquet files with the same columns in the same order can be compared.",
+                "baseColumns": base_columns,
+                "compareColumns": compare_columns
+            }
+
+        display_columns = make_unique_column_names(base_columns)
+        total_rows_base = base_conn.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
+        total_rows_compare = compare_conn.execute(f"SELECT COUNT(*) FROM {TABLE_NAME}").fetchone()[0]
+
+        base_cursor = base_conn.execute(f"SELECT * FROM {TABLE_NAME}")
+        compare_cursor = compare_conn.execute(f"SELECT * FROM {TABLE_NAME}")
+
+        mismatches = []
+        mismatch_count = 0
+        row_index = 0
+
+        while True:
+            base_rows = base_cursor.fetchmany(1000)
+            compare_rows = compare_cursor.fetchmany(1000)
+
+            if not base_rows and not compare_rows:
+                break
+
+            batch_size = max(len(base_rows), len(compare_rows))
+
+            for batch_index in range(batch_size):
+                base_row = base_rows[batch_index] if batch_index < len(base_rows) else None
+                compare_row = compare_rows[batch_index] if batch_index < len(compare_rows) else None
+                mismatch_type = None
+                mismatched_columns = []
+
+                if base_row is None:
+                    mismatch_type = "missing_in_base"
+                    mismatched_columns = display_columns
+                elif compare_row is None:
+                    mismatch_type = "missing_in_compare"
+                    mismatched_columns = display_columns
+                else:
+                    for column, base_value, compare_value in zip(display_columns, base_row, compare_row):
+                        if base_value != compare_value:
+                            mismatched_columns.append(column)
+
+                    if mismatched_columns:
+                        mismatch_type = "value_mismatch"
+
+                if mismatch_type:
+                    mismatch_count += 1
+                    if len(mismatches) < MAX_COMPARE_MISMATCHES:
+                        mismatches.append({
+                            "rowIndex": row_index,
+                            "type": mismatch_type,
+                            "base": row_to_dict(display_columns, base_row),
+                            "compare": row_to_dict(display_columns, compare_row),
+                            "mismatchedColumns": mismatched_columns
+                        })
+
+                row_index += 1
+
+        base_conn.close()
+        compare_conn.close()
+        base_conn = None
+        compare_conn = None
+
+        return {
+            "success": True,
+            "basePath": base_path,
+            "comparePath": compare_path,
+            "columns": display_columns,
+            "totalRowsBase": total_rows_base,
+            "totalRowsCompare": total_rows_compare,
+            "rowsCompared": row_index,
+            "mismatchCount": mismatch_count,
+            "mismatches": mismatches,
+            "mismatchLimit": MAX_COMPARE_MISMATCHES,
+            "truncated": mismatch_count > len(mismatches)
+        }
+
+    except Exception as e:
+        if base_conn is not None:
+            base_conn.close()
+        if compare_conn is not None:
+            compare_conn.close()
+
+        import traceback
+        print(f"DEBUG: Error comparing parquet files: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+
+        return {
+            "success": False,
+            "basePath": base_path,
+            "comparePath": compare_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>]'
+            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--compare compare_path]'
         }))
         sys.exit(1)
     
     file_path = sys.argv[1]
     args = sys.argv[2:]
 
-    if "--export" in args:
+    if "--compare" in args:
+        compare_index = args.index("--compare")
+
+        if len(args) < compare_index + 2:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --compare <compare_path>'
+            }
+        else:
+            compare_path = args[compare_index + 1]
+            result = compare_parquet_files(file_path, compare_path)
+    elif "--export" in args:
         export_index = args.index("--export")
         user_query = args[0] if export_index > 0 and args[0].strip() else None
 

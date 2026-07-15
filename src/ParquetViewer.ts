@@ -112,6 +112,9 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                 case 'export':
                     await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query);
                     break;
+                case 'selectCompareFile':
+                    await this.selectCompareFile(webviewPanel, document.uri);
+                    break;
             }
         });
     }
@@ -225,6 +228,33 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         return { 'SQLite Databases': ['sqlite', 'db'] };
+    }
+
+    private async selectCompareFile(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const selectedFiles = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: { 'Parquet Files': ['parquet'] },
+            openLabel: 'Compare With'
+        });
+
+        if (!selectedFiles || selectedFiles.length === 0) {
+            await webviewPanel.webview.postMessage({
+                type: 'compareResult',
+                result: { success: false, error: 'Compare cancelled.' }
+            });
+            return;
+        }
+
+        const compareUri = selectedFiles[0];
+        const result = await this.parquetReader.compareParquetFile(uri, compareUri);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Parquet compare failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'compareResult', result });
     }
 
         /**

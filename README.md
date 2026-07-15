@@ -8,6 +8,7 @@ A powerful VS Code extension for viewing and exploring Apache Parquet files dire
 - **Data Visualization** - Browse your data in a clean, organized interface
 - **SQL Querying** - Run SQL-like `SELECT` queries against the open file
 - **Export Data** - Export the current result set to CSV, JSON, or SQLite
+- **Compare Parquet Files** - Compare two files with matching columns and highlight row/value mismatches
 - **Schema Explorer** - Inspect physical types, logical types, nullability, levels, decimals, timestamps, and nested structure
 - **Fast & Efficient** - Powered by DuckDB for quick data processing
 - **Easy Refresh** - Reload data with a single click
@@ -47,6 +48,12 @@ Use the export buttons in the query panel to save the current query result as:
 - SQLite database
 
 Exports use the current SQL query, so you can filter or select columns before saving.
+
+### Comparing Parquet Files
+
+Open the **Compare** tab and choose another `.parquet` file to compare with the current file.
+
+The compare workflow validates that both Parquet files have the same column names in the same order before comparison starts. Rows are compared by row order. Mismatched rows are marked in red, and mismatched values are highlighted inside the split current-file and compare-file tables.
 
 ### Exploring Schema
 

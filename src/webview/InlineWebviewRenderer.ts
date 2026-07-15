@@ -34,6 +34,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     ${this.generateDataContainer()}
                 </div>
                 ${this.generateSchemaContainer()}
+                ${this.generateCompareContainer()}
             </div>
 
             <script nonce="${nonce}">
@@ -65,6 +66,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         <div class="view-tabs" role="tablist">
             <button id="data-tab" class="tab-btn active" role="tab" aria-selected="true">Data</button>
             <button id="schema-tab" class="tab-btn" role="tab" aria-selected="false">Schema</button>
+            <button id="compare-tab" class="tab-btn" role="tab" aria-selected="false">Compare</button>
         </div>`;
     }
 
@@ -85,6 +87,47 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <div class="query-meta">
                 Table: <code>parquet_data</code>
                 <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
+            </div>
+        </section>`;
+    }
+
+    private generateCompareContainer(): string {
+        return `
+        <section id="compare-container" class="compare-container view-panel hidden">
+            <div class="compare-toolbar">
+                <div>
+                    <h2>Compare Parquet Files</h2>
+                    <p>Compares rows by row order. Column names and order must match before comparison starts.</p>
+                </div>
+                <button id="select-compare-file-btn" class="btn">Choose Compare File</button>
+            </div>
+            <div id="compare-error" class="compare-error hidden"></div>
+            <div id="compare-summary" class="compare-summary hidden">
+                <div class="summary-item">Base Rows: <span id="compare-base-rows">0</span></div>
+                <div class="summary-item">Compare Rows: <span id="compare-other-rows">0</span></div>
+                <div class="summary-item">Rows Checked: <span id="compare-rows-checked">0</span></div>
+                <div class="summary-item">Mismatched Rows: <span id="compare-mismatch-count">0</span></div>
+            </div>
+            <div id="compare-empty" class="empty-value">Choose another Parquet file to compare.</div>
+            <div id="compare-results" class="compare-results hidden">
+                <div class="compare-pane">
+                    <h3>Current File</h3>
+                    <div class="compare-table-wrap">
+                        <table>
+                            <thead id="compare-base-header"></thead>
+                            <tbody id="compare-base-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="compare-pane">
+                    <h3>Compare File</h3>
+                    <div class="compare-table-wrap">
+                        <table>
+                            <thead id="compare-other-header"></thead>
+                            <tbody id="compare-other-body"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </section>`;
     }
@@ -169,6 +212,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentQuery = DEFAULT_QUERY;
         let currentSchema = null;
         let currentSchemaDocs = '';
+        let currentCompareResult = null;
 
         function initialize(data) {
             console.log('Webview initialized with data:', data);
@@ -199,16 +243,22 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         function setActiveView(viewName) {
             const dataTab = document.getElementById('data-tab');
             const schemaTab = document.getElementById('schema-tab');
+            const compareTab = document.getElementById('compare-tab');
             const dataView = document.getElementById('data-view');
             const schemaContainer = document.getElementById('schema-container');
+            const compareContainer = document.getElementById('compare-container');
 
             const showSchema = viewName === 'schema';
-            dataTab.classList.toggle('active', !showSchema);
+            const showCompare = viewName === 'compare';
+            dataTab.classList.toggle('active', !showSchema && !showCompare);
             schemaTab.classList.toggle('active', showSchema);
-            dataTab.setAttribute('aria-selected', String(!showSchema));
+            compareTab.classList.toggle('active', showCompare);
+            dataTab.setAttribute('aria-selected', String(!showSchema && !showCompare));
             schemaTab.setAttribute('aria-selected', String(showSchema));
-            dataView.classList.toggle('hidden', showSchema);
+            compareTab.setAttribute('aria-selected', String(showCompare));
+            dataView.classList.toggle('hidden', showSchema || showCompare);
             schemaContainer.classList.toggle('hidden', !showSchema);
+            compareContainer.classList.toggle('hidden', !showCompare);
         }
 
         function writeTextToClipboard(text, successMessage) {
@@ -283,6 +333,152 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 'Exported ' + formatCount(result.rowsExported) + ' rows to ' + result.format.toUpperCase(),
                 'status-success'
             );
+        }
+
+        function handleCompareResult(result) {
+            currentCompareResult = result;
+            renderCompareResult(result);
+
+            if (!result || !result.success) {
+                if (result && result.error === 'Compare cancelled.') {
+                    setStatus('Compare cancelled', 'status-success');
+                } else {
+                    setStatus(result && result.error ? result.error : 'Compare failed', 'status-error');
+                }
+                return;
+            }
+
+            setActiveView('compare');
+            setStatus(
+                'Found ' + formatCount(result.mismatchCount) + ' mismatched rows',
+                result.mismatchCount ? 'status-error' : 'status-success'
+            );
+        }
+
+        function renderCompareResult(result) {
+            const errorElement = document.getElementById('compare-error');
+            const summaryElement = document.getElementById('compare-summary');
+            const emptyElement = document.getElementById('compare-empty');
+            const resultsElement = document.getElementById('compare-results');
+
+            errorElement.classList.add('hidden');
+            summaryElement.classList.add('hidden');
+            resultsElement.classList.add('hidden');
+            emptyElement.classList.remove('hidden');
+
+            if (!result) {
+                emptyElement.textContent = 'Choose another Parquet file to compare.';
+                return;
+            }
+
+            if (!result.success) {
+                emptyElement.classList.add('hidden');
+                errorElement.textContent = result.error || 'Compare failed';
+                errorElement.classList.remove('hidden');
+                clearCompareTables();
+                setActiveView('compare');
+                return;
+            }
+
+            document.getElementById('compare-base-rows').textContent = formatCount(result.totalRowsBase);
+            document.getElementById('compare-other-rows').textContent = formatCount(result.totalRowsCompare);
+            document.getElementById('compare-rows-checked').textContent = formatCount(result.rowsCompared);
+            document.getElementById('compare-mismatch-count').textContent = formatCount(result.mismatchCount);
+            summaryElement.classList.remove('hidden');
+            emptyElement.classList.add('hidden');
+            resultsElement.classList.remove('hidden');
+
+            if (result.truncated) {
+                errorElement.textContent = 'Showing first ' + formatCount(result.mismatchLimit) + ' mismatches.';
+                errorElement.classList.remove('hidden');
+            }
+
+            createCompareTables(result.columns || [], result.mismatches || []);
+        }
+
+        function clearCompareTables() {
+            document.getElementById('compare-base-header').innerHTML = '';
+            document.getElementById('compare-base-body').innerHTML = '';
+            document.getElementById('compare-other-header').innerHTML = '';
+            document.getElementById('compare-other-body').innerHTML = '';
+        }
+
+        function createCompareTables(columns, mismatches) {
+            createCompareHeader(document.getElementById('compare-base-header'), columns);
+            createCompareHeader(document.getElementById('compare-other-header'), columns);
+
+            const baseBody = document.getElementById('compare-base-body');
+            const otherBody = document.getElementById('compare-other-body');
+            baseBody.innerHTML = '';
+            otherBody.innerHTML = '';
+
+            if (!mismatches.length) {
+                appendCompareEmptyRow(baseBody, columns.length + 1, 'No mismatches found');
+                appendCompareEmptyRow(otherBody, columns.length + 1, 'No mismatches found');
+                return;
+            }
+
+            mismatches.forEach((mismatch) => {
+                baseBody.appendChild(createCompareRow(columns, mismatch, mismatch.base, 'base'));
+                otherBody.appendChild(createCompareRow(columns, mismatch, mismatch.compare, 'compare'));
+            });
+        }
+
+        function createCompareHeader(headerElement, columns) {
+            headerElement.innerHTML = '';
+            const row = document.createElement('tr');
+            const rowIndexHeader = document.createElement('th');
+            rowIndexHeader.textContent = '#';
+            row.appendChild(rowIndexHeader);
+
+            columns.forEach((column) => {
+                const th = document.createElement('th');
+                th.textContent = column;
+                th.title = column;
+                row.appendChild(th);
+            });
+
+            headerElement.appendChild(row);
+        }
+
+        function createCompareRow(columns, mismatch, rowData, side) {
+            const row = document.createElement('tr');
+            row.className = 'compare-row-mismatch';
+
+            if ((side === 'base' && mismatch.type === 'missing_in_base') ||
+                (side === 'compare' && mismatch.type === 'missing_in_compare')) {
+                row.classList.add('compare-row-missing');
+            }
+
+            const rowIndexCell = document.createElement('td');
+            rowIndexCell.textContent = String(mismatch.rowIndex + 1);
+            rowIndexCell.className = 'compare-row-index';
+            row.appendChild(rowIndexCell);
+
+            columns.forEach((column) => {
+                const cell = document.createElement('td');
+                const value = rowData ? rowData[column] : undefined;
+                cell.textContent = value === null || value === undefined ? 'NULL' : String(value);
+                cell.title = cell.textContent;
+
+                if (mismatch.mismatchedColumns && mismatch.mismatchedColumns.includes(column)) {
+                    cell.classList.add('compare-cell-mismatch');
+                }
+
+                row.appendChild(cell);
+            });
+
+            return row;
+        }
+
+        function appendCompareEmptyRow(body, colspan, message) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = colspan;
+            cell.className = 'empty-value';
+            cell.textContent = message;
+            row.appendChild(cell);
+            body.appendChild(row);
         }
 
         function updateView(data) {
@@ -600,11 +796,13 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const refreshBtn = document.getElementById('refresh-btn');
             const dataTab = document.getElementById('data-tab');
             const schemaTab = document.getElementById('schema-tab');
+            const compareTab = document.getElementById('compare-tab');
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportJsonBtn = document.getElementById('export-json-btn');
             const exportSqliteBtn = document.getElementById('export-sqlite-btn');
+            const selectCompareFileBtn = document.getElementById('select-compare-file-btn');
             const queryInput = document.getElementById('query-input');
             const schemaSearchInput = document.getElementById('schema-search-input');
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
@@ -620,6 +818,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (schemaTab) {
                 schemaTab.addEventListener('click', () => {
                     setActiveView('schema');
+                });
+            }
+
+            if (compareTab) {
+                compareTab.addEventListener('click', () => {
+                    setActiveView('compare');
                 });
             }
             
@@ -681,6 +885,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (selectCompareFileBtn) {
+                selectCompareFileBtn.addEventListener('click', () => {
+                    setActiveView('compare');
+                    setStatus('Choosing compare file...', 'status-loading');
+                    vscode.postMessage({ type: 'selectCompareFile' });
+                });
+            }
+
             if (schemaSearchInput) {
                 schemaSearchInput.addEventListener('input', () => {
                     if (currentSchema) {
@@ -729,6 +941,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     break;
                 case 'exportResult':
                     handleExportResult(message.result);
+                    break;
+                case 'compareResult':
+                    handleCompareResult(message.result);
                     break;
                 default:
                     console.log('Unknown message type:', message.type);
@@ -1000,6 +1215,73 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             .schema-layout { grid-template-columns: 1fr; }
             .schema-toolbar { align-items: stretch; }
             .schema-actions { width: 100%; }
+        }
+        .compare-container { display: flex; flex-direction: column; gap: 14px; }
+        .compare-toolbar {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 12px; flex-wrap: wrap;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .compare-toolbar h2 {
+            font-size: 15px; margin-bottom: 4px;
+        }
+        .compare-toolbar p {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .compare-error {
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .compare-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .compare-results {
+            display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+            gap: 14px; align-items: start;
+        }
+        .compare-pane {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            min-width: 0;
+        }
+        .compare-pane h3 {
+            font-size: 13px; padding: 10px 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .compare-table-wrap {
+            max-height: 64vh; overflow: auto;
+        }
+        .compare-table-wrap table {
+            min-width: 100%; width: max-content;
+        }
+        .compare-row-index {
+            color: var(--vscode-descriptionForeground);
+            font-family: var(--vscode-editor-font-family);
+            font-weight: 600;
+        }
+        .compare-row-mismatch {
+            background-color: rgba(180, 40, 40, 0.18);
+        }
+        .compare-row-mismatch:hover {
+            background-color: rgba(180, 40, 40, 0.26);
+        }
+        .compare-row-missing {
+            background-color: rgba(180, 40, 40, 0.3);
+        }
+        .compare-cell-mismatch {
+            background-color: rgba(220, 170, 60, 0.38);
+            color: var(--vscode-editor-foreground);
+            font-weight: 600;
+            outline: 1px solid rgba(220, 170, 60, 0.7);
+            outline-offset: -1px;
+        }
+        @media (max-width: 980px) {
+            .compare-results { grid-template-columns: 1fr; }
         }
         .icon { font-size: 14px; }
         `;

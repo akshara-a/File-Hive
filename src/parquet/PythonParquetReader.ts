@@ -2,7 +2,13 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
-import { IParquetReader, ParquetDataResult, ParquetExportFormat, ParquetExportResult } from '../interfaces/IParquetReader';
+import {
+    IParquetReader,
+    ParquetCompareResult,
+    ParquetDataResult,
+    ParquetExportFormat,
+    ParquetExportResult
+} from '../interfaces/IParquetReader';
 
 export class PythonParquetReader implements IParquetReader {
     constructor(
@@ -84,6 +90,33 @@ export class PythonParquetReader implements IParquetReader {
         });
     }
 
+    async compareParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--compare', compareUri.fsPath],
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
     /**
      * Checks if a Python script exists at the given path.
      * If the script does not exist, a message is logged to the console.
@@ -135,7 +168,7 @@ export class PythonParquetReader implements IParquetReader {
     private executePythonScriptWithArgs(
         args: string[],
         pythonPath: string,
-        resolve: (result: ParquetDataResult | ParquetExportResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult) => void,
         timeoutMs: number
     ): void {
         const pythonProcess = spawn(pythonPath, args);
@@ -182,7 +215,7 @@ export class PythonParquetReader implements IParquetReader {
         signal: NodeJS.Signals | null, 
         stdout: string, 
         stderr: string, 
-        resolve: (result: ParquetDataResult | ParquetExportResult) => void
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult) => void
     ): void {
         console.log(`[PythonParquetReader] Python process exited with code: ${code}, signal: ${signal}`);
         
@@ -213,7 +246,7 @@ export class PythonParquetReader implements IParquetReader {
      */
     private setTimeoutHandler(
         process: any,
-        resolve: (result: ParquetDataResult | ParquetExportResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult) => void,
         timeoutMs: number
     ): void {
         setTimeout(() => {

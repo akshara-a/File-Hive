@@ -4,6 +4,7 @@
 ### Added
 - Added SQL-like querying for opened Parquet files using the `parquet_data` table alias
 - Added CSV, JSON, and SQLite export for the current query result
+- Added Parquet-to-Parquet comparison with same-column validation and highlighted row/value mismatches
 - Added a dedicated schema panel with searchable columns and nested structure
 - Added schema metadata for physical types, logical types, nullability, repetition levels, definition levels, decimals, and timestamps
 - Added copy schema as JSON and generate schema documentation actions
