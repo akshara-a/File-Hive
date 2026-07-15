@@ -426,15 +426,17 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function handleCompareResult(result) {
+            if (result && result.error === 'Compare cancelled.') {
+                resetCompareState();
+                setStatus('Compare cancelled', 'status-success');
+                return;
+            }
+
             currentCompareResult = result;
             renderCompareResult(result);
 
             if (!result || !result.success) {
-                if (result && result.error === 'Compare cancelled.') {
-                    setStatus('Compare cancelled', 'status-success');
-                } else {
-                    setStatus(result && result.error ? result.error : 'Compare failed', 'status-error');
-                }
+                setStatus(result && result.error ? result.error : 'Compare failed', 'status-error');
                 return;
             }
 
@@ -443,6 +445,26 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 'Found ' + formatCount(result.mismatchCount) + ' mismatched rows',
                 result.mismatchCount ? 'status-error' : 'status-success'
             );
+        }
+
+        function resetCompareState() {
+            currentCompareResult = null;
+            currentCompareMetadata = null;
+
+            document.getElementById('compare-error').classList.add('hidden');
+            document.getElementById('compare-summary').classList.add('hidden');
+            document.getElementById('compare-results').classList.add('hidden');
+            document.getElementById('compare-order-panel').classList.add('hidden');
+            document.getElementById('compare-mapping-panel').classList.add('hidden');
+            document.getElementById('compare-empty').textContent = 'Choose another Parquet file to compare.';
+            document.getElementById('compare-empty').classList.remove('hidden');
+            document.getElementById('compare-selected-file').textContent = 'No compare file selected';
+            document.getElementById('compare-base-order-select').innerHTML = '';
+            document.getElementById('compare-other-order-select').innerHTML = '';
+            document.getElementById('compare-base-column-list').innerHTML = '';
+            document.getElementById('compare-other-column-list').innerHTML = '';
+            document.getElementById('compare-mapping-list').innerHTML = '';
+            clearCompareTables();
         }
 
         function handleCompareMetadata(result) {
@@ -454,6 +476,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 return;
             }
 
+            document.getElementById('compare-error').classList.add('hidden');
+            document.getElementById('compare-summary').classList.add('hidden');
+            document.getElementById('compare-results').classList.add('hidden');
+            document.getElementById('compare-empty').textContent = 'Select an order column, then run compare.';
+            document.getElementById('compare-empty').classList.remove('hidden');
+            clearCompareTables();
             renderCompareMappingPanel(result);
             setStatus('Compare file loaded', 'status-success');
         }
@@ -493,9 +521,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 baseSelect.appendChild(option);
             });
 
-            baseSelect.addEventListener('change', () => {
+            baseSelect.onchange = () => {
                 populateCompareOrderOptions(metadata);
-            });
+            };
 
             if (baseColumns.length) {
                 baseSelect.value = baseColumns[0].name;
@@ -579,6 +607,15 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 mappingList.appendChild(empty);
                 return;
             }
+
+            const header = document.createElement('div');
+            header.className = 'compare-mapping-row compare-mapping-row-header';
+            ['Current column', 'Compare column', 'Type'].forEach((label) => {
+                const item = document.createElement('span');
+                item.textContent = label;
+                header.appendChild(item);
+            });
+            mappingList.appendChild(header);
 
             baseColumns.forEach((baseColumn) => {
                 const row = document.createElement('div');
@@ -1884,7 +1921,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .compare-container { display: flex; flex-direction: column; gap: 14px; }
         .compare-toolbar {
-            display: flex; justify-content: space-between; align-items: center;
+            display: grid; grid-template-columns: minmax(240px, 1fr) auto; align-items: center;
             gap: 12px; flex-wrap: wrap;
             padding: 12px; border: 1px solid var(--vscode-panel-border);
             border-radius: 3px; background-color: var(--vscode-sideBar-background);
@@ -1896,8 +1933,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-descriptionForeground); font-size: 12px;
         }
         .compare-actions {
-            display: flex; align-items: center; justify-content: flex-end;
-            gap: 8px; flex-wrap: wrap;
+            display: grid; grid-template-columns: repeat(2, max-content);
+            align-items: center; justify-content: end;
+            gap: 8px;
         }
         .compare-toggle {
             display: flex; align-items: center; gap: 6px;
@@ -1912,7 +1950,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             font-size: 14px;
         }
         .compare-order-controls {
-            display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
             gap: 10px;
         }
         .compare-order-controls label {
@@ -1942,7 +1980,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             font-size: 12px; word-break: break-all;
         }
         .compare-column-lists {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px;
         }
         .compare-column-lists h4 {
             font-size: 12px; color: var(--vscode-descriptionForeground);
@@ -1953,7 +1991,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             max-height: 180px; overflow: auto; background-color: var(--vscode-editor-background);
         }
         .compare-column-item {
-            display: grid; grid-template-columns: minmax(120px, 1fr) minmax(90px, auto);
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(90px, 0.7fr);
             gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border);
         }
         .compare-column-item span {
@@ -1969,8 +2007,15 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             max-height: 260px; overflow: auto;
         }
         .compare-mapping-row {
-            display: grid; grid-template-columns: minmax(140px, 1fr) minmax(180px, 1fr) minmax(90px, auto);
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 1.2fr) minmax(90px, 0.7fr);
             gap: 8px; align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        .compare-mapping-row-header {
+            color: var(--vscode-descriptionForeground);
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            padding-top: 0;
         }
         .compare-mapping-base {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -2039,6 +2084,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             outline-offset: -1px;
         }
         @media (max-width: 980px) {
+            .compare-toolbar { grid-template-columns: 1fr; }
+            .compare-actions { justify-content: stretch; grid-template-columns: 1fr; }
             .compare-results { grid-template-columns: 1fr; }
             .compare-column-lists { grid-template-columns: 1fr; }
             .compare-mapping-row { grid-template-columns: 1fr; }

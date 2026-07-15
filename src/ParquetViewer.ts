@@ -251,6 +251,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         });
 
         if (!selectedFiles || selectedFiles.length === 0) {
+            this.compareFiles.delete(webviewPanel);
             await webviewPanel.webview.postMessage({
                 type: 'compareResult',
                 result: { success: false, error: 'Compare cancelled.' }
