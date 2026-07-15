@@ -4,6 +4,7 @@ import json
 import sqlite3
 import sys
 import os
+import difflib
 
 MAX_RESULT_ROWS = 1000
 MAX_COMPARE_MISMATCHES = 1000
@@ -626,6 +627,241 @@ def analyze_column_statistics(metadata_rows, report):
         "columns": columns
     }
 
+def is_text_type(duckdb_type):
+    return any(token in str(duckdb_type or "").upper() for token in ("CHAR", "VARCHAR", "STRING", "TEXT"))
+
+def is_numeric_type(duckdb_type):
+    return any(token in str(duckdb_type or "").upper() for token in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL", "NUMERIC"))
+
+def is_temporal_type(duckdb_type):
+    return any(token in str(duckdb_type or "").upper() for token in ("DATE", "TIME", "TIMESTAMP"))
+
+def safe_scalar(conn, query, default=None):
+    try:
+        return conn.execute(query).fetchone()[0]
+    except Exception as error:
+        print(f"DEBUG: Diagnostic query failed: {error}. Query: {query}", file=sys.stderr)
+        return default
+
+def analyze_data_quality(conn, report):
+    describe_rows = conn.execute(f"DESCRIBE SELECT * FROM {TABLE_NAME}").fetchall()
+    columns = [{"name": row[0], "duckdbType": row[1]} for row in describe_rows]
+    total_rows = safe_scalar(conn, f"SELECT COUNT(*) FROM {TABLE_NAME}", 0) or 0
+    distinct_rows = safe_scalar(conn, f"SELECT COUNT(*) FROM (SELECT DISTINCT * FROM {TABLE_NAME}) AS distinct_rows", total_rows)
+    duplicate_rows_estimate = max(0, total_rows - (distinct_rows or 0))
+    column_results = []
+
+    if duplicate_rows_estimate > 0:
+        add_doctor_issue(
+            report,
+            "warning",
+            "Data Quality Validation",
+            f"Detected approximately {duplicate_rows_estimate} duplicate rows.",
+            "Confirm whether duplicate rows are expected; otherwise deduplicate before publishing the dataset."
+        )
+
+    for column in columns:
+        name = column["name"]
+        column_ref = duckdb_identifier(name)
+        duckdb_type = column["duckdbType"]
+        null_count = safe_scalar(
+            conn,
+            f"SELECT SUM(CASE WHEN {column_ref} IS NULL THEN 1 ELSE 0 END) FROM {TABLE_NAME}",
+            0
+        ) or 0
+        null_ratio = round(null_count / total_rows, 4) if total_rows else 0
+        issues = []
+        metrics = {
+            "nullCount": null_count,
+            "nullRatio": null_ratio
+        }
+
+        if total_rows and null_ratio >= 0.5:
+            issues.append("High null ratio.")
+
+        if is_text_type(duckdb_type):
+            empty_count = safe_scalar(
+                conn,
+                f"SELECT SUM(CASE WHEN {column_ref} = '' THEN 1 ELSE 0 END) FROM {TABLE_NAME}",
+                0
+            ) or 0
+            default_count = safe_scalar(
+                conn,
+                "SELECT SUM(CASE WHEN lower(trim(CAST({0} AS VARCHAR))) IN "
+                "('unknown', 'n/a', 'na', 'null', 'none', '0') THEN 1 ELSE 0 END) "
+                "FROM {1}".format(column_ref, TABLE_NAME),
+                0
+            ) or 0
+            metrics["emptyStringCount"] = empty_count
+            metrics["suspiciousDefaultCount"] = default_count
+            if empty_count > 0:
+                issues.append("Contains empty strings.")
+            if total_rows and default_count / total_rows >= 0.1:
+                issues.append("Suspicious default-like values are common.")
+
+        if is_numeric_type(duckdb_type):
+            min_value = safe_scalar(conn, f"SELECT MIN({column_ref}) FROM {TABLE_NAME}")
+            max_value = safe_scalar(conn, f"SELECT MAX({column_ref}) FROM {TABLE_NAME}")
+            metrics["min"] = serialize_compare_value(min_value)
+            metrics["max"] = serialize_compare_value(max_value)
+            if min_value == 0 and max_value == 0 and total_rows > 0 and null_count < total_rows:
+                issues.append("All non-null numeric values are zero.")
+
+        if is_temporal_type(duckdb_type):
+            min_value = safe_scalar(conn, f"SELECT MIN({column_ref}) FROM {TABLE_NAME}")
+            max_value = safe_scalar(conn, f"SELECT MAX({column_ref}) FROM {TABLE_NAME}")
+            metrics["min"] = serialize_compare_value(min_value)
+            metrics["max"] = serialize_compare_value(max_value)
+            if min_value is not None and (str(min_value) < "1900-01-01" or str(min_value) > "2200-01-01"):
+                issues.append("Minimum date/time is outside the expected modern range.")
+            if max_value is not None and (str(max_value) < "1900-01-01" or str(max_value) > "2200-01-01"):
+                issues.append("Maximum date/time is outside the expected modern range.")
+
+        column_results.append({
+            "column": name,
+            "duckdbType": duckdb_type,
+            "issues": issues,
+            **metrics
+        })
+
+        for issue in issues:
+            add_doctor_issue(
+                report,
+                "warning",
+                "Data Quality Validation",
+                f"{name}: {issue}",
+                "Profile the source data and add validation rules for nulls, defaults, ranges, and empty strings."
+            )
+
+    if duplicate_rows_estimate == 0 and not any(column["issues"] for column in column_results):
+        add_doctor_issue(report, "pass", "Data Quality Validation", "No duplicate rows, high-null columns, or suspicious defaults detected.")
+
+    return {
+        "totalRows": total_rows,
+        "distinctRows": distinct_rows,
+        "duplicateRowsEstimate": duplicate_rows_estimate,
+        "columns": column_results
+    }
+
+def analyze_decimal_timestamp_diagnostics(schema, report):
+    columns = []
+
+    for column in schema.get("columns", []):
+        issues = []
+        physical_type = column.get("physicalType")
+        logical_type = column.get("logicalType")
+        precision = column.get("decimalPrecision")
+        scale = column.get("decimalScale")
+        timestamp_unit = column.get("timestampUnit")
+        timezone = column.get("timestampTimezoneInterpretation")
+
+        if logical_type and "DECIMAL" in str(logical_type).upper():
+            if precision is None or scale is None:
+                issues.append("Decimal annotation is missing precision or scale.")
+            elif scale > precision:
+                issues.append("Decimal scale is greater than precision.")
+            elif precision > 18:
+                issues.append("High precision decimal may need careful downstream handling.")
+
+        if physical_type in ("FLOAT", "DOUBLE") and not (logical_type and "DECIMAL" in str(logical_type).upper()):
+            issues.append("Floating-point physical type can introduce rounding risk for exact values.")
+
+        if logical_type and "TIMESTAMP" in str(logical_type).upper():
+            if not timestamp_unit:
+                issues.append("Timestamp unit is missing.")
+            if not timezone:
+                issues.append("Timestamp timezone interpretation is ambiguous.")
+
+        if issues:
+            columns.append({
+                "column": column.get("path") or column.get("name"),
+                "physicalType": physical_type,
+                "logicalType": logical_type,
+                "decimalPrecision": precision,
+                "decimalScale": scale,
+                "timestampUnit": timestamp_unit,
+                "timezoneInterpretation": timezone,
+                "issues": issues
+            })
+
+            for issue in issues:
+                add_doctor_issue(
+                    report,
+                    "warning",
+                    "Decimal and Timestamp Diagnostics",
+                    f"{column.get('path')}: {issue}",
+                    "Confirm decimal precision/scale and timestamp timezone semantics with the source contract."
+                )
+
+    if not columns:
+        add_doctor_issue(report, "pass", "Decimal and Timestamp Diagnostics", "Decimal and timestamp annotations look consistent.")
+
+    return {
+        "columns": columns
+    }
+
+def has_dictionary_encoding(encodings):
+    text = str(encodings or "").upper()
+    return "DICTIONARY" in text
+
+def analyze_compression_encoding(metadata_rows, report):
+    grouped = {}
+    for row in metadata_rows:
+        grouped.setdefault(get_column_name_from_metadata(row), []).append(row)
+
+    columns = []
+    for column_name, rows in grouped.items():
+        compressed_size = sum(safe_int(get_first_value(row, ["total_compressed_size", "compressed_size"], 0)) or 0 for row in rows)
+        uncompressed_size = sum(safe_int(get_first_value(row, ["total_uncompressed_size", "uncompressed_size"], 0)) or 0 for row in rows)
+        total_values = sum(safe_int(get_first_value(row, ["num_values", "values"], 0)) or 0 for row in rows)
+        distinct_count = sum(safe_int(get_first_value(row, ["stats_distinct_count", "distinct_count"], 0)) or 0 for row in rows)
+        encodings = ", ".join(str(get_first_value(row, ["encodings"], "")) for row in rows if get_first_value(row, ["encodings"], ""))
+        compression = ", ".join(sorted(set(str(get_first_value(row, ["compression", "codec"], "")) for row in rows if get_first_value(row, ["compression", "codec"], ""))))
+        compression_ratio = round(uncompressed_size / compressed_size, 3) if compressed_size else None
+        cardinality_ratio = round(distinct_count / total_values, 4) if distinct_count and total_values else None
+        issues = []
+
+        if compressed_size == 0 and uncompressed_size > 0:
+            issues.append("Compressed size metadata is missing.")
+        elif compression_ratio is not None and compression_ratio < 1.1 and uncompressed_size > 1024 * 1024:
+            issues.append("Compression efficiency is low.")
+
+        if compression.upper() in ("", "UNCOMPRESSED"):
+            issues.append("Column appears to be uncompressed.")
+
+        if cardinality_ratio is not None and cardinality_ratio < 0.1 and not has_dictionary_encoding(encodings):
+            issues.append("Low-cardinality column may benefit from dictionary encoding.")
+        elif cardinality_ratio is not None and cardinality_ratio > 0.8 and has_dictionary_encoding(encodings):
+            issues.append("Dictionary encoding may not help this high-cardinality column.")
+
+        column_result = {
+            "column": column_name,
+            "compression": compression or None,
+            "encodings": encodings or None,
+            "compressedSize": compressed_size,
+            "uncompressedSize": uncompressed_size,
+            "compressionRatio": compression_ratio,
+            "cardinalityRatio": cardinality_ratio,
+            "issues": issues
+        }
+        columns.append(column_result)
+
+        for issue in issues:
+            add_doctor_issue(
+                report,
+                "warning",
+                "Compression and Encoding Analysis",
+                f"{column_name}: {issue}",
+                "Review writer compression and dictionary settings for this column."
+            )
+
+    if columns and not any(column["issues"] for column in columns):
+        add_doctor_issue(report, "pass", "Compression and Encoding Analysis", "Column compression and encoding metadata look healthy.")
+
+    return {
+        "columns": columns
+    }
+
 def build_health_report(report):
     score = 100
     score -= len(report["errors"]) * 25
@@ -644,11 +880,25 @@ def analyze_parquet_doctor(conn, file_path, schema, file_size):
 
     integrity = analyze_file_integrity(conn, file_path, file_size, report)
     schema_validation = analyze_schema_validation(schema, report)
+    decimal_timestamp_diagnostics = analyze_decimal_timestamp_diagnostics(schema, report)
+
+    try:
+        data_quality = analyze_data_quality(conn, report)
+    except Exception as error:
+        add_doctor_issue(
+            report,
+            "warning",
+            "Data Quality Validation",
+            f"Could not run data quality checks: {error}",
+            "Try running the diagnostics again after confirming the file can be fully scanned."
+        )
+        data_quality = {"totalRows": 0, "distinctRows": 0, "duplicateRowsEstimate": 0, "columns": []}
 
     try:
         metadata_rows = read_parquet_metadata(conn, file_path)
         row_groups = analyze_row_groups(metadata_rows, report)
         column_statistics = analyze_column_statistics(metadata_rows, report)
+        compression_encoding = analyze_compression_encoding(metadata_rows, report)
     except Exception as error:
         add_doctor_issue(
             report,
@@ -659,13 +909,17 @@ def analyze_parquet_doctor(conn, file_path, schema, file_size):
         )
         row_groups = {"rowGroups": []}
         column_statistics = {"columns": []}
+        compression_encoding = {"columns": []}
 
     return {
         "healthReport": build_health_report(report),
         "integrity": integrity,
         "schemaValidation": schema_validation,
         "rowGroupAnalysis": row_groups,
-        "columnStatistics": column_statistics
+        "columnStatistics": column_statistics,
+        "dataQuality": data_quality,
+        "decimalTimestampDiagnostics": decimal_timestamp_diagnostics,
+        "compressionEncodingAnalysis": compression_encoding
     }
 
 def analyze_failed_parquet_doctor(file_path, file_size, error):
@@ -734,7 +988,10 @@ def analyze_failed_parquet_doctor(file_path, file_size, error):
         "integrity": integrity,
         "schemaValidation": {"columns": []},
         "rowGroupAnalysis": {"rowGroups": []},
-        "columnStatistics": {"columns": []}
+        "columnStatistics": {"columns": []},
+        "dataQuality": {"totalRows": 0, "distinctRows": 0, "duplicateRowsEstimate": 0, "columns": []},
+        "decimalTimestampDiagnostics": {"columns": []},
+        "compressionEncodingAnalysis": {"columns": []}
     }
 
 def type_signature(column):
@@ -828,6 +1085,309 @@ def get_compare_metadata(base_path, compare_path):
             "error": str(e),
             "traceback": traceback.format_exc()
         }
+
+def column_lookup(columns):
+    return {column["name"]: column for column in columns}
+
+def summarize_column(column):
+    return {
+        "name": column.get("name"),
+        "path": column.get("path"),
+        "duckdbType": column.get("duckdbType"),
+        "physicalType": column.get("physicalType"),
+        "logicalType": column.get("logicalType"),
+        "nullableStatus": column.get("nullableStatus"),
+        "decimalPrecision": column.get("decimalPrecision"),
+        "decimalScale": column.get("decimalScale"),
+        "timestampUnit": column.get("timestampUnit"),
+        "typeSignature": column.get("typeSignature")
+    }
+
+def schema_signature(columns):
+    return json.dumps(
+        [
+            {
+                "name": column.get("name"),
+                "path": column.get("path"),
+                "typeSignature": column.get("typeSignature")
+            }
+            for column in columns
+        ],
+        sort_keys=True
+    )
+
+def detect_schema_drift(current_path, reference_path):
+    if not os.path.exists(current_path):
+        return {"success": False, "error": f"Current file does not exist: {current_path}"}
+
+    if not os.path.exists(reference_path):
+        return {"success": False, "error": f"Reference file does not exist: {reference_path}"}
+
+    current_conn = None
+    reference_conn = None
+
+    try:
+        current_conn = duckdb.connect()
+        reference_conn = duckdb.connect()
+        current_columns = read_compare_columns(current_conn, current_path)
+        reference_columns = read_compare_columns(reference_conn, reference_path)
+
+        current_by_name = column_lookup(current_columns)
+        reference_by_name = column_lookup(reference_columns)
+        current_names = set(current_by_name.keys())
+        reference_names = set(reference_by_name.keys())
+        added_names = sorted(current_names - reference_names)
+        removed_names = sorted(reference_names - current_names)
+        shared_names = sorted(current_names & reference_names)
+
+        type_changed = []
+        for name in shared_names:
+            current_column = current_by_name[name]
+            reference_column = reference_by_name[name]
+            if current_column.get("typeSignature") != reference_column.get("typeSignature"):
+                type_changed.append({
+                    "column": name,
+                    "current": summarize_column(current_column),
+                    "reference": summarize_column(reference_column)
+                })
+
+        rename_candidates = []
+        for removed_name in removed_names:
+            reference_column = reference_by_name[removed_name]
+            for added_name in added_names:
+                current_column = current_by_name[added_name]
+                if reference_column.get("typeSignature") != current_column.get("typeSignature"):
+                    continue
+
+                similarity = difflib.SequenceMatcher(
+                    None,
+                    removed_name.lower(),
+                    added_name.lower()
+                ).ratio()
+                if similarity >= 0.62:
+                    rename_candidates.append({
+                        "referenceColumn": removed_name,
+                        "currentColumn": added_name,
+                        "similarity": round(similarity, 3),
+                        "typeSignature": current_column.get("typeSignature")
+                    })
+
+        current_conn.close()
+        reference_conn.close()
+        current_conn = None
+        reference_conn = None
+
+        return {
+            "success": True,
+            "currentPath": current_path,
+            "referencePath": reference_path,
+            "addedColumns": [summarize_column(current_by_name[name]) for name in added_names],
+            "removedColumns": [summarize_column(reference_by_name[name]) for name in removed_names],
+            "typeChangedColumns": type_changed,
+            "renameCandidates": rename_candidates,
+            "summary": {
+                "currentColumnCount": len(current_columns),
+                "referenceColumnCount": len(reference_columns),
+                "added": len(added_names),
+                "removed": len(removed_names),
+                "typeChanged": len(type_changed),
+                "renameCandidates": len(rename_candidates)
+            }
+        }
+
+    except Exception as e:
+        if current_conn is not None:
+            current_conn.close()
+        if reference_conn is not None:
+            reference_conn.close()
+
+        import traceback
+        return {
+            "success": False,
+            "currentPath": current_path,
+            "referencePath": reference_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+def extract_partition_values(root_path, file_path):
+    relative_dir = os.path.relpath(os.path.dirname(file_path), root_path)
+    if relative_dir == ".":
+        return {}
+
+    partitions = {}
+    for part in relative_dir.split(os.sep):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            if key:
+                partitions[key] = value
+
+    return partitions
+
+def scan_single_parquet_file(root_path, file_path):
+    file_size = os.path.getsize(file_path)
+    conn = duckdb.connect()
+
+    try:
+        columns = read_compare_columns(conn, file_path)
+        row_count = safe_scalar(conn, f"SELECT COUNT(*) FROM {TABLE_NAME}", 0) or 0
+        conn.close()
+
+        return {
+            "path": file_path,
+            "relativePath": os.path.relpath(file_path, root_path),
+            "fileSize": file_size,
+            "rowCount": row_count,
+            "partitionValues": extract_partition_values(root_path, file_path),
+            "schemaSignature": schema_signature(columns),
+            "columns": [summarize_column(column) for column in columns],
+            "error": None
+        }
+    except Exception as error:
+        conn.close()
+        return {
+            "path": file_path,
+            "relativePath": os.path.relpath(file_path, root_path),
+            "fileSize": file_size,
+            "rowCount": None,
+            "partitionValues": extract_partition_values(root_path, file_path),
+            "schemaSignature": None,
+            "columns": [],
+            "error": str(error)
+        }
+
+def analyze_dataset_partitions(folder_path):
+    if not os.path.isdir(folder_path):
+        return {"success": False, "error": f"Dataset folder does not exist: {folder_path}"}
+
+    parquet_files = []
+    for current_root, _, files in os.walk(folder_path):
+        for filename in files:
+            if filename.lower().endswith(".parquet"):
+                parquet_files.append(os.path.join(current_root, filename))
+
+    parquet_files.sort()
+
+    if not parquet_files:
+        return {
+            "success": False,
+            "folderPath": folder_path,
+            "error": "No .parquet files found in the selected folder."
+        }
+
+    files = [scan_single_parquet_file(folder_path, parquet_file) for parquet_file in parquet_files]
+    schema_groups = {}
+    for file_info in files:
+        signature = file_info.get("schemaSignature") or "unreadable"
+        schema_groups.setdefault(signature, {
+            "signature": signature,
+            "fileCount": 0,
+            "sampleFile": file_info.get("relativePath"),
+            "columns": file_info.get("columns", [])
+        })
+        schema_groups[signature]["fileCount"] += 1
+
+    all_partition_keys = sorted({
+        key
+        for file_info in files
+        for key in file_info.get("partitionValues", {}).keys()
+    })
+    missing_partitions = []
+    for file_info in files:
+        missing_keys = [
+            key
+            for key in all_partition_keys
+            if key not in file_info.get("partitionValues", {})
+        ]
+        if missing_keys:
+            missing_partitions.append({
+                "file": file_info.get("relativePath"),
+                "missingKeys": missing_keys
+            })
+
+    small_file_threshold = 10 * 1024 * 1024
+    small_files = [
+        {
+            "file": file_info.get("relativePath"),
+            "fileSize": file_info.get("fileSize"),
+            "rowCount": file_info.get("rowCount")
+        }
+        for file_info in files
+        if file_info.get("fileSize", 0) > 0 and file_info.get("fileSize", 0) < small_file_threshold
+    ]
+    empty_files = [
+        {
+            "file": file_info.get("relativePath"),
+            "fileSize": file_info.get("fileSize"),
+            "rowCount": file_info.get("rowCount")
+        }
+        for file_info in files
+        if file_info.get("fileSize", 0) == 0 or file_info.get("rowCount") == 0
+    ]
+    unreadable_files = [
+        {
+            "file": file_info.get("relativePath"),
+            "error": file_info.get("error")
+        }
+        for file_info in files
+        if file_info.get("error")
+    ]
+
+    partition_sizes = {}
+    for file_info in files:
+        partition = os.path.dirname(file_info.get("relativePath")) or "."
+        partition_sizes.setdefault(partition, {"partition": partition, "fileCount": 0, "totalSize": 0, "rowCount": 0})
+        partition_sizes[partition]["fileCount"] += 1
+        partition_sizes[partition]["totalSize"] += file_info.get("fileSize") or 0
+        partition_sizes[partition]["rowCount"] += file_info.get("rowCount") or 0
+
+    size_values = [value["totalSize"] for value in partition_sizes.values() if value["totalSize"] > 0]
+    uneven_partition_sizes = None
+    if len(size_values) > 1 and min(size_values) > 0 and max(size_values) / min(size_values) >= 10:
+        uneven_partition_sizes = {
+            "smallestPartitionSize": min(size_values),
+            "largestPartitionSize": max(size_values),
+            "ratio": round(max(size_values) / min(size_values), 3)
+        }
+
+    warnings = []
+    recommendations = []
+    if len(schema_groups) > 1:
+        warnings.append("Dataset contains inconsistent schemas.")
+        recommendations.append("Rewrite or migrate files so all partitions share the same schema.")
+    if missing_partitions:
+        warnings.append("Some files are missing partition keys present elsewhere in the dataset.")
+        recommendations.append("Normalize folder partition paths such as key=value for every partitioned file.")
+    if empty_files:
+        warnings.append("Dataset contains empty files.")
+        recommendations.append("Remove empty files or regenerate failed output partitions.")
+    if small_files:
+        warnings.append("Dataset contains small files under 10 MB.")
+        recommendations.append("Compact small files into larger Parquet files for better scan performance.")
+    if uneven_partition_sizes:
+        warnings.append("Partition sizes are uneven.")
+        recommendations.append("Rebalance partitioning keys or compact oversized partitions.")
+    if unreadable_files:
+        warnings.append("Some Parquet files could not be read.")
+        recommendations.append("Repair or remove unreadable files before publishing the dataset.")
+
+    return {
+        "success": True,
+        "folderPath": folder_path,
+        "fileCount": len(files),
+        "totalSize": sum(file_info.get("fileSize") or 0 for file_info in files),
+        "totalRows": sum(file_info.get("rowCount") or 0 for file_info in files),
+        "schemaGroups": list(schema_groups.values()),
+        "partitionKeys": all_partition_keys,
+        "partitionSizes": sorted(partition_sizes.values(), key=lambda item: item["partition"]),
+        "missingPartitions": missing_partitions,
+        "smallFiles": small_files,
+        "emptyFiles": empty_files,
+        "unreadableFiles": unreadable_files,
+        "unevenPartitionSizes": uneven_partition_sizes,
+        "warnings": warnings,
+        "recommendations": list(dict.fromkeys(recommendations))
+    }
 
 def read_parquet_file(file_path, user_query=None):
     """
@@ -1272,7 +1832,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--compare compare_path [mappings_json] [order_mapping_json]] [--compare-metadata compare_path]'
+            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--compare compare_path [mappings_json] [order_mapping_json]] [--compare-metadata compare_path] [--schema-drift reference_path] [--dataset-scan folder_path]'
         }))
         sys.exit(1)
     
@@ -1290,6 +1850,28 @@ if __name__ == "__main__":
         else:
             compare_path = args[metadata_index + 1]
             result = get_compare_metadata(file_path, compare_path)
+    elif "--schema-drift" in args:
+        drift_index = args.index("--schema-drift")
+
+        if len(args) < drift_index + 2:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --schema-drift <reference_path>'
+            }
+        else:
+            reference_path = args[drift_index + 1]
+            result = detect_schema_drift(file_path, reference_path)
+    elif "--dataset-scan" in args:
+        dataset_index = args.index("--dataset-scan")
+
+        if len(args) < dataset_index + 2:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --dataset-scan <folder_path>'
+            }
+        else:
+            folder_path = args[dataset_index + 1]
+            result = analyze_dataset_partitions(folder_path)
     elif "--compare" in args:
         compare_index = args.index("--compare")
 

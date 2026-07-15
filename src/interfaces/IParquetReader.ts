@@ -15,6 +15,8 @@ export interface IParquetReader {
         mappings?: ParquetCompareMapping[],
         orderMapping?: ParquetCompareOrderMapping
     ): Promise<ParquetCompareResult>;
+    detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult>;
+    scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult>;
 }
 
 export type ParquetExportFormat = 'csv' | 'json' | 'sqlite';
@@ -44,6 +46,18 @@ export interface ParquetDoctorResult {
     };
     columnStatistics: {
         columns: ParquetDoctorColumnStatistics[];
+    };
+    dataQuality?: {
+        totalRows: number;
+        distinctRows: number;
+        duplicateRowsEstimate: number;
+        columns: any[];
+    };
+    decimalTimestampDiagnostics?: {
+        columns: any[];
+    };
+    compressionEncodingAnalysis?: {
+        columns: any[];
     };
 }
 
@@ -156,6 +170,39 @@ export interface ParquetCompareMapping {
 export interface ParquetCompareOrderMapping {
     baseColumn: string;
     compareColumn: string;
+}
+
+export interface ParquetSchemaDriftResult {
+    success: boolean;
+    currentPath?: string;
+    referencePath?: string;
+    addedColumns?: ParquetCompareColumn[];
+    removedColumns?: ParquetCompareColumn[];
+    typeChangedColumns?: any[];
+    renameCandidates?: any[];
+    summary?: Record<string, number>;
+    error?: string;
+    traceback?: string;
+}
+
+export interface ParquetDatasetAnalysisResult {
+    success: boolean;
+    folderPath?: string;
+    fileCount?: number;
+    totalSize?: number;
+    totalRows?: number;
+    schemaGroups?: any[];
+    partitionKeys?: string[];
+    partitionSizes?: any[];
+    missingPartitions?: any[];
+    smallFiles?: any[];
+    emptyFiles?: any[];
+    unreadableFiles?: any[];
+    unevenPartitionSizes?: any;
+    warnings?: string[];
+    recommendations?: string[];
+    error?: string;
+    traceback?: string;
 }
 
 export interface ParquetRowMismatch {

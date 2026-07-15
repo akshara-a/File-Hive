@@ -122,6 +122,12 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                 case 'runCustomCompare':
                     await this.runCompare(webviewPanel, document.uri, message.mappings, message.orderMapping);
                     break;
+                case 'selectDoctorReferenceFile':
+                    await this.selectDoctorReferenceFile(webviewPanel, document.uri);
+                    break;
+                case 'selectDoctorDatasetFolder':
+                    await this.selectDoctorDatasetFolder(webviewPanel, document.uri);
+                    break;
             }
         });
     }
@@ -345,6 +351,57 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         return parsedOrderMapping.baseColumn && parsedOrderMapping.compareColumn
             ? parsedOrderMapping
             : undefined;
+    }
+
+    private async selectDoctorReferenceFile(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const selectedFiles = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: { 'Parquet Files': ['parquet'] },
+            openLabel: 'Use as Reference'
+        });
+
+        if (!selectedFiles || selectedFiles.length === 0) {
+            await webviewPanel.webview.postMessage({
+                type: 'doctorSchemaDriftResult',
+                result: { success: false, error: 'Schema drift check cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.detectSchemaDrift(uri, selectedFiles[0]);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Schema drift check failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'doctorSchemaDriftResult', result });
+    }
+
+    private async selectDoctorDatasetFolder(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const selectedFolders = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: 'Scan Dataset'
+        });
+
+        if (!selectedFolders || selectedFolders.length === 0) {
+            await webviewPanel.webview.postMessage({
+                type: 'doctorDatasetResult',
+                result: { success: false, error: 'Dataset scan cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.scanParquetDataset(uri, selectedFolders[0]);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Dataset scan failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'doctorDatasetResult', result });
     }
 
         /**

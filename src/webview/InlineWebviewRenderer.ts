@@ -78,7 +78,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <div class="doctor-hero">
                 <div>
                     <h2>Parquet Doctor</h2>
-                    <p>Integrity, schema, row group, statistics, and health diagnostics.</p>
+                    <p>Integrity, schema, row group, statistics, data quality, compression, and dataset diagnostics.</p>
+                </div>
+                <div class="doctor-actions">
+                    <button id="doctor-schema-drift-btn" class="btn btn-secondary">Schema Drift</button>
+                    <button id="doctor-dataset-scan-btn" class="btn btn-secondary">Scan Dataset</button>
                 </div>
                 <div class="doctor-score">
                     <span id="doctor-health-score">0</span>
@@ -107,10 +111,30 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <h3>Column Statistics Check</h3>
                     <div id="doctor-column-statistics"></div>
                 </section>
+                <section class="doctor-panel">
+                    <h3>Data Quality Validation</h3>
+                    <div id="doctor-data-quality"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Decimal and Timestamp Diagnostics</h3>
+                    <div id="doctor-decimal-timestamp"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Compression and Encoding Analysis</h3>
+                    <div id="doctor-compression-encoding"></div>
+                </section>
+                <section class="doctor-panel">
+                    <h3>Schema Drift Detection</h3>
+                    <div id="doctor-schema-drift"></div>
+                </section>
             </div>
             <section class="doctor-panel doctor-row-groups-panel">
                 <h3>Row Group Analysis</h3>
                 <div id="doctor-row-groups"></div>
+            </section>
+            <section class="doctor-panel doctor-row-groups-panel">
+                <h3>Dataset and Partition Analysis</h3>
+                <div id="doctor-dataset-analysis"></div>
             </section>
         </section>`;
     }
@@ -297,6 +321,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentSchemaDocs = '';
         let currentCompareResult = null;
         let currentCompareMetadata = null;
+        let currentDoctorSchemaDrift = null;
+        let currentDoctorDataset = null;
 
         function initialize(data) {
             console.log('Webview initialized with data:', data);
@@ -741,7 +767,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             renderDoctorHealthReport(report);
             renderDoctorSchemaValidation((doctor.schemaValidation && doctor.schemaValidation.columns) || []);
             renderDoctorColumnStatistics((doctor.columnStatistics && doctor.columnStatistics.columns) || []);
+            renderDoctorDataQuality(doctor.dataQuality || {});
+            renderDoctorDecimalTimestamp((doctor.decimalTimestampDiagnostics && doctor.decimalTimestampDiagnostics.columns) || []);
+            renderDoctorCompressionEncoding((doctor.compressionEncodingAnalysis && doctor.compressionEncodingAnalysis.columns) || []);
             renderDoctorRowGroups((doctor.rowGroupAnalysis && doctor.rowGroupAnalysis.rowGroups) || []);
+            renderDoctorSchemaDrift(currentDoctorSchemaDrift);
+            renderDoctorDatasetAnalysis(currentDoctorDataset);
         }
 
         function renderDoctorIntegrity(integrity) {
@@ -811,6 +842,145 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             });
         }
 
+        function renderDoctorDataQuality(dataQuality) {
+            const container = document.getElementById('doctor-data-quality');
+            container.innerHTML = '';
+            container.appendChild(createDoctorMetricRow('Total rows', formatCount(dataQuality.totalRows || 0)));
+            container.appendChild(createDoctorMetricRow('Distinct rows', formatCount(dataQuality.distinctRows || 0)));
+            container.appendChild(createDoctorMetricRow('Duplicate rows', formatCount(dataQuality.duplicateRowsEstimate || 0)));
+
+            const flaggedColumns = ((dataQuality && dataQuality.columns) || []).filter((column) => column.issues && column.issues.length);
+            if (!flaggedColumns.length) {
+                container.appendChild(createDoctorEmpty('No high-null columns, empty strings, suspicious defaults, or invalid ranges detected.'));
+                return;
+            }
+
+            flaggedColumns.slice(0, 25).forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Type', valueOrDash(column.duckdbType)));
+                card.appendChild(createDoctorMetricRow('Null ratio', valueOrDash(column.nullRatio)));
+                if (column.emptyStringCount !== undefined) {
+                    card.appendChild(createDoctorMetricRow('Empty strings', formatCount(column.emptyStringCount)));
+                }
+                if (column.suspiciousDefaultCount !== undefined) {
+                    card.appendChild(createDoctorMetricRow('Default-like values', formatCount(column.suspiciousDefaultCount)));
+                }
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorDecimalTimestamp(columns) {
+            const container = document.getElementById('doctor-decimal-timestamp');
+            container.innerHTML = '';
+            if (!columns.length) {
+                container.appendChild(createDoctorEmpty('Decimal and timestamp annotations look consistent.'));
+                return;
+            }
+
+            columns.forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Physical', valueOrDash(column.physicalType)));
+                card.appendChild(createDoctorMetricRow('Logical', valueOrDash(column.logicalType)));
+                card.appendChild(createDoctorMetricRow('Precision', valueOrDash(column.decimalPrecision)));
+                card.appendChild(createDoctorMetricRow('Scale', valueOrDash(column.decimalScale)));
+                card.appendChild(createDoctorMetricRow('Timestamp unit', valueOrDash(column.timestampUnit)));
+                card.appendChild(createDoctorMetricRow('Timezone', valueOrDash(column.timezoneInterpretation)));
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorCompressionEncoding(columns) {
+            const container = document.getElementById('doctor-compression-encoding');
+            container.innerHTML = '';
+            const flaggedColumns = columns.filter((column) => column.issues && column.issues.length);
+            if (!flaggedColumns.length) {
+                container.appendChild(createDoctorEmpty('Compression and encoding metadata look healthy.'));
+                return;
+            }
+
+            flaggedColumns.slice(0, 25).forEach((column) => {
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle(column.column));
+                card.appendChild(createDoctorMetricRow('Compression', valueOrDash(column.compression)));
+                card.appendChild(createDoctorMetricRow('Ratio', valueOrDash(column.compressionRatio)));
+                card.appendChild(createDoctorMetricRow('Cardinality ratio', valueOrDash(column.cardinalityRatio)));
+                card.appendChild(createDoctorMetricRow('Encodings', valueOrDash(column.encodings)));
+                (column.issues || []).forEach((issue) => {
+                    card.appendChild(createDoctorText(issue));
+                });
+                container.appendChild(card);
+            });
+        }
+
+        function renderDoctorSchemaDrift(result) {
+            const container = document.getElementById('doctor-schema-drift');
+            container.innerHTML = '';
+            if (!result) {
+                container.appendChild(createDoctorEmpty('Choose a reference Parquet file to detect added, removed, renamed, or type-changed columns.'));
+                return;
+            }
+            if (!result.success) {
+                container.appendChild(createDoctorText(result.error || 'Schema drift check failed.'));
+                return;
+            }
+
+            const summary = result.summary || {};
+            container.appendChild(createDoctorMetricRow('Added', formatCount(summary.added || 0)));
+            container.appendChild(createDoctorMetricRow('Removed', formatCount(summary.removed || 0)));
+            container.appendChild(createDoctorMetricRow('Type changed', formatCount(summary.typeChanged || 0)));
+            container.appendChild(createDoctorMetricRow('Rename candidates', formatCount(summary.renameCandidates || 0)));
+            appendDoctorColumnList(container, 'Added Columns', result.addedColumns || [], 'name');
+            appendDoctorColumnList(container, 'Removed Columns', result.removedColumns || [], 'name');
+            appendDoctorColumnList(container, 'Type Changed Columns', result.typeChangedColumns || [], 'column');
+            appendDoctorColumnList(container, 'Rename Candidates', result.renameCandidates || [], 'referenceColumn', (item) => item.referenceColumn + ' -> ' + item.currentColumn);
+        }
+
+        function renderDoctorDatasetAnalysis(result) {
+            const container = document.getElementById('doctor-dataset-analysis');
+            container.innerHTML = '';
+            if (!result) {
+                container.appendChild(createDoctorEmpty('Choose a folder to scan parquet files for schema consistency, partition health, empty files, and small-file problems.'));
+                return;
+            }
+            if (!result.success) {
+                container.appendChild(createDoctorText(result.error || 'Dataset scan failed.'));
+                return;
+            }
+
+            container.appendChild(createDoctorMetricRow('Files', formatCount(result.fileCount || 0)));
+            container.appendChild(createDoctorMetricRow('Rows', formatCount(result.totalRows || 0)));
+            container.appendChild(createDoctorMetricRow('Size', formatBytes(result.totalSize || 0)));
+            container.appendChild(createDoctorMetricRow('Schema groups', formatCount((result.schemaGroups || []).length)));
+            container.appendChild(createDoctorMetricRow('Partition keys', (result.partitionKeys || []).join(', ') || '-'));
+            appendDoctorTextList(container, 'Warnings', result.warnings || []);
+            appendDoctorTextList(container, 'Recommendations', result.recommendations || []);
+            appendDoctorFileList(container, 'Empty Files', result.emptyFiles || []);
+            appendDoctorFileList(container, 'Small Files', result.smallFiles || []);
+            appendDoctorFileList(container, 'Unreadable Files', result.unreadableFiles || []);
+            appendDoctorColumnList(container, 'Missing Partition Keys', result.missingPartitions || [], 'file', (item) => item.file + ': ' + (item.missingKeys || []).join(', '));
+            if (result.unevenPartitionSizes) {
+                const uneven = result.unevenPartitionSizes;
+                const card = document.createElement('div');
+                card.className = 'doctor-card doctor-warning-card';
+                card.appendChild(createDoctorCardTitle('Uneven Partition Sizes'));
+                card.appendChild(createDoctorMetricRow('Smallest', formatBytes(uneven.smallestPartitionSize || 0)));
+                card.appendChild(createDoctorMetricRow('Largest', formatBytes(uneven.largestPartitionSize || 0)));
+                card.appendChild(createDoctorMetricRow('Ratio', valueOrDash(uneven.ratio)));
+                container.appendChild(card);
+            }
+        }
+
         function renderDoctorRowGroups(rowGroups) {
             const container = document.getElementById('doctor-row-groups');
             container.innerHTML = '';
@@ -847,6 +1017,41 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             table.appendChild(header);
             table.appendChild(body);
             container.appendChild(table);
+        }
+
+        function appendDoctorColumnList(container, title, items, fallbackKey, formatter) {
+            if (!items.length) {
+                return;
+            }
+
+            const section = document.createElement('div');
+            section.className = 'doctor-issue-list';
+            section.appendChild(createDoctorCardTitle(title));
+            items.slice(0, 30).forEach((item) => {
+                section.appendChild(createDoctorText(formatter ? formatter(item) : valueOrDash(item[fallbackKey])));
+            });
+            if (items.length > 30) {
+                section.appendChild(createDoctorText('Showing first 30 of ' + formatCount(items.length) + '.'));
+            }
+            container.appendChild(section);
+        }
+
+        function appendDoctorTextList(container, title, items) {
+            if (!items.length) {
+                return;
+            }
+
+            const section = document.createElement('div');
+            section.className = 'doctor-issue-list';
+            section.appendChild(createDoctorCardTitle(title));
+            items.forEach((item) => {
+                section.appendChild(createDoctorText(item));
+            });
+            container.appendChild(section);
+        }
+
+        function appendDoctorFileList(container, title, items) {
+            appendDoctorColumnList(container, title, items, 'file', (item) => item.file);
         }
 
         function createDoctorCheckRow(label, passed) {
@@ -1351,6 +1556,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportJsonBtn = document.getElementById('export-json-btn');
             const exportSqliteBtn = document.getElementById('export-sqlite-btn');
+            const doctorSchemaDriftBtn = document.getElementById('doctor-schema-drift-btn');
+            const doctorDatasetScanBtn = document.getElementById('doctor-dataset-scan-btn');
             const selectCompareFileBtn = document.getElementById('select-compare-file-btn');
             const runStrictCompareBtn = document.getElementById('run-strict-compare-btn');
             const runCustomCompareBtn = document.getElementById('run-custom-compare-btn');
@@ -1440,6 +1647,22 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (exportSqliteBtn) {
                 exportSqliteBtn.addEventListener('click', () => {
                     exportCurrentQuery('sqlite');
+                });
+            }
+
+            if (doctorSchemaDriftBtn) {
+                doctorSchemaDriftBtn.addEventListener('click', () => {
+                    setActiveView('doctor');
+                    setStatus('Choosing reference file...', 'status-loading');
+                    vscode.postMessage({ type: 'selectDoctorReferenceFile' });
+                });
+            }
+
+            if (doctorDatasetScanBtn) {
+                doctorDatasetScanBtn.addEventListener('click', () => {
+                    setActiveView('doctor');
+                    setStatus('Choosing dataset folder...', 'status-loading');
+                    vscode.postMessage({ type: 'selectDoctorDatasetFolder' });
                 });
             }
 
@@ -1563,6 +1786,16 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     break;
                 case 'compareMetadata':
                     handleCompareMetadata(message.result);
+                    break;
+                case 'doctorSchemaDriftResult':
+                    currentDoctorSchemaDrift = message.result;
+                    renderDoctorSchemaDrift(currentDoctorSchemaDrift);
+                    setStatus(message.result && message.result.success ? 'Schema drift check complete' : (message.result && message.result.error) || 'Schema drift check failed', message.result && message.result.success ? 'status-success' : 'status-error');
+                    break;
+                case 'doctorDatasetResult':
+                    currentDoctorDataset = message.result;
+                    renderDoctorDatasetAnalysis(currentDoctorDataset);
+                    setStatus(message.result && message.result.success ? 'Dataset scan complete' : (message.result && message.result.error) || 'Dataset scan failed', message.result && message.result.success ? 'status-success' : 'status-error');
                     break;
                 default:
                     console.log('Unknown message type:', message.type);
@@ -1838,6 +2071,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .doctor-hero h2 { font-size: 16px; margin-bottom: 4px; }
         .doctor-hero p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .doctor-actions {
+            display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto;
+        }
         .doctor-score {
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             min-width: 92px; min-height: 72px; border-radius: 3px;
@@ -1918,6 +2154,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             .schema-actions { width: 100%; }
             .doctor-grid { grid-template-columns: 1fr; }
             .doctor-hero { align-items: stretch; flex-direction: column; }
+            .doctor-actions { margin-left: 0; }
         }
         .compare-container { display: flex; flex-direction: column; gap: 14px; }
         .compare-toolbar {
