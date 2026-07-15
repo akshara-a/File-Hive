@@ -10,6 +10,14 @@
     "name": "Akshara A",
     "email": "akshararajan26@outlook.in"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akshara-a/Parquet-X.git"
+  },
+  "bugs": {
+    "url": "https://github.com/akshara-a/Parquet-X/issues"
+  },
+  "homepage": "https://github.com/akshara-a/Parquet-X#readme",
   "engines": {
     "vscode": "^1.104.0"
   },
