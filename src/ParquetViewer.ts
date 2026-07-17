@@ -113,6 +113,9 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                 case 'export':
                     await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query);
                     break;
+                case 'saveEditedParquet':
+                    await this.saveEditedParquet(webviewPanel, document.uri, message.columns, message.rows);
+                    break;
                 case 'selectCompareFile':
                     await this.selectCompareFile(webviewPanel, document.uri, message.customMappingEnabled);
                     break;
@@ -241,6 +244,80 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         return { 'SQLite Databases': ['sqlite', 'db'] };
+    }
+
+    private async saveEditedParquet(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        columns?: unknown,
+        rows?: unknown
+    ): Promise<void> {
+        const parsedColumns = this.parseEditColumns(columns);
+        const parsedRows = this.parseEditRows(rows);
+
+        if (parsedColumns.length === 0 || !parsedRows) {
+            await webviewPanel.webview.postMessage({
+                type: 'editSaveResult',
+                result: { success: false, error: 'No editable rows are available to save.' }
+            });
+            return;
+        }
+
+        const defaultUri = this.getDefaultEditedParquetUri(uri);
+        const outputUri = await vscode.window.showSaveDialog({
+            defaultUri,
+            filters: { 'Parquet Files': ['parquet'] },
+            saveLabel: 'Save New Parquet'
+        });
+
+        if (!outputUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'editSaveResult',
+                result: { success: false, error: 'Save cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.saveEditedParquetFile(uri, outputUri, parsedColumns, parsedRows);
+
+        if (result.success) {
+            const openAction = 'Open New Parquet';
+            const message = `Saved edited data as a new Parquet file: ${outputUri.fsPath}. To view the changes, open the new Parquet file.`;
+            const action = await vscode.window.showInformationMessage(message, openAction);
+
+            if (action === openAction) {
+                await vscode.commands.executeCommand('vscode.openWith', outputUri, ParquetViewer.viewType);
+            }
+        } else {
+            vscode.window.showErrorMessage(result.error || 'Could not save edited Parquet file.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'editSaveResult', result });
+    }
+
+    private getDefaultEditedParquetUri(uri: vscode.Uri): vscode.Uri {
+        const parsedPath = path.parse(uri.fsPath);
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_edited.parquet`));
+    }
+
+    private parseEditColumns(columns?: unknown): string[] {
+        if (!Array.isArray(columns)) {
+            return [];
+        }
+
+        return columns
+            .map((column) => String(column))
+            .filter((column) => column.length > 0);
+    }
+
+    private parseEditRows(rows?: unknown): Record<string, any>[] | undefined {
+        if (!Array.isArray(rows)) {
+            return undefined;
+        }
+
+        return rows.filter((row): row is Record<string, any> => {
+            return typeof row === 'object' && row !== null && !Array.isArray(row);
+        });
     }
 
     private async selectCompareFile(

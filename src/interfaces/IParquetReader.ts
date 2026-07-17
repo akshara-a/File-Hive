@@ -8,6 +8,12 @@ export interface IParquetReader {
         outputUri: vscode.Uri,
         query?: string
     ): Promise<ParquetExportResult>;
+    saveEditedParquetFile(
+        uri: vscode.Uri,
+        outputUri: vscode.Uri,
+        columns: string[],
+        rows: Record<string, any>[]
+    ): Promise<ParquetEditSaveResult>;
     getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult>;
     compareParquetFile(
         uri: vscode.Uri,
@@ -19,7 +25,7 @@ export interface IParquetReader {
     scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult>;
 }
 
-export type ParquetExportFormat = 'csv' | 'json' | 'sqlite';
+export type ParquetExportFormat = 'csv' | 'json' | 'sqlite' | 'parquet';
 
 export interface ParquetDataResult {
     success: boolean;
@@ -116,6 +122,16 @@ export interface ParquetExportResult {
     outputPath?: string;
     rowsExported?: number;
     query?: string;
+    error?: string;
+    traceback?: string;
+}
+
+export interface ParquetEditSaveResult {
+    success: boolean;
+    format?: 'parquet';
+    outputPath?: string;
+    rowsExported?: number;
+    columnsExported?: number;
     error?: string;
     traceback?: string;
 }

@@ -2,6 +2,16 @@
 
 All notable changes to Parquet-X are documented here.
 
+## [1.0.8] - 2026-07-16
+### Added
+- Added an Edit tab for modifying loaded result rows in the webview.
+- Added save-as-new-Parquet support for edited rows, including a clear message that the original file is not changed and the new Parquet file should be opened to view edits.
+- Added row add, row delete, edit reset, and change-count controls for the edit workflow.
+
+### Changed
+- Improved button styling with clearer backgrounds, hover states, and fallback colors across VS Code themes.
+- Updated package metadata for a more professional extension name and description.
+
 ## [1.0.6] - 2026-07-15
 ### Added
 - SQL-like querying for opened Parquet files using the `parquet_data` table alias.

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { spawn } from 'child_process';
 import {
     IParquetReader,
@@ -10,6 +11,7 @@ import {
     ParquetCompareResult,
     ParquetDataResult,
     ParquetDatasetAnalysisResult,
+    ParquetEditSaveResult,
     ParquetExportFormat,
     ParquetExportResult,
     ParquetSchemaDriftResult
@@ -92,6 +94,67 @@ export class PythonParquetReader implements IParquetReader {
                 outputUri.fsPath
             ];
             this.executePythonScriptWithArgs(args, pythonPath, resolve, 120000);
+        });
+    }
+
+    async saveEditedParquetFile(
+        uri: vscode.Uri,
+        outputUri: vscode.Uri,
+        columns: string[],
+        rows: Record<string, any>[]
+    ): Promise<ParquetEditSaveResult> {
+        const pythonPath = this.pythonManager.getPythonPath();
+
+        if (!pythonPath) {
+            return {
+                success: false,
+                error: 'Python environment not configured. Please initialize Python environment first.'
+            };
+        }
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            let tempDir: string | undefined;
+
+            try {
+                tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-edit-'));
+                const payloadPath = path.join(tempDir, 'edited-rows.json');
+                fs.writeFileSync(payloadPath, JSON.stringify({ columns, rows }), 'utf8');
+
+                const cleanup = () => {
+                    if (tempDir) {
+                        fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
+                    }
+                };
+
+                const resolveAndCleanup = (
+                    result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult
+                ) => {
+                    cleanup();
+                    resolve(result as ParquetEditSaveResult);
+                };
+
+                this.executePythonScriptWithArgs(
+                    [pythonScriptPath, uri.fsPath, '--save-edits', outputUri.fsPath, payloadPath],
+                    pythonPath,
+                    resolveAndCleanup,
+                    120000
+                );
+            } catch (error) {
+                if (tempDir) {
+                    fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
+                }
+                resolve({
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                });
+            }
         });
     }
 
@@ -270,7 +333,7 @@ export class PythonParquetReader implements IParquetReader {
     private executePythonScriptWithArgs(
         args: string[],
         pythonPath: string,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
         timeoutMs: number
     ): void {
         const pythonProcess = spawn(pythonPath, args);
@@ -317,7 +380,7 @@ export class PythonParquetReader implements IParquetReader {
         signal: NodeJS.Signals | null, 
         stdout: string, 
         stderr: string, 
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void
     ): void {
         console.log(`[PythonParquetReader] Python process exited with code: ${code}, signal: ${signal}`);
         
@@ -348,7 +411,7 @@ export class PythonParquetReader implements IParquetReader {
      */
     private setTimeoutHandler(
         process: any,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
         timeoutMs: number
     ): void {
         setTimeout(() => {

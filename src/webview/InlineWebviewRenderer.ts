@@ -33,6 +33,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     ${this.generateQueryContainer()}
                     ${this.generateDataContainer()}
                 </div>
+                ${this.generateEditContainer()}
                 ${this.generateSchemaContainer()}
                 ${this.generateDoctorContainer()}
                 ${this.generateCompareContainer()}
@@ -66,6 +67,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         return `
         <div class="view-tabs" role="tablist">
             <button id="data-tab" class="tab-btn active" role="tab" aria-selected="true">Data</button>
+            <button id="edit-tab" class="tab-btn" role="tab" aria-selected="false">Edit</button>
             <button id="doctor-tab" class="tab-btn" role="tab" aria-selected="false">Doctor</button>
             <button id="schema-tab" class="tab-btn" role="tab" aria-selected="false">Schema</button>
             <button id="compare-tab" class="tab-btn" role="tab" aria-selected="false">Compare</button>
@@ -275,6 +277,35 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </div>`;
     }
 
+    private generateEditContainer(): string {
+        return `
+        <section id="edit-container" class="edit-container view-panel hidden">
+            <div class="edit-toolbar">
+                <div>
+                    <h2>Edit Data</h2>
+                    <p>Edits will be saved as a new Parquet file. To view the changes, open that new Parquet file.</p>
+                </div>
+                <div class="edit-actions">
+                    <button id="add-edit-row-btn" class="btn btn-secondary">Add Row</button>
+                    <button id="reset-edits-btn" class="btn btn-secondary">Reset Edits</button>
+                    <button id="save-edits-btn" class="btn">Save New Parquet</button>
+                </div>
+            </div>
+            <div class="edit-summary">
+                <div class="summary-item">Editable Rows: <span id="edit-row-count">0</span></div>
+                <div class="summary-item">Columns: <span id="edit-column-count">0</span></div>
+                <div class="summary-item">Changes: <span id="edit-change-count">0</span></div>
+            </div>
+            <div id="edit-result-message" class="edit-message hidden"></div>
+            <div class="edit-table-container">
+                <table id="edit-table">
+                    <thead id="edit-table-header"></thead>
+                    <tbody id="edit-table-body"></tbody>
+                </table>
+            </div>
+        </section>`;
+    }
+
     private generateSchemaContainer(): string {
         return `
         <section id="schema-container" class="schema-container view-panel hidden">
@@ -323,6 +354,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentCompareMetadata = null;
         let currentDoctorSchemaDrift = null;
         let currentDoctorDataset = null;
+        let currentColumns = [];
+        let currentRows = [];
+        let editRows = [];
 
         function initialize(data) {
             console.log('Webview initialized with data:', data);
@@ -352,26 +386,32 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
         function setActiveView(viewName) {
             const dataTab = document.getElementById('data-tab');
+            const editTab = document.getElementById('edit-tab');
             const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
             const compareTab = document.getElementById('compare-tab');
             const dataView = document.getElementById('data-view');
+            const editContainer = document.getElementById('edit-container');
             const doctorContainer = document.getElementById('doctor-container');
             const schemaContainer = document.getElementById('schema-container');
             const compareContainer = document.getElementById('compare-container');
 
+            const showEdit = viewName === 'edit';
             const showDoctor = viewName === 'doctor';
             const showSchema = viewName === 'schema';
             const showCompare = viewName === 'compare';
-            dataTab.classList.toggle('active', !showDoctor && !showSchema && !showCompare);
+            dataTab.classList.toggle('active', !showEdit && !showDoctor && !showSchema && !showCompare);
+            editTab.classList.toggle('active', showEdit);
             doctorTab.classList.toggle('active', showDoctor);
             schemaTab.classList.toggle('active', showSchema);
             compareTab.classList.toggle('active', showCompare);
-            dataTab.setAttribute('aria-selected', String(!showDoctor && !showSchema && !showCompare));
+            dataTab.setAttribute('aria-selected', String(!showEdit && !showDoctor && !showSchema && !showCompare));
+            editTab.setAttribute('aria-selected', String(showEdit));
             doctorTab.setAttribute('aria-selected', String(showDoctor));
             schemaTab.setAttribute('aria-selected', String(showSchema));
             compareTab.setAttribute('aria-selected', String(showCompare));
-            dataView.classList.toggle('hidden', showDoctor || showSchema || showCompare);
+            dataView.classList.toggle('hidden', showEdit || showDoctor || showSchema || showCompare);
+            editContainer.classList.toggle('hidden', !showEdit);
             doctorContainer.classList.toggle('hidden', !showDoctor);
             schemaContainer.classList.toggle('hidden', !showSchema);
             compareContainer.classList.toggle('hidden', !showCompare);
@@ -449,6 +489,246 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 'Exported ' + formatCount(result.rowsExported) + ' rows to ' + result.format.toUpperCase(),
                 'status-success'
             );
+        }
+
+        function cloneRows(rows) {
+            return JSON.parse(JSON.stringify(rows || []));
+        }
+
+        function formatEditableValue(value) {
+            if (value === null || value === undefined) {
+                return 'NULL';
+            }
+
+            if (typeof value === 'object') {
+                return JSON.stringify(value);
+            }
+
+            return String(value);
+        }
+
+        function parseEditedValue(rawValue, originalValue) {
+            const text = String(rawValue);
+            const trimmed = text.trim();
+
+            if (trimmed.toLowerCase() === 'null') {
+                return null;
+            }
+
+            if (typeof originalValue === 'number') {
+                const numericValue = Number(trimmed);
+                return Number.isNaN(numericValue) ? text : numericValue;
+            }
+
+            if (typeof originalValue === 'boolean') {
+                if (trimmed.toLowerCase() === 'true') {
+                    return true;
+                }
+
+                if (trimmed.toLowerCase() === 'false') {
+                    return false;
+                }
+
+                return text;
+            }
+
+            if (typeof originalValue === 'object' && originalValue !== null) {
+                try {
+                    return JSON.parse(trimmed);
+                } catch {
+                    return text;
+                }
+            }
+
+            return text;
+        }
+
+        function valuesMatch(left, right) {
+            return JSON.stringify(left) === JSON.stringify(right);
+        }
+
+        function countEditedCells() {
+            let changes = Math.abs(editRows.length - currentRows.length) * Math.max(currentColumns.length, 1);
+            const rowCount = Math.min(editRows.length, currentRows.length);
+
+            for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+                currentColumns.forEach((column) => {
+                    const originalValue = currentRows[rowIndex] ? currentRows[rowIndex][column] : undefined;
+                    const editedValue = editRows[rowIndex] ? editRows[rowIndex][column] : undefined;
+                    if (!valuesMatch(originalValue, editedValue)) {
+                        changes++;
+                    }
+                });
+            }
+
+            return changes;
+        }
+
+        function updateEditSummary() {
+            const rowCount = document.getElementById('edit-row-count');
+            const columnCount = document.getElementById('edit-column-count');
+            const changeCount = document.getElementById('edit-change-count');
+
+            if (rowCount) {
+                rowCount.textContent = formatCount(editRows.length);
+            }
+
+            if (columnCount) {
+                columnCount.textContent = formatCount(currentColumns.length);
+            }
+
+            if (changeCount) {
+                changeCount.textContent = formatCount(countEditedCells());
+            }
+        }
+
+        function renderEditPanel() {
+            const tableHeader = document.getElementById('edit-table-header');
+            const tableBody = document.getElementById('edit-table-body');
+            const resultMessage = document.getElementById('edit-result-message');
+
+            tableHeader.innerHTML = '';
+            tableBody.innerHTML = '';
+            resultMessage.classList.add('hidden');
+            resultMessage.textContent = '';
+
+            const headerRow = document.createElement('tr');
+            const actionHeader = document.createElement('th');
+            actionHeader.textContent = '';
+            actionHeader.className = 'edit-action-column';
+            headerRow.appendChild(actionHeader);
+
+            currentColumns.forEach((column) => {
+                const th = document.createElement('th');
+                th.textContent = column;
+                th.title = column;
+                headerRow.appendChild(th);
+            });
+            tableHeader.appendChild(headerRow);
+
+            if (!currentColumns.length) {
+                const emptyRow = document.createElement('tr');
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = 1;
+                emptyCell.className = 'empty-value';
+                emptyCell.textContent = 'No editable data loaded';
+                emptyRow.appendChild(emptyCell);
+                tableBody.appendChild(emptyRow);
+                updateEditSummary();
+                return;
+            }
+
+            if (!editRows.length) {
+                const emptyRow = document.createElement('tr');
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = currentColumns.length + 1;
+                emptyCell.className = 'empty-value';
+                emptyCell.textContent = 'No rows. Add a row to create data.';
+                emptyRow.appendChild(emptyCell);
+                tableBody.appendChild(emptyRow);
+                updateEditSummary();
+                return;
+            }
+
+            editRows.forEach((row, rowIndex) => {
+                const tr = document.createElement('tr');
+                const actionCell = document.createElement('td');
+                actionCell.className = 'edit-action-column';
+
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.className = 'btn btn-danger edit-delete-row-btn';
+                deleteButton.textContent = 'Delete';
+                deleteButton.dataset.rowIndex = String(rowIndex);
+                actionCell.appendChild(deleteButton);
+                tr.appendChild(actionCell);
+
+                currentColumns.forEach((column) => {
+                    const td = document.createElement('td');
+                    td.className = 'edit-cell';
+
+                    const input = document.createElement('input');
+                    input.className = 'edit-cell-input';
+                    input.dataset.rowIndex = String(rowIndex);
+                    input.dataset.column = column;
+                    input.value = formatEditableValue(row[column]);
+                    input.title = column;
+                    td.appendChild(input);
+                    tr.appendChild(td);
+                });
+
+                tableBody.appendChild(tr);
+            });
+
+            updateEditSummary();
+        }
+
+        function resetEditRows() {
+            editRows = cloneRows(currentRows);
+            renderEditPanel();
+            setStatus('Edits reset', 'status-success');
+        }
+
+        function addEditRow() {
+            if (!currentColumns.length) {
+                setStatus('Load data before adding rows', 'status-error');
+                return;
+            }
+
+            const row = {};
+            currentColumns.forEach((column) => {
+                row[column] = null;
+            });
+            editRows.push(row);
+            renderEditPanel();
+        }
+
+        function deleteEditRow(rowIndex) {
+            editRows.splice(rowIndex, 1);
+            renderEditPanel();
+        }
+
+        function saveEditedParquet() {
+            if (!currentColumns.length) {
+                setStatus('No editable data loaded', 'status-error');
+                return;
+            }
+
+            setStatus('Saving new Parquet...', 'status-loading');
+            vscode.postMessage({
+                type: 'saveEditedParquet',
+                columns: currentColumns,
+                rows: editRows
+            });
+        }
+
+        function handleEditSaveResult(result) {
+            const message = document.getElementById('edit-result-message');
+
+            if (!result || !result.success) {
+                if (result && result.error === 'Save cancelled.') {
+                    setStatus('Save cancelled', 'status-success');
+                } else {
+                    setStatus(result && result.error ? result.error : 'Save failed', 'status-error');
+                }
+
+                if (message) {
+                    message.textContent = result && result.error ? result.error : 'Save failed';
+                    message.className = 'edit-message edit-message-error';
+                    message.classList.remove('hidden');
+                }
+                return;
+            }
+
+            const outputPath = result.outputPath || 'the new Parquet file';
+            const successText = 'Saved ' + formatCount(result.rowsExported) + ' rows as a new Parquet file. To view the changes, open ' + outputPath + '.';
+            setStatus('Saved new Parquet', 'status-success');
+
+            if (message) {
+                message.textContent = successText;
+                message.className = 'edit-message edit-message-success';
+                message.classList.remove('hidden');
+            }
         }
 
         function handleCompareResult(result) {
@@ -1279,6 +1559,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (data.doctor) {
                 renderDoctorPanel(data.doctor);
             }
+
+            currentColumns = data.columns || [];
+            currentRows = cloneRows(data.data || []);
+            editRows = cloneRows(currentRows);
+            renderEditPanel();
             
             // Create table
             if (data.columns) {
@@ -1548,6 +1833,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             
             const refreshBtn = document.getElementById('refresh-btn');
             const dataTab = document.getElementById('data-tab');
+            const editTab = document.getElementById('edit-tab');
             const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
             const compareTab = document.getElementById('compare-tab');
@@ -1556,6 +1842,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportJsonBtn = document.getElementById('export-json-btn');
             const exportSqliteBtn = document.getElementById('export-sqlite-btn');
+            const addEditRowBtn = document.getElementById('add-edit-row-btn');
+            const resetEditsBtn = document.getElementById('reset-edits-btn');
+            const saveEditsBtn = document.getElementById('save-edits-btn');
+            const editTableBody = document.getElementById('edit-table-body');
             const doctorSchemaDriftBtn = document.getElementById('doctor-schema-drift-btn');
             const doctorDatasetScanBtn = document.getElementById('doctor-dataset-scan-btn');
             const selectCompareFileBtn = document.getElementById('select-compare-file-btn');
@@ -1571,6 +1861,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (dataTab) {
                 dataTab.addEventListener('click', () => {
                     setActiveView('data');
+                });
+            }
+
+            if (editTab) {
+                editTab.addEventListener('click', () => {
+                    setActiveView('edit');
                 });
             }
 
@@ -1647,6 +1943,55 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (exportSqliteBtn) {
                 exportSqliteBtn.addEventListener('click', () => {
                     exportCurrentQuery('sqlite');
+                });
+            }
+
+            if (addEditRowBtn) {
+                addEditRowBtn.addEventListener('click', () => {
+                    addEditRow();
+                });
+            }
+
+            if (resetEditsBtn) {
+                resetEditsBtn.addEventListener('click', () => {
+                    resetEditRows();
+                });
+            }
+
+            if (saveEditsBtn) {
+                saveEditsBtn.addEventListener('click', () => {
+                    saveEditedParquet();
+                });
+            }
+
+            if (editTableBody) {
+                editTableBody.addEventListener('input', (event) => {
+                    const target = event.target;
+                    if (!target || !target.classList || !target.classList.contains('edit-cell-input')) {
+                        return;
+                    }
+
+                    const rowIndex = Number(target.dataset.rowIndex);
+                    const column = target.dataset.column;
+                    if (!Number.isInteger(rowIndex) || !column || !editRows[rowIndex]) {
+                        return;
+                    }
+
+                    const originalValue = currentRows[rowIndex] ? currentRows[rowIndex][column] : null;
+                    editRows[rowIndex][column] = parseEditedValue(target.value, originalValue);
+                    updateEditSummary();
+                });
+
+                editTableBody.addEventListener('click', (event) => {
+                    const target = event.target;
+                    if (!target || !target.classList || !target.classList.contains('edit-delete-row-btn')) {
+                        return;
+                    }
+
+                    const rowIndex = Number(target.dataset.rowIndex);
+                    if (Number.isInteger(rowIndex)) {
+                        deleteEditRow(rowIndex);
+                    }
                 });
             }
 
@@ -1781,6 +2126,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 case 'exportResult':
                     handleExportResult(message.result);
                     break;
+                case 'editSaveResult':
+                    handleEditSaveResult(message.result);
+                    break;
                 case 'compareResult':
                     handleCompareResult(message.result);
                     break;
@@ -1827,29 +2175,41 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .controls { display: flex; align-items: center; gap: 10px; }
         .btn { 
-            background-color: var(--vscode-button-background); 
-            color: var(--vscode-button-foreground); border: none; 
+            background-color: var(--vscode-button-background, #0e639c); 
+            color: var(--vscode-button-foreground, #ffffff);
+            border: 1px solid var(--vscode-button-border, transparent); 
             padding: 8px 12px; border-radius: 3px; cursor: pointer; 
-            display: flex; align-items: center; gap: 5px; 
+            display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+            min-height: 32px; font-weight: 600;
         }
-        .btn:hover { background-color: var(--vscode-button-hoverBackground); }
+        .btn:hover { background-color: var(--vscode-button-hoverBackground, #1177bb); }
         .btn-secondary {
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
+            background-color: var(--vscode-button-secondaryBackground, #3a3d41);
+            color: var(--vscode-button-secondaryForeground, #ffffff);
+            border-color: var(--vscode-panel-border);
         }
-        .btn-secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
+        .btn-secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground, #45494e); }
+        .btn-danger {
+            background-color: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+            color: var(--vscode-inputValidation-errorForeground, #ffffff);
+            border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+        }
+        .btn-danger:hover { background-color: rgba(190, 17, 0, 0.35); }
         .status { font-size: 12px; padding: 4px 8px; border-radius: 3px; }
         .view-tabs {
             display: flex; gap: 4px; margin-bottom: 14px;
             border-bottom: 1px solid var(--vscode-panel-border);
         }
         .tab-btn {
-            background: transparent; color: var(--vscode-descriptionForeground);
+            background: var(--vscode-toolbar-hoverBackground, transparent);
+            color: var(--vscode-descriptionForeground);
             border: none; border-bottom: 2px solid transparent;
-            padding: 8px 12px; cursor: pointer;
+            padding: 8px 12px; cursor: pointer; border-radius: 3px 3px 0 0;
         }
+        .tab-btn:hover { background: var(--vscode-list-hoverBackground); }
         .tab-btn.active {
             color: var(--vscode-foreground);
+            background: var(--vscode-panelSectionHeader-background);
             border-bottom-color: var(--vscode-focusBorder);
         }
         .view-panel { width: 100%; }
@@ -1955,6 +2315,62 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .empty-value {
             text-align: center; padding: 20px; color: var(--vscode-descriptionForeground);
+        }
+        .edit-container { display: flex; flex-direction: column; gap: 14px; }
+        .edit-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .edit-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .edit-toolbar p {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .edit-actions {
+            display: flex; align-items: center; justify-content: flex-end;
+            gap: 8px; flex-wrap: wrap;
+        }
+        .edit-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .edit-message {
+            border-radius: 3px; padding: 10px 12px; font-size: 12px;
+            word-break: break-word;
+        }
+        .edit-message-success {
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+        }
+        .edit-message-error {
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+        }
+        .edit-table-container {
+            overflow: auto; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; max-height: 70vh;
+        }
+        #edit-table { width: max-content; min-width: 100%; }
+        .edit-action-column {
+            width: 92px; min-width: 92px; max-width: 92px;
+            text-align: center;
+        }
+        .edit-cell { min-width: 160px; padding: 4px; }
+        .edit-cell-input {
+            width: 100%; min-width: 150px; height: 30px;
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 3px; padding: 4px 7px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+        }
+        .edit-cell-input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
         }
         .schema-container { display: flex; flex-direction: column; gap: 14px; }
         .schema-toolbar {

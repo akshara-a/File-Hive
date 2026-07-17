@@ -1547,6 +1547,110 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
             "query": user_query
         }
 
+def save_edited_parquet_file(source_path, output_path, edits_path):
+    print(f"DEBUG: Saving edited parquet based on: {source_path}", file=sys.stderr)
+    print(f"DEBUG: Edited parquet output: {output_path}", file=sys.stderr)
+    print(f"DEBUG: Edited rows payload: {edits_path}", file=sys.stderr)
+
+    if not os.path.exists(source_path):
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": f"Source file does not exist: {source_path}"
+        }
+
+    if not os.path.exists(edits_path):
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": f"Edited rows payload does not exist: {edits_path}"
+        }
+
+    conn = None
+    rows_path = None
+
+    try:
+        with open(edits_path, "r", encoding="utf-8") as edits_file:
+            payload = json.load(edits_file)
+
+        columns = payload.get("columns") or []
+        rows = payload.get("rows") or []
+
+        if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
+            raise ValueError("Edited payload columns must be a list of strings.")
+
+        if not isinstance(rows, list):
+            raise ValueError("Edited payload rows must be a list.")
+
+        unique_columns = make_unique_column_names(columns)
+        normalized_rows = []
+
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Each edited row must be an object.")
+
+            normalized_rows.append({
+                unique_column: row.get(column)
+                for column, unique_column in zip(columns, unique_columns)
+            })
+
+        conn = duckdb.connect()
+
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+        if normalized_rows:
+            rows_path = os.path.join(os.path.dirname(edits_path), "normalized-edited-rows.json")
+            with open(rows_path, "w", encoding="utf-8") as rows_file:
+                json.dump(normalized_rows, rows_file, ensure_ascii=False)
+
+            select_columns = ", ".join(
+                duckdb_identifier(column)
+                for column in unique_columns
+            )
+            conn.execute(
+                f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
+                f"TO {sql_string(output_path)} (FORMAT PARQUET)"
+            )
+        else:
+            column_definitions = ", ".join(
+                f"{duckdb_identifier(column)} VARCHAR"
+                for column in unique_columns
+            )
+            conn.execute(f"CREATE TEMP TABLE edited_data ({column_definitions})")
+            conn.execute(
+                f"COPY edited_data TO {sql_string(output_path)} (FORMAT PARQUET)"
+            )
+
+        conn.close()
+        conn = None
+
+        return {
+            "success": True,
+            "format": "parquet",
+            "outputPath": output_path,
+            "rowsExported": len(normalized_rows),
+            "columnsExported": len(unique_columns)
+        }
+
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        print(f"DEBUG: Error saving edited parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 def normalize_compare_mappings(base_columns, compare_columns, mappings):
     base_by_name = {column["name"]: column for column in base_columns}
     compare_by_name = {column["name"]: column for column in compare_columns}
@@ -1832,7 +1936,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--compare compare_path [mappings_json] [order_mapping_json]] [--compare-metadata compare_path] [--schema-drift reference_path] [--dataset-scan folder_path]'
+            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--save-edits output_path edits_json_path] [--compare compare_path [mappings_json] [order_mapping_json]] [--compare-metadata compare_path] [--schema-drift reference_path] [--dataset-scan folder_path]'
         }))
         sys.exit(1)
     
@@ -1902,6 +2006,18 @@ if __name__ == "__main__":
             export_format = args[export_index + 1]
             output_path = args[export_index + 2]
             result = export_parquet_file(file_path, output_path, export_format, user_query)
+    elif "--save-edits" in args:
+        save_edits_index = args.index("--save-edits")
+
+        if len(args) < save_edits_index + 3:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --save-edits <output_path> <edits_json_path>'
+            }
+        else:
+            output_path = args[save_edits_index + 1]
+            edits_path = args[save_edits_index + 2]
+            result = save_edited_parquet_file(file_path, output_path, edits_path)
     else:
         user_query = args[0] if len(args) == 1 else None
         result = read_parquet_file(file_path, user_query)
