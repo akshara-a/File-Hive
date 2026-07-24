@@ -37,6 +37,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 ${this.generateSchemaContainer()}
                 ${this.generateDoctorContainer()}
                 ${this.generateCompareContainer()}
+                ${this.generateVisualizerContainer()}
             </div>
 
             <script nonce="${nonce}">
@@ -71,6 +72,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <button id="doctor-tab" class="tab-btn" role="tab" aria-selected="false">Doctor</button>
             <button id="schema-tab" class="tab-btn" role="tab" aria-selected="false">Schema</button>
             <button id="compare-tab" class="tab-btn" role="tab" aria-selected="false">Compare</button>
+            <button id="visualizer-tab" class="tab-btn" role="tab" aria-selected="false">Visualize</button>
         </div>`;
     }
 
@@ -138,6 +140,60 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <h3>Dataset and Partition Analysis</h3>
                 <div id="doctor-dataset-analysis"></div>
             </section>
+        </section>`;
+    }
+
+    private generateVisualizerContainer(): string {
+        return `
+        <section id="visualizer-container" class="visualizer-container view-panel hidden">
+            <div class="visualizer-toolbar">
+                <div>
+                    <h2>Data Visualizer</h2>
+                    <p>Chart the current query result locally.</p>
+                </div>
+                <div class="visualizer-controls">
+                    <label>
+                        Chart
+                        <select id="visualizer-chart-type">
+                            <option value="bar">Bar</option>
+                            <option value="line">Line</option>
+                            <option value="scatter">Scatter</option>
+                            <option value="histogram">Histogram</option>
+                        </select>
+                    </label>
+                    <label>
+                        X
+                        <select id="visualizer-x-column"></select>
+                    </label>
+                    <label>
+                        Y
+                        <select id="visualizer-y-column"></select>
+                    </label>
+                    <label>
+                        Aggregate
+                        <select id="visualizer-aggregation">
+                            <option value="count">Count</option>
+                            <option value="sum">Sum</option>
+                            <option value="avg">Average</option>
+                            <option value="min">Min</option>
+                            <option value="max">Max</option>
+                        </select>
+                    </label>
+                    <label>
+                        Limit
+                        <input id="visualizer-limit" type="number" min="5" max="100" value="25" />
+                    </label>
+                </div>
+            </div>
+            <div class="visualizer-summary">
+                <div class="summary-item">Rows: <span id="visualizer-row-count">0</span></div>
+                <div class="summary-item">Points: <span id="visualizer-point-count">0</span></div>
+                <div class="summary-item">Mode: <span id="visualizer-mode">-</span></div>
+            </div>
+            <div id="visualizer-message" class="visualizer-message hidden"></div>
+            <div class="visualizer-chart-wrap">
+                <svg id="visualizer-chart" viewBox="0 0 900 420" role="img" aria-label="Data chart"></svg>
+            </div>
         </section>`;
     }
 
@@ -385,35 +441,45 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
         function setActiveView(viewName) {
             const dataTab = document.getElementById('data-tab');
+            const visualizerTab = document.getElementById('visualizer-tab');
             const editTab = document.getElementById('edit-tab');
             const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
             const compareTab = document.getElementById('compare-tab');
             const dataView = document.getElementById('data-view');
+            const visualizerContainer = document.getElementById('visualizer-container');
             const editContainer = document.getElementById('edit-container');
             const doctorContainer = document.getElementById('doctor-container');
             const schemaContainer = document.getElementById('schema-container');
             const compareContainer = document.getElementById('compare-container');
 
+            const showVisualizer = viewName === 'visualizer';
             const showEdit = viewName === 'edit';
             const showDoctor = viewName === 'doctor';
             const showSchema = viewName === 'schema';
             const showCompare = viewName === 'compare';
-            dataTab.classList.toggle('active', !showEdit && !showDoctor && !showSchema && !showCompare);
+            dataTab.classList.toggle('active', !showVisualizer && !showEdit && !showDoctor && !showSchema && !showCompare);
+            visualizerTab.classList.toggle('active', showVisualizer);
             editTab.classList.toggle('active', showEdit);
             doctorTab.classList.toggle('active', showDoctor);
             schemaTab.classList.toggle('active', showSchema);
             compareTab.classList.toggle('active', showCompare);
-            dataTab.setAttribute('aria-selected', String(!showEdit && !showDoctor && !showSchema && !showCompare));
+            dataTab.setAttribute('aria-selected', String(!showVisualizer && !showEdit && !showDoctor && !showSchema && !showCompare));
+            visualizerTab.setAttribute('aria-selected', String(showVisualizer));
             editTab.setAttribute('aria-selected', String(showEdit));
             doctorTab.setAttribute('aria-selected', String(showDoctor));
             schemaTab.setAttribute('aria-selected', String(showSchema));
             compareTab.setAttribute('aria-selected', String(showCompare));
-            dataView.classList.toggle('hidden', showEdit || showDoctor || showSchema || showCompare);
+            dataView.classList.toggle('hidden', showVisualizer || showEdit || showDoctor || showSchema || showCompare);
+            visualizerContainer.classList.toggle('hidden', !showVisualizer);
             editContainer.classList.toggle('hidden', !showEdit);
             doctorContainer.classList.toggle('hidden', !showDoctor);
             schemaContainer.classList.toggle('hidden', !showSchema);
             compareContainer.classList.toggle('hidden', !showCompare);
+
+            if (showVisualizer) {
+                renderVisualizer();
+            }
         }
 
         function writeTextToClipboard(text, successMessage) {
@@ -446,6 +512,491 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 statusElement.textContent = 'Copy failed';
                 statusElement.className = 'status status-error';
             }
+        }
+
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+
+        function isNumericValue(value) {
+            if (value === null || value === undefined || value === '') {
+                return false;
+            }
+
+            const numberValue = typeof value === 'number' ? value : Number(value);
+            return Number.isFinite(numberValue);
+        }
+
+        function toNumber(value) {
+            return typeof value === 'number' ? value : Number(value);
+        }
+
+        function getNumericColumns() {
+            return currentColumns.filter((column) => currentRows.some((row) => isNumericValue(row[column])));
+        }
+
+        function populateSelect(select, values, selectedValue, emptyLabel) {
+            if (!select) {
+                return;
+            }
+
+            select.innerHTML = '';
+            if (emptyLabel) {
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = emptyLabel;
+                select.appendChild(emptyOption);
+            }
+
+            values.forEach((value) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = value;
+                select.appendChild(option);
+            });
+
+            if (selectedValue && values.includes(selectedValue)) {
+                select.value = selectedValue;
+            }
+        }
+
+        function populateVisualizerControls() {
+            const xSelect = document.getElementById('visualizer-x-column');
+            const ySelect = document.getElementById('visualizer-y-column');
+            const numericColumns = getNumericColumns();
+            const previousX = xSelect ? xSelect.value : '';
+            const previousY = ySelect ? ySelect.value : '';
+            const defaultX = currentColumns[0] || '';
+            const defaultY = numericColumns[0] || '';
+
+            populateSelect(xSelect, currentColumns, previousX || defaultX, '');
+            populateSelect(ySelect, numericColumns, previousY || defaultY, 'None');
+            syncVisualizerControls();
+        }
+
+        function syncVisualizerControls() {
+            const chartType = document.getElementById('visualizer-chart-type');
+            const aggregation = document.getElementById('visualizer-aggregation');
+            const ySelect = document.getElementById('visualizer-y-column');
+            if (!chartType || !aggregation || !ySelect) {
+                return;
+            }
+
+            const type = chartType.value;
+            const needsY = type === 'scatter' || aggregation.value !== 'count';
+            ySelect.disabled = type === 'histogram' || !needsY;
+            aggregation.disabled = type === 'scatter' || type === 'histogram';
+        }
+
+        function setVisualizerMessage(message, isError) {
+            const messageElement = document.getElementById('visualizer-message');
+            if (!messageElement) {
+                return;
+            }
+
+            if (!message) {
+                messageElement.textContent = '';
+                messageElement.classList.add('hidden');
+                messageElement.classList.remove('visualizer-message-error');
+                return;
+            }
+
+            messageElement.textContent = message;
+            messageElement.classList.remove('hidden');
+            messageElement.classList.toggle('visualizer-message-error', Boolean(isError));
+        }
+
+        function renderVisualizer() {
+            const chartType = document.getElementById('visualizer-chart-type');
+            const xSelect = document.getElementById('visualizer-x-column');
+            const ySelect = document.getElementById('visualizer-y-column');
+            const aggregation = document.getElementById('visualizer-aggregation');
+            const limitInput = document.getElementById('visualizer-limit');
+            const svg = document.getElementById('visualizer-chart');
+
+            if (!chartType || !xSelect || !ySelect || !aggregation || !limitInput || !svg) {
+                return;
+            }
+
+            syncVisualizerControls();
+            clearChart(svg);
+            document.getElementById('visualizer-row-count').textContent = formatCount(currentRows.length);
+            document.getElementById('visualizer-point-count').textContent = '0';
+            document.getElementById('visualizer-mode').textContent = '-';
+
+            if (!currentColumns.length || !currentRows.length) {
+                setVisualizerMessage('No rows are available to visualize.', false);
+                return;
+            }
+
+            const type = chartType.value;
+            const limit = Math.min(100, Math.max(5, Number(limitInput.value) || 25));
+            const chartData = type === 'scatter'
+                ? buildScatterData(xSelect.value, ySelect.value, limit)
+                : type === 'histogram'
+                    ? buildHistogramData(xSelect.value, limit)
+                    : buildGroupedChartData(xSelect.value, ySelect.value, aggregation.value, limit, type);
+
+            if (!chartData.success) {
+                setVisualizerMessage(chartData.error, true);
+                return;
+            }
+
+            setVisualizerMessage('', false);
+            if (type === 'scatter') {
+                drawScatterChart(svg, chartData.points, xSelect.value, ySelect.value);
+            } else {
+                drawCategoryChart(svg, chartData.points, type);
+            }
+
+            document.getElementById('visualizer-point-count').textContent = formatCount(chartData.points.length);
+            document.getElementById('visualizer-mode').textContent = chartData.mode;
+        }
+
+        function buildGroupedChartData(xColumn, yColumn, aggregation, limit, chartType) {
+            if (!xColumn) {
+                return { success: false, error: 'Choose an X column.' };
+            }
+
+            if (aggregation !== 'count' && !yColumn) {
+                return { success: false, error: 'Choose a numeric Y column or use Count.' };
+            }
+
+            const groups = new Map();
+            currentRows.forEach((row) => {
+                const label = valueOrDash(row[xColumn]);
+                const rawValue = aggregation === 'count' ? 1 : row[yColumn];
+                if (aggregation !== 'count' && !isNumericValue(rawValue)) {
+                    return;
+                }
+
+                const value = aggregation === 'count' ? 1 : toNumber(rawValue);
+                if (!groups.has(label)) {
+                    groups.set(label, { label, count: 0, sum: 0, min: value, max: value });
+                }
+
+                const group = groups.get(label);
+                group.count += 1;
+                group.sum += value;
+                group.min = Math.min(group.min, value);
+                group.max = Math.max(group.max, value);
+            });
+
+            let points = Array.from(groups.values()).map((group) => ({
+                label: group.label,
+                value: aggregateValue(group, aggregation)
+            }));
+
+            if (chartType === 'line') {
+                points = sortByLabel(points);
+            } else {
+                points.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+            }
+
+            return {
+                success: points.length > 0,
+                error: 'No plottable values found for this selection.',
+                points: points.slice(0, limit),
+                mode: aggregation === 'count' ? 'Count by ' + xColumn : aggregation + '(' + yColumn + ') by ' + xColumn
+            };
+        }
+
+        function aggregateValue(group, aggregation) {
+            if (aggregation === 'sum') {
+                return group.sum;
+            }
+
+            if (aggregation === 'avg') {
+                return group.count ? group.sum / group.count : 0;
+            }
+
+            if (aggregation === 'min') {
+                return group.min;
+            }
+
+            if (aggregation === 'max') {
+                return group.max;
+            }
+
+            return group.count;
+        }
+
+        function buildScatterData(xColumn, yColumn, limit) {
+            if (!xColumn || !yColumn) {
+                return { success: false, error: 'Choose numeric X and Y columns.' };
+            }
+
+            const points = currentRows
+                .filter((row) => isNumericValue(row[xColumn]) && isNumericValue(row[yColumn]))
+                .slice(0, Math.max(limit, 25))
+                .map((row) => ({
+                    label: valueOrDash(row[xColumn]) + ', ' + valueOrDash(row[yColumn]),
+                    x: toNumber(row[xColumn]),
+                    y: toNumber(row[yColumn])
+                }));
+
+            return {
+                success: points.length > 0,
+                error: 'Scatter charts need numeric X and Y values.',
+                points,
+                mode: yColumn + ' vs ' + xColumn
+            };
+        }
+
+        function buildHistogramData(xColumn, limit) {
+            if (!xColumn) {
+                return { success: false, error: 'Choose a numeric X column.' };
+            }
+
+            const values = currentRows.map((row) => row[xColumn]).filter(isNumericValue).map(toNumber);
+            if (!values.length) {
+                return { success: false, error: 'Histogram needs a numeric X column.' };
+            }
+
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const binCount = Math.min(30, Math.max(5, limit));
+            const binSize = max === min ? 1 : (max - min) / binCount;
+            const bins = Array.from({ length: binCount }, (_, index) => ({
+                label: formatCompactNumber(min + (index * binSize)) + ' - ' + formatCompactNumber(min + ((index + 1) * binSize)),
+                value: 0
+            }));
+
+            values.forEach((value) => {
+                const index = max === min ? 0 : Math.min(binCount - 1, Math.floor((value - min) / binSize));
+                bins[index].value += 1;
+            });
+
+            return {
+                success: true,
+                points: bins,
+                mode: 'Distribution of ' + xColumn
+            };
+        }
+
+        function sortByLabel(points) {
+            return points.slice().sort((a, b) => {
+                const aNumber = Number(a.label);
+                const bNumber = Number(b.label);
+                if (Number.isFinite(aNumber) && Number.isFinite(bNumber)) {
+                    return aNumber - bNumber;
+                }
+
+                const aDate = Date.parse(a.label);
+                const bDate = Date.parse(b.label);
+                if (Number.isFinite(aDate) && Number.isFinite(bDate)) {
+                    return aDate - bDate;
+                }
+
+                return String(a.label).localeCompare(String(b.label));
+            });
+        }
+
+        function clearChart(svg) {
+            while (svg.firstChild) {
+                svg.removeChild(svg.firstChild);
+            }
+        }
+
+        function svgElement(name, attributes) {
+            const element = document.createElementNS(SVG_NS, name);
+            Object.keys(attributes || {}).forEach((key) => {
+                element.setAttribute(key, String(attributes[key]));
+            });
+            return element;
+        }
+
+        function appendSvgText(svg, x, y, text, className, anchor) {
+            const element = svgElement('text', {
+                x,
+                y,
+                class: className || 'chart-label',
+                'text-anchor': anchor || 'middle'
+            });
+            element.textContent = text;
+            svg.appendChild(element);
+            return element;
+        }
+
+        function drawCategoryChart(svg, points, type) {
+            const width = 900;
+            const height = 420;
+            const margin = { top: 28, right: 24, bottom: 86, left: 72 };
+            const plotWidth = width - margin.left - margin.right;
+            const plotHeight = height - margin.top - margin.bottom;
+            const values = points.map((point) => point.value);
+            const minValue = Math.min(0, ...values);
+            const maxValue = Math.max(0, ...values);
+            const range = maxValue - minValue || 1;
+            const yScale = (value) => margin.top + ((maxValue - value) / range) * plotHeight;
+            const baseline = yScale(0);
+
+            drawAxes(svg, margin, width, height, baseline);
+            drawYAxisTicks(svg, margin, plotWidth, minValue, maxValue, yScale);
+
+            if (type === 'line') {
+                drawLineSeries(svg, points, margin, plotWidth, yScale);
+            } else {
+                drawBars(svg, points, margin, plotWidth, baseline, yScale);
+            }
+        }
+
+        function drawBars(svg, points, margin, plotWidth, baseline, yScale) {
+            const band = plotWidth / Math.max(points.length, 1);
+            const barWidth = Math.max(3, band * 0.62);
+
+            points.forEach((point, index) => {
+                const x = margin.left + index * band + (band - barWidth) / 2;
+                const y = yScale(Math.max(point.value, 0));
+                const height = Math.abs(yScale(point.value) - baseline);
+                const rect = svgElement('rect', {
+                    x,
+                    y: point.value >= 0 ? y : baseline,
+                    width: barWidth,
+                    height: Math.max(1, height),
+                    class: 'chart-bar'
+                });
+                const title = svgElement('title', {});
+                title.textContent = point.label + ': ' + formatCompactNumber(point.value);
+                rect.appendChild(title);
+                svg.appendChild(rect);
+
+                if (index % Math.ceil(points.length / 12) === 0) {
+                    appendSvgText(svg, x + barWidth / 2, 358, truncateLabel(point.label), 'chart-axis-label', 'end')
+                        .setAttribute('transform', 'rotate(-35 ' + (x + barWidth / 2) + ' 358)');
+                }
+            });
+        }
+
+        function drawLineSeries(svg, points, margin, plotWidth, yScale) {
+            if (points.length === 1) {
+                const onlyPoint = points[0];
+                const x = margin.left + plotWidth / 2;
+                const y = yScale(onlyPoint.value);
+                svg.appendChild(svgElement('circle', { cx: x, cy: y, r: 5, class: 'chart-point' }));
+                appendSvgText(svg, x, 358, truncateLabel(onlyPoint.label), 'chart-axis-label', 'middle');
+                return;
+            }
+
+            const step = plotWidth / Math.max(points.length - 1, 1);
+            const pathData = points.map((point, index) => {
+                const x = margin.left + index * step;
+                const y = yScale(point.value);
+                return (index === 0 ? 'M ' : 'L ') + x + ' ' + y;
+            }).join(' ');
+
+            svg.appendChild(svgElement('path', { d: pathData, class: 'chart-line' }));
+            points.forEach((point, index) => {
+                const x = margin.left + index * step;
+                const y = yScale(point.value);
+                const circle = svgElement('circle', { cx: x, cy: y, r: 4, class: 'chart-point' });
+                const title = svgElement('title', {});
+                title.textContent = point.label + ': ' + formatCompactNumber(point.value);
+                circle.appendChild(title);
+                svg.appendChild(circle);
+
+                if (index % Math.ceil(points.length / 10) === 0) {
+                    appendSvgText(svg, x, 358, truncateLabel(point.label), 'chart-axis-label', 'end')
+                        .setAttribute('transform', 'rotate(-35 ' + x + ' 358)');
+                }
+            });
+        }
+
+        function drawScatterChart(svg, points, xColumn, yColumn) {
+            const width = 900;
+            const height = 420;
+            const margin = { top: 28, right: 24, bottom: 72, left: 72 };
+            const plotWidth = width - margin.left - margin.right;
+            const plotHeight = height - margin.top - margin.bottom;
+            const minX = Math.min(...points.map((point) => point.x));
+            const maxX = Math.max(...points.map((point) => point.x));
+            const minY = Math.min(...points.map((point) => point.y));
+            const maxY = Math.max(...points.map((point) => point.y));
+            const xRange = maxX - minX || 1;
+            const yRange = maxY - minY || 1;
+            const xScale = (value) => margin.left + ((value - minX) / xRange) * plotWidth;
+            const yScale = (value) => margin.top + ((maxY - value) / yRange) * plotHeight;
+
+            drawAxes(svg, margin, width, height, margin.top + plotHeight);
+            drawYAxisTicks(svg, margin, plotWidth, minY, maxY, yScale);
+            drawXAxisTicks(svg, margin, plotWidth, plotHeight, minX, maxX, xScale);
+
+            points.forEach((point) => {
+                const circle = svgElement('circle', {
+                    cx: xScale(point.x),
+                    cy: yScale(point.y),
+                    r: 4,
+                    class: 'chart-point'
+                });
+                const title = svgElement('title', {});
+                title.textContent = point.label;
+                circle.appendChild(title);
+                svg.appendChild(circle);
+            });
+
+            appendSvgText(svg, margin.left + plotWidth / 2, 404, xColumn, 'chart-axis-title', 'middle');
+            appendSvgText(svg, 18, margin.top + plotHeight / 2, yColumn, 'chart-axis-title', 'middle')
+                .setAttribute('transform', 'rotate(-90 18 ' + (margin.top + plotHeight / 2) + ')');
+        }
+
+        function drawAxes(svg, margin, width, height, baseline) {
+            svg.appendChild(svgElement('line', {
+                x1: margin.left,
+                y1: margin.top,
+                x2: margin.left,
+                y2: height - margin.bottom,
+                class: 'chart-axis'
+            }));
+            svg.appendChild(svgElement('line', {
+                x1: margin.left,
+                y1: baseline,
+                x2: width - margin.right,
+                y2: baseline,
+                class: 'chart-axis'
+            }));
+        }
+
+        function drawYAxisTicks(svg, margin, plotWidth, minValue, maxValue, yScale) {
+            const tickCount = 5;
+            for (let index = 0; index <= tickCount; index++) {
+                const value = minValue + ((maxValue - minValue) * index / tickCount);
+                const y = yScale(value);
+                svg.appendChild(svgElement('line', {
+                    x1: margin.left,
+                    y1: y,
+                    x2: margin.left + plotWidth,
+                    y2: y,
+                    class: 'chart-grid'
+                }));
+                appendSvgText(svg, margin.left - 10, y + 4, formatCompactNumber(value), 'chart-axis-label', 'end');
+            }
+        }
+
+        function drawXAxisTicks(svg, margin, plotWidth, plotHeight, minValue, maxValue, xScale) {
+            const tickCount = 5;
+            for (let index = 0; index <= tickCount; index++) {
+                const value = minValue + ((maxValue - minValue) * index / tickCount);
+                const x = xScale(value);
+                svg.appendChild(svgElement('line', {
+                    x1: x,
+                    y1: margin.top,
+                    x2: x,
+                    y2: margin.top + plotHeight,
+                    class: 'chart-grid'
+                }));
+                appendSvgText(svg, x, margin.top + plotHeight + 22, formatCompactNumber(value), 'chart-axis-label', 'middle');
+            }
+        }
+
+        function formatCompactNumber(value) {
+            if (!Number.isFinite(value)) {
+                return '-';
+            }
+
+            return Number(value.toPrecision(4)).toLocaleString();
+        }
+
+        function truncateLabel(value) {
+            const text = String(value);
+            return text.length > 16 ? text.slice(0, 15) + '...' : text;
         }
 
         function setLoading(message) {
@@ -1563,7 +2114,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             currentRows = cloneRows(data.data || []);
             editRows = cloneRows(currentRows);
             renderEditPanel();
-            
+            populateVisualizerControls();
+            renderVisualizer();
+             
             // Create table
             if (data.columns) {
                 createTable(data.columns, data.data || []);
@@ -1831,6 +2384,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             
             const refreshBtn = document.getElementById('refresh-btn');
             const dataTab = document.getElementById('data-tab');
+            const visualizerTab = document.getElementById('visualizer-tab');
             const editTab = document.getElementById('edit-tab');
             const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
@@ -1855,10 +2409,21 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
             const generateSchemaDocsBtn = document.getElementById('generate-schema-docs-btn');
             const copySchemaDocsBtn = document.getElementById('copy-schema-docs-btn');
+            const visualizerChartType = document.getElementById('visualizer-chart-type');
+            const visualizerXColumn = document.getElementById('visualizer-x-column');
+            const visualizerYColumn = document.getElementById('visualizer-y-column');
+            const visualizerAggregation = document.getElementById('visualizer-aggregation');
+            const visualizerLimit = document.getElementById('visualizer-limit');
 
             if (dataTab) {
                 dataTab.addEventListener('click', () => {
                     setActiveView('data');
+                });
+            }
+
+            if (visualizerTab) {
+                visualizerTab.addEventListener('click', () => {
+                    setActiveView('visualizer');
                 });
             }
 
@@ -2110,6 +2675,16 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     }
                 });
             }
+
+            [visualizerChartType, visualizerXColumn, visualizerYColumn, visualizerAggregation, visualizerLimit].forEach((control) => {
+                if (control) {
+                    control.addEventListener('change', renderVisualizer);
+                }
+            });
+
+            if (visualizerLimit) {
+                visualizerLimit.addEventListener('input', renderVisualizer);
+            }
         });
 
         // Handle messages from extension
@@ -2273,6 +2848,86 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-textPreformat-foreground);
         }
         .data-container { display: flex; flex-direction: column; gap: 15px; }
+        .visualizer-container { display: flex; flex-direction: column; gap: 14px; }
+        .visualizer-toolbar {
+            display: grid; grid-template-columns: minmax(220px, 0.6fr) minmax(420px, 1.4fr);
+            gap: 12px; align-items: end;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .visualizer-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .visualizer-toolbar p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .visualizer-controls {
+            display: grid; grid-template-columns: repeat(5, minmax(96px, 1fr));
+            gap: 8px; align-items: end;
+        }
+        .visualizer-controls label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .visualizer-controls select, .visualizer-controls input {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+        }
+        .visualizer-controls select:disabled {
+            opacity: 0.55;
+        }
+        .visualizer-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .visualizer-message {
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .visualizer-message-error {
+            border-color: var(--vscode-inputValidation-warningBorder);
+            background-color: var(--vscode-inputValidation-warningBackground);
+            color: var(--vscode-inputValidation-warningForeground);
+        }
+        .visualizer-chart-wrap {
+            width: 100%; min-height: 420px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-editor-background);
+            overflow: auto;
+        }
+        #visualizer-chart {
+            display: block; width: 100%; min-width: 760px; height: 420px;
+        }
+        .chart-axis {
+            stroke: var(--vscode-descriptionForeground); stroke-width: 1;
+        }
+        .chart-grid {
+            stroke: var(--vscode-panel-border); stroke-width: 1;
+        }
+        .chart-axis-label, .chart-axis-title {
+            fill: var(--vscode-descriptionForeground); font-size: 11px;
+            font-family: var(--vscode-font-family);
+        }
+        .chart-axis-title {
+            fill: var(--vscode-foreground); font-weight: 600;
+        }
+        .chart-bar {
+            fill: var(--vscode-charts-blue, #3794ff);
+        }
+        .chart-bar:hover {
+            fill: var(--vscode-charts-orange, #d18616);
+        }
+        .chart-line {
+            fill: none; stroke: var(--vscode-charts-green, #89d185);
+            stroke-width: 3; stroke-linejoin: round; stroke-linecap: round;
+        }
+        .chart-point {
+            fill: var(--vscode-charts-purple, #b180d7);
+            stroke: var(--vscode-editor-background); stroke-width: 1.5;
+        }
+        .chart-point:hover {
+            fill: var(--vscode-charts-yellow, #cca700);
+        }
         .summary {
             display: flex; gap: 20px; padding: 15px;
             background-color: var(--vscode-panelSectionHeader-background);
@@ -2557,6 +3212,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             min-width: 760px;
         }
         @media (max-width: 820px) {
+            .visualizer-toolbar { grid-template-columns: 1fr; }
+            .visualizer-controls { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
             .schema-layout { grid-template-columns: 1fr; }
             .schema-toolbar { align-items: stretch; }
             .schema-actions { width: 100%; }
