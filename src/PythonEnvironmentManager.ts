@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { MESSAGES, VS_CODE_PYTHON_EXTENSION, WINDOWS_PLATFORM } from './common/constant';
+import { LoggingService } from './services/LoggingService';
 
 interface PythonExtension {
     environments: {
@@ -46,15 +47,16 @@ export class PythonEnvironmentManager {
     private systemPythonPath: string | null = null;
     private readonly venvPath: string;
     private venvPythonPath: string;
-    private readonly outputChannel: vscode.OutputChannel;
     private readonly isWindows: boolean;
     private isInitialized: boolean = false;
     private initializationPromise: Promise<boolean> | null = null;
     private initializationAllowsPrompts: boolean = true;
     private readonly stateValidationPromise: Promise<void>;
 
-    constructor(private readonly context: vscode.ExtensionContext) {
-        this.outputChannel = vscode.window.createOutputChannel('Parquet Viewer');
+    constructor(
+        private readonly context: vscode.ExtensionContext,
+        private readonly logger: LoggingService
+    ) {
         this.isWindows = os.platform() === WINDOWS_PLATFORM;
         
         this.venvPath = path.join(
@@ -436,6 +438,11 @@ export class PythonEnvironmentManager {
     }
 
     private async getPythonFromCommand(): Promise<string | null> {
+        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+            this.debug('Skipping Python interpreter command lookup because no workspace is open');
+            return null;
+        }
+
         try {
             const pythonPath = await vscode.commands.executeCommand('python.interpreterPath') as string;
             
@@ -446,7 +453,7 @@ export class PythonEnvironmentManager {
             
             return null;
         } catch (error) {
-            this.log(`Command method failed (normal if no workspace): ${error}`);
+            this.debug(`Python interpreter command lookup failed: ${error}`);
             return null;
         }
     }
@@ -796,8 +803,11 @@ export class PythonEnvironmentManager {
     }
 
     private log(message: string): void {
-        const timestamp = new Date().toLocaleTimeString();
-        this.outputChannel.appendLine(`[${timestamp}] ${message}`);
+        this.logger.info(message);
+    }
+
+    private debug(message: string): void {
+        this.logger.debug(message);
     }
 
     public getPythonPath(): string {
@@ -821,7 +831,7 @@ export class PythonEnvironmentManager {
     }
 
     public showOutputChannel(): void {
-        this.outputChannel.show(true);
+        this.logger.show(true);
     }
 
     public async resetEnvironment(): Promise<boolean> {

@@ -2,8 +2,10 @@ import * as vscode from 'vscode';
 import { ParquetViewerFactory } from './factories/ParquetViewerFactory';
 import { PythonEnvironmentManager } from './PythonEnvironmentManager';
 import { CANCEL, EXTENSION_NAME, MESSAGES, REGISTER_COMMANDS, RESET_ENVIRONMENT, SHOW_LOGS } from './common/constant';
+import { LoggingService } from './services/LoggingService';
 
 let pythonManager: PythonEnvironmentManager;
+let logger: LoggingService;
 
 /**
  * Activates the Parquet Viewer extension.
@@ -12,10 +14,12 @@ let pythonManager: PythonEnvironmentManager;
  * @param {vscode.ExtensionContext} context - The VS Code extension context.
  */
 export async function activate(context: vscode.ExtensionContext) {
-    console.log('Parquet Viewer extension is activating...');
+    logger = new LoggingService();
+    context.subscriptions.push(logger);
+    logger.info('Parquet Viewer extension is activating...');
     
     // Create the manager now; it prepares Python lazily on first use.
-    pythonManager = new PythonEnvironmentManager(context);
+    pythonManager = new PythonEnvironmentManager(context, logger);
 
     const progressOptions = {
         location: vscode.ProgressLocation.Notification,
@@ -25,7 +29,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     try {
         // Register our custom editor provider using the factory
-        const parquetViewer = ParquetViewerFactory.create(context, pythonManager);
+        const parquetViewer = ParquetViewerFactory.create(context, pythonManager, logger);
         context.subscriptions.push(parquetViewer);
         
         // Add commands
@@ -84,10 +88,10 @@ export async function activate(context: vscode.ExtensionContext) {
 
         pythonManager.prewarmEnvironmentInBackground();
         
-        console.log('Parquet Viewer extension activated successfully');
+        logger.info('Parquet Viewer extension activated successfully');
         
     } catch (error) {
-        console.error('Failed to register Parquet Viewer:', error);
+        logger.error('Failed to register Parquet Viewer:', error);
         vscode.window.showErrorMessage(`Parquet Viewer registration failed: ${error}`);
         pythonManager.showOutputChannel();
     }
@@ -98,5 +102,5 @@ export async function activate(context: vscode.ExtensionContext) {
  * This is typically done when the extension is uninstalled or disabled.
  */
 export function deactivate() {
-    console.log('Parquet Viewer extension deactivated');
+    logger?.info('Parquet Viewer extension deactivated');
 }

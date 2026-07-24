@@ -2,7 +2,7 @@
   "name": "parquet-x",
   "displayName": "Parquet-X",
   "description": "View, query, compare, diagnose, and export Apache Parquet files in VS Code.",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",
@@ -93,5 +93,8 @@
     "copyfiles": "^2.4.1",
     "eslint": "^9.36.0",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "loglevel": "^1.9.2"
   }
 }

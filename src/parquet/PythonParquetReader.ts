@@ -16,11 +16,13 @@ import {
     ParquetExportResult,
     ParquetSchemaDriftResult
 } from '../interfaces/IParquetReader';
+import { LoggingService } from '../services/LoggingService';
 
 export class PythonParquetReader implements IParquetReader {
     constructor(
         private readonly pythonManager: { getPythonPath(): string | null; ensureInitialized?(): Promise<void> },
-        private readonly context: vscode.ExtensionContext
+        private readonly context: vscode.ExtensionContext,
+        private readonly logger: LoggingService
     ) {}
 
     /**
@@ -45,7 +47,7 @@ export class PythonParquetReader implements IParquetReader {
         }
         const pythonPath = readyPython.pythonPath;
 
-        console.log(`[PythonParquetReader] Reading parquet file: ${uri.fsPath}`);
+        this.logger.info('Reading parquet file', uri.fsPath);
         
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -305,14 +307,14 @@ export class PythonParquetReader implements IParquetReader {
 
     /**
      * Checks if a Python script exists at the given path.
-     * If the script does not exist, a message is logged to the console.
+     * If the script does not exist, a message is logged.
      * @param scriptPath The path to the Python script to check.
      * @returns True if the script exists, false otherwise.
      */
     private ensurePythonScriptExists(scriptPath: string): boolean {
         const exists = fs.existsSync(scriptPath);
         if (!exists) {
-            console.log(`[PythonParquetReader] Python script not found at: ${scriptPath}`);
+            this.logger.error('Python script not found', scriptPath);
         }
         return exists;
     }
@@ -363,12 +365,12 @@ export class PythonParquetReader implements IParquetReader {
 
         pythonProcess.stdout.on('data', (data) => {
             stdout += data.toString();
-            console.log(`[PythonParquetReader] Python STDOUT: ${data.toString()}`);
+            this.logger.debug('Python STDOUT', data.toString());
         });
 
         pythonProcess.stderr.on('data', (data) => {
             stderr += data.toString();
-            console.log(`[PythonParquetReader] Python STDERR: ${data.toString()}`);
+            this.logger.debug('Python STDERR', data.toString());
         });
 
         pythonProcess.on('close', (code, signal) => {
@@ -376,6 +378,7 @@ export class PythonParquetReader implements IParquetReader {
         });
 
         pythonProcess.on('error', (error) => {
+            this.logger.error('Failed to execute Python script', error);
             resolve({ success: false, error: `Failed to execute Python script: ${error.message}` });
         });
 
@@ -403,21 +406,23 @@ export class PythonParquetReader implements IParquetReader {
         stderr: string, 
         resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void
     ): void {
-        console.log(`[PythonParquetReader] Python process exited with code: ${code}, signal: ${signal}`);
+        this.logger.debug('Python process exited', { code, signal });
         
         try {
             if (stdout.trim()) {
                 const result = JSON.parse(stdout);
-                console.log(`[PythonParquetReader] Parse successful. Success: ${result.success}`);
+                this.logger.debug('Parsed Python output', { success: result.success });
                 resolve(result);
             } else {
                 const errorMessage = signal 
                     ? `Process terminated by signal: ${signal}. STDERR: ${stderr}`
                     : `No output from Python. Exit code: ${code}. STDERR: ${stderr}`;
                 
+                this.logger.error('Python process returned no JSON output', errorMessage);
                 resolve({ success: false, error: errorMessage });
             }
         } catch (error) {
+            this.logger.error('Failed to parse Python output', error);
             resolve({ success: false, error: `Failed to parse Python output: ${error}. STDOUT: ${stdout}` });
         }
     }
@@ -437,7 +442,7 @@ export class PythonParquetReader implements IParquetReader {
     ): void {
         setTimeout(() => {
             process.kill();
-            console.log(`[PythonParquetReader] Python process timed out after ${timeoutMs}ms`);
+            this.logger.warn('Python process timed out', { timeoutMs });
             resolve({ success: false, error: `Operation timed out after ${timeoutMs / 1000} seconds` });
         }, timeoutMs);
     }

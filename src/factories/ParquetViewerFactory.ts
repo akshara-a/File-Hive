@@ -3,6 +3,7 @@ import { ParquetViewer } from '../ParquetViewer';
 import { PythonParquetReader } from '../parquet/PythonParquetReader';
 import { InlineWebviewRenderer } from '../webview/InlineWebviewRenderer';
 import { PythonEnvironmentManager } from '../PythonEnvironmentManager';
+import { LoggingService } from '../services/LoggingService';
 
 export class ParquetViewerFactory {
     /**
@@ -15,9 +16,10 @@ export class ParquetViewerFactory {
      */
     static create(
         context: vscode.ExtensionContext,
-        pythonManager: PythonEnvironmentManager
+        pythonManager: PythonEnvironmentManager,
+        logger: LoggingService
     ): vscode.Disposable {
-        const parquetReader = new PythonParquetReader(pythonManager, context);
+        const parquetReader = new PythonParquetReader(pythonManager, context, logger);
         const webviewRenderer = new InlineWebviewRenderer();
         
         return ParquetViewer.register(parquetReader, webviewRenderer);

@@ -359,7 +359,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let editRows = [];
 
         function initialize(data) {
-            console.log('Webview initialized with data:', data);
             const queryInput = document.getElementById('query-input');
             currentQuery = data.query || DEFAULT_QUERY;
             if (queryInput) {
@@ -1773,7 +1772,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             // Clear existing content
             tableHeader.innerHTML = '';
             tableBody.innerHTML = '';
-            console.log('Cleared existing table content');
             
             if (!columns || !data) {
                 return;
@@ -1894,8 +1892,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     setLoading('Refreshing...');
                     vscode.postMessage({ type: 'refresh', query: currentQuery });
                 });
-            } else {
-                console.log('Refresh button not found!');
             }
 
             if (runQueryBtn) {
@@ -2145,12 +2141,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     renderDoctorDatasetAnalysis(currentDoctorDataset);
                     setStatus(message.result && message.result.success ? 'Dataset scan complete' : (message.result && message.result.error) || 'Dataset scan failed', message.result && message.result.success ? 'status-success' : 'status-error');
                     break;
-                default:
-                    console.log('Unknown message type:', message.type);
             }
         });
-
-        console.log('JavaScript loaded successfully');
         `;
     }
 
