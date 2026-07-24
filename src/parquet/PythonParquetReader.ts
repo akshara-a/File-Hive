@@ -19,7 +19,7 @@ import {
 
 export class PythonParquetReader implements IParquetReader {
     constructor(
-        private readonly pythonManager: { getPythonPath(): string | null },
+        private readonly pythonManager: { getPythonPath(): string | null; ensureInitialized?(): Promise<void> },
         private readonly context: vscode.ExtensionContext
     ) {}
 
@@ -38,15 +38,12 @@ export class PythonParquetReader implements IParquetReader {
      * @returns A promise that resolves to a ParquetDataResult.
      */
     async readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        // Handle the null case
-        if (!pythonPath) {
-            return { 
-                success: false, 
-                error: 'Python environment not configured. Please initialize Python environment first.' 
-            };
+        if (!readyPython.pythonPath) {
+            return { success: false, error: readyPython.error };
         }
+        const pythonPath = readyPython.pythonPath;
 
         console.log(`[PythonParquetReader] Reading parquet file: ${uri.fsPath}`);
         
@@ -68,14 +65,15 @@ export class PythonParquetReader implements IParquetReader {
         outputUri: vscode.Uri,
         query?: string
     ): Promise<ParquetExportResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        if (!pythonPath) {
+        if (!readyPython.pythonPath) {
             return {
                 success: false,
-                error: 'Python environment not configured. Please initialize Python environment first.'
+                error: readyPython.error
             };
         }
+        const pythonPath = readyPython.pythonPath;
 
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -103,14 +101,15 @@ export class PythonParquetReader implements IParquetReader {
         columns: string[],
         rows: Record<string, any>[]
     ): Promise<ParquetEditSaveResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        if (!pythonPath) {
+        if (!readyPython.pythonPath) {
             return {
                 success: false,
-                error: 'Python environment not configured. Please initialize Python environment first.'
+                error: readyPython.error
             };
         }
+        const pythonPath = readyPython.pythonPath;
 
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -159,14 +158,15 @@ export class PythonParquetReader implements IParquetReader {
     }
 
     async getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        if (!pythonPath) {
+        if (!readyPython.pythonPath) {
             return {
                 success: false,
-                error: 'Python environment not configured. Please initialize Python environment first.'
+                error: readyPython.error
             };
         }
+        const pythonPath = readyPython.pythonPath;
 
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -191,14 +191,15 @@ export class PythonParquetReader implements IParquetReader {
         mappings?: ParquetCompareMapping[],
         orderMapping?: ParquetCompareOrderMapping
     ): Promise<ParquetCompareResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        if (!pythonPath) {
+        if (!readyPython.pythonPath) {
             return {
                 success: false,
-                error: 'Python environment not configured. Please initialize Python environment first.'
+                error: readyPython.error
             };
         }
+        const pythonPath = readyPython.pythonPath;
 
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -229,14 +230,15 @@ export class PythonParquetReader implements IParquetReader {
     }
 
     async detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        if (!pythonPath) {
+        if (!readyPython.pythonPath) {
             return {
                 success: false,
-                error: 'Python environment not configured. Please initialize Python environment first.'
+                error: readyPython.error
             };
         }
+        const pythonPath = readyPython.pythonPath;
 
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -256,14 +258,15 @@ export class PythonParquetReader implements IParquetReader {
     }
 
     async scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult> {
-        const pythonPath = this.pythonManager.getPythonPath();
+        const readyPython = await this.getReadyPythonPath();
 
-        if (!pythonPath) {
+        if (!readyPython.pythonPath) {
             return {
                 success: false,
-                error: 'Python environment not configured. Please initialize Python environment first.'
+                error: readyPython.error
             };
         }
+        const pythonPath = readyPython.pythonPath;
 
         return new Promise((resolve) => {
             const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
@@ -280,6 +283,24 @@ export class PythonParquetReader implements IParquetReader {
                 180000
             );
         });
+    }
+
+    private async getReadyPythonPath(): Promise<{ pythonPath?: string; error?: string }> {
+        try {
+            if (this.pythonManager.ensureInitialized) {
+                await this.pythonManager.ensureInitialized();
+            }
+
+            const pythonPath = this.pythonManager.getPythonPath();
+            if (!pythonPath) {
+                return { error: 'Python environment is not configured yet.' };
+            }
+
+            return { pythonPath };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { error: `Could not prepare the Python environment: ${message}` };
+        }
     }
 
     /**

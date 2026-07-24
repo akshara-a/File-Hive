@@ -70,6 +70,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         _token: vscode.CancellationToken
     ): Promise<void> {
         this.setupWebview(webviewPanel, document);
+        webviewPanel.webview.html = this.getLoadingWebviewContent();
         await this.initializeWebviewContent(webviewPanel, document.uri);
     }
 
@@ -495,5 +496,66 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
     private async updateWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: string): Promise<void> {
         const parquetData = await this.parquetReader.readParquetFile(uri, query);
         webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, parquetData);
+    }
+
+    private getLoadingWebviewContent(): string {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            font-family: var(--vscode-font-family);
+            color: var(--vscode-foreground);
+            background: var(--vscode-editor-background);
+        }
+
+        .status {
+            display: grid;
+            gap: 10px;
+            justify-items: center;
+            max-width: 420px;
+            padding: 24px;
+            text-align: center;
+        }
+
+        .spinner {
+            width: 28px;
+            height: 28px;
+            border: 3px solid var(--vscode-progressBar-background);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+
+        .title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .detail {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground);
+            line-height: 1.5;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <main class="status">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="title">Preparing Parquet viewer</div>
+        <div class="detail">Setting up local Python and DuckDB support. This only happens when needed.</div>
+    </main>
+</body>
+</html>`;
     }
 }

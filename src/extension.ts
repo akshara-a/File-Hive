@@ -7,55 +7,21 @@ let pythonManager: PythonEnvironmentManager;
 
 /**
  * Activates the Parquet Viewer extension.
- * Initializes the isolated Python environment and registers the custom editor provider.
+ * Registers the custom editor provider and supporting commands.
+ * The isolated Python environment is initialized lazily when a Parquet action needs it.
  * @param {vscode.ExtensionContext} context - The VS Code extension context.
  */
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Parquet Viewer extension is activating...');
     
-    // Initialize isolated Python environment
+    // Create the manager now; it prepares Python lazily on first use.
     pythonManager = new PythonEnvironmentManager(context);
-    
+
     const progressOptions = {
         location: vscode.ProgressLocation.Notification,
         title: EXTENSION_NAME,
         cancellable: false
     };
-
-    let isReady = false;
-    
-    try {
-        isReady = await vscode.window.withProgress(progressOptions, async (progress) => {
-            progress.report({ message: MESSAGES.ENVIRONMENT_INITIALIZING });
-            return await pythonManager.initializeEnvironment();
-        });
-    } catch (error) {
-        console.error('Failed to initialize environment:', error);
-        vscode.window.showErrorMessage(`Parquet Viewer initialization failed: ${error}`);
-        pythonManager.showOutputChannel();
-        return;
-    }
-    
-    if (!isReady) {
-        const choice = await vscode.window.showErrorMessage(
-            MESSAGES.ENVIRONMENT_SETUP_FAILED,
-            SHOW_LOGS,
-            RESET_ENVIRONMENT
-        );
-        
-        if (choice === SHOW_LOGS) {
-            pythonManager.showOutputChannel();
-        } else if (choice === RESET_ENVIRONMENT) {
-            await vscode.window.withProgress(progressOptions, async (progress) => {
-                progress.report({ message: MESSAGES.ENVIRONMENT_RESETTING });
-                const success = await pythonManager.resetEnvironment();
-                if (success) {
-                    vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_RESET_SUCCESS);
-                }
-            });
-        }
-        return;
-    }
 
     try {
         // Register our custom editor provider using the factory
@@ -63,6 +29,28 @@ export async function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(parquetViewer);
         
         // Add commands
+        context.subscriptions.push(
+            vscode.commands.registerCommand(REGISTER_COMMANDS.SETUP_ENVIRONMENT, async () => {
+                const success = await pythonManager.initializeEnvironment();
+
+                if (success) {
+                    vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_SETUP_SUCCESS);
+                } else {
+                    const choice = await vscode.window.showErrorMessage(
+                        MESSAGES.ENVIRONMENT_SETUP_FAILED,
+                        SHOW_LOGS,
+                        RESET_ENVIRONMENT
+                    );
+
+                    if (choice === SHOW_LOGS) {
+                        pythonManager.showOutputChannel();
+                    } else if (choice === RESET_ENVIRONMENT) {
+                        await vscode.commands.executeCommand(REGISTER_COMMANDS.RESET_ENVIRONMENT);
+                    }
+                }
+            })
+        );
+
         context.subscriptions.push(
             vscode.commands.registerCommand(REGISTER_COMMANDS.SHOW_LOGS, () => {
                 pythonManager.showOutputChannel();
@@ -93,6 +81,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
             })
         );
+
+        pythonManager.prewarmEnvironmentInBackground();
         
         console.log('Parquet Viewer extension activated successfully');
         

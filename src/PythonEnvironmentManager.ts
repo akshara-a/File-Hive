@@ -22,6 +22,14 @@ interface PythonExtension {
     getActiveEnvironmentPath?(): Promise<string | { path: string }>;
 }
 
+interface InitializeEnvironmentOptions {
+    allowPrompts?: boolean;
+    showProgress?: boolean;
+}
+
+const INITIALIZED_STATE_KEY = 'parquetViewerInitialized';
+const PREWARM_ATTEMPTED_VERSION_STATE_KEY = 'parquetViewerPrewarmAttemptedVersion';
+
 /**
  * Checks if a file or directory exists at the given path.
  */
@@ -42,13 +50,15 @@ export class PythonEnvironmentManager {
     private readonly isWindows: boolean;
     private isInitialized: boolean = false;
     private initializationPromise: Promise<boolean> | null = null;
+    private initializationAllowsPrompts: boolean = true;
+    private readonly stateValidationPromise: Promise<void>;
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.outputChannel = vscode.window.createOutputChannel('Parquet Viewer');
         this.isWindows = os.platform() === WINDOWS_PLATFORM;
         
         this.venvPath = path.join(
-            this.context.extensionPath,
+            this.context.globalStorageUri.fsPath,
             '.parquet-venv'
         );
         
@@ -56,15 +66,15 @@ export class PythonEnvironmentManager {
             ? path.join(this.venvPath, 'Scripts', 'python.exe')
             : path.join(this.venvPath, 'bin', 'python');
         
-        this.validateState();
+        this.stateValidationPromise = this.validateState();
     }
 
     private async validateState(): Promise<void> {
         try {
-            const storedState = this.context.globalState.get('parquetViewerInitialized');
+            const storedState = this.context.globalState.get(INITIALIZED_STATE_KEY);
             if (storedState && !(await exists(this.venvPythonPath))) {
                 this.log('State mismatch detected: venv missing but marked as initialized');
-                await this.context.globalState.update('parquetViewerInitialized', false);
+                await this.context.globalState.update(INITIALIZED_STATE_KEY, false);
                 this.isInitialized = false;
             }
         } catch (error) {
@@ -72,21 +82,68 @@ export class PythonEnvironmentManager {
         }
     }
 
-    public async initializeEnvironment(): Promise<boolean> {
-        this.outputChannel.show(true);
+    public async initializeEnvironment(options: InitializeEnvironmentOptions = {}): Promise<boolean> {
+        await this.stateValidationPromise;
         this.log('Starting environment initialization...');
-        
+
+        const effectiveOptions = {
+            allowPrompts: options.allowPrompts ?? true,
+            showProgress: options.showProgress ?? true
+        };
+
         if (this.initializationPromise) {
-            return this.initializationPromise;
+            const result = await this.initializationPromise;
+            if (!result && effectiveOptions.allowPrompts && !this.initializationAllowsPrompts) {
+                return this.initializeEnvironment(effectiveOptions);
+            }
+
+            return result;
         }
 
-        this.initializationPromise = this.doInitialize();
-        const result = await this.initializationPromise;
-        this.initializationPromise = null;
-        return result;
+        this.initializationAllowsPrompts = effectiveOptions.allowPrompts;
+        this.initializationPromise = this.doInitialize(effectiveOptions);
+
+        try {
+            return await this.initializationPromise;
+        } finally {
+            this.initializationPromise = null;
+            this.initializationAllowsPrompts = true;
+        }
     }
 
-    private async doInitialize(): Promise<boolean> {
+    public prewarmEnvironmentInBackground(): void {
+        void this.doPrewarmEnvironmentInBackground();
+    }
+
+    private async doPrewarmEnvironmentInBackground(): Promise<void> {
+        try {
+            await this.stateValidationPromise;
+
+            const extensionVersion = this.getExtensionVersion();
+            const attemptedVersion = this.context.globalState.get<string>(PREWARM_ATTEMPTED_VERSION_STATE_KEY);
+            if (attemptedVersion === extensionVersion) {
+                this.log(`Environment prewarm already attempted for ${extensionVersion}`);
+                return;
+            }
+
+            this.log(`Prewarming Python environment for ${extensionVersion}`);
+            const ready = await this.initializeEnvironment({
+                allowPrompts: false,
+                showProgress: false
+            });
+
+            await this.context.globalState.update(PREWARM_ATTEMPTED_VERSION_STATE_KEY, extensionVersion);
+            if (ready) {
+                this.log('Background environment prewarm complete');
+            } else {
+                this.log('Background environment prewarm skipped or failed; setup will retry on first Parquet action');
+            }
+        } catch (error) {
+            this.log(`Background environment prewarm failed: ${error}`);
+        }
+    }
+
+    private async doInitialize(options: Required<InitializeEnvironmentOptions>): Promise<boolean> {
         if (this.isInitialized) {
             this.log('Environment ready');
             return true;
@@ -106,6 +163,11 @@ export class PythonEnvironmentManager {
 
         if (!this.systemPythonPath) {
             const pythonExt = vscode.extensions.getExtension(VS_CODE_PYTHON_EXTENSION);
+            if (!options.allowPrompts) {
+                this.log('Python path not found during background prewarm; prompts are disabled');
+                return false;
+            }
+
             if (!pythonExt) {
                 const installed = await this.promptForPythonExtension();
                 if (!installed) {
@@ -127,12 +189,12 @@ export class PythonEnvironmentManager {
 
         this.log(`Using Python: ${this.systemPythonPath}`);
 
-        const venvCreated = await this.createVirtualEnvironment();
+        const venvCreated = await this.createVirtualEnvironment(options.showProgress);
         if (!venvCreated) {
             return false;
         }
 
-        const installed = await this.installDuckDB();
+        const installed = await this.installDuckDB(options.showProgress);
         if (!installed) {
             return false;
         }
@@ -141,7 +203,7 @@ export class PythonEnvironmentManager {
         if (verified) {
             this.isInitialized = true;
             this.log('Environment ready');
-            await this.context.globalState.update('parquetViewerInitialized', true);
+            await this.context.globalState.update(INITIALIZED_STATE_KEY, true);
         }
         return verified;
     }
@@ -162,23 +224,21 @@ export class PythonEnvironmentManager {
         }
     }
 
-    private async createVirtualEnvironment(): Promise<boolean> {
+    private async createVirtualEnvironment(showProgress: boolean): Promise<boolean> {
         const systemPythonPath = this.systemPythonPath;
         if (!systemPythonPath) {
             return false;
         }
 
-        return vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Parquet Viewer - Creating Environment",
-            cancellable: false
-        }, async (progress) => {
+        return this.withOptionalProgress(showProgress, "Parquet Viewer - Creating Environment", async (progress) => {
             try {
                 progress.report({ message: 'Creating environment...' });
                 
                 if (await exists(this.venvPath)) {
                     await fs.promises.rm(this.venvPath, { recursive: true, force: true });
                 }
+
+                await fs.promises.mkdir(path.dirname(this.venvPath), { recursive: true });
 
                 await this.runCommand(systemPythonPath, [
                     '-m', 'venv',
@@ -212,27 +272,16 @@ export class PythonEnvironmentManager {
         });
     }
 
-    private async installDuckDB(): Promise<boolean> {
-        return vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Parquet Viewer - Installing DuckDB",
-            cancellable: false
-        }, async (progress) => {
+    private async installDuckDB(showProgress: boolean): Promise<boolean> {
+        return this.withOptionalProgress(showProgress, "Parquet Viewer - Installing DuckDB", async (progress) => {
             try {
-                progress.report({ message: 'Installing DuckDB...' });
-                
-                try {
-                    await this.runCommand(this.venvPythonPath, [
-                        '-m', 'pip', 'install', '--upgrade', 'pip', '--quiet'
-                    ], 60000);
-                } catch {
-                    // Continue if pip upgrade fails
-                }
+                progress.report({ message: 'Installing DuckDB. This only runs the first time...' });
                 
                 await this.runCommand(this.venvPythonPath, [
                     '-m', 'pip', 'install',
+                    '--disable-pip-version-check',
+                    '--only-binary=:all:',
                     'duckdb',
-                    '--no-cache-dir',
                     '--quiet'
                 ], 120000);
 
@@ -244,6 +293,22 @@ export class PythonEnvironmentManager {
                 return false;
             }
         });
+    }
+
+    private async withOptionalProgress<T>(
+        showProgress: boolean,
+        title: string,
+        task: (progress: vscode.Progress<{ message?: string; increment?: number }>) => Thenable<T>
+    ): Promise<T> {
+        if (showProgress) {
+            return vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title,
+                cancellable: false
+            }, task);
+        }
+
+        return task({ report: () => undefined });
     }
 
     private async verifyDuckDB(): Promise<boolean> {
@@ -526,7 +591,9 @@ export class PythonEnvironmentManager {
                             if (await exists(pythonExe)) {
                                 this.log(`Found Python in common location: ${pythonExe}`);
                                 const verified = await this.verifyPythonInstallation(pythonExe);
-                                if (verified) return verified;
+                                if (verified) {
+                                    return verified;
+                                }
                             }
                         }
                     }
@@ -537,7 +604,9 @@ export class PythonEnvironmentManager {
                         if (await exists(pythonExe)) {
                             this.log(`Found Python in common location: ${pythonExe}`);
                             const verified = await this.verifyPythonInstallation(pythonExe);
-                            if (verified) return verified;
+                            if (verified) {
+                                return verified;
+                            }
                         }
                     }
                 }
@@ -764,7 +833,8 @@ export class PythonEnvironmentManager {
                 await fs.promises.rm(this.venvPath, { recursive: true, force: true });
             }
             
-            await this.context.globalState.update('parquetViewerInitialized', false);
+            await this.context.globalState.update(INITIALIZED_STATE_KEY, false);
+            await this.context.globalState.update(PREWARM_ATTEMPTED_VERSION_STATE_KEY, undefined);
         } catch (error) {
             this.log(`Cleanup warning: ${error}`);
         }
@@ -805,5 +875,10 @@ export class PythonEnvironmentManager {
 
     public getSystemPythonPath(): string | null {
         return this.systemPythonPath;
+    }
+
+    private getExtensionVersion(): string {
+        const version = this.context.extension.packageJSON?.version;
+        return typeof version === 'string' && version.trim() ? version : 'unknown';
     }
 }

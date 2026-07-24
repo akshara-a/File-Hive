@@ -20,7 +20,7 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 
 Install Parquet-X from the Visual Studio Code Marketplace, then open any `.parquet` file from your workspace.
 
-On first use, the extension initializes a local Python environment and installs DuckDB. This setup may take a little time, especially behind a proxy or firewall.
+The extension starts quickly and prewarms its local Python/DuckDB environment in the background after VS Code startup when possible. If that setup cannot run yet, Parquet-X falls back to preparing the environment the first time a Parquet workflow needs it. The prepared environment is stored in VS Code global storage and reused afterward.
 
 ## Usage
 
@@ -99,6 +99,7 @@ Open the Doctor tab to review diagnostics and suggested fixes. Parquet Doctor in
 The following commands are available from the Command Palette:
 
 - `Parquet Viewer: Show Parquet Viewer Logs`
+- `Parquet Viewer: Setup Python Environment`
 - `Parquet Viewer: Reset Python Environment`
 - `Refresh`
 
@@ -112,7 +113,7 @@ The following commands are available from the Command Palette:
 ## Requirements
 
 - Visual Studio Code `1.104.0` or newer.
-- A working Python installation. The extension manages its own isolated Python environment for DuckDB.
+- A working Python installation. The extension manages its own isolated Python environment for DuckDB and stores it in VS Code global storage for reuse.
 
 ## Known Limitations
 
