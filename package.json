@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
   "displayName": "Parquet-X",
-  "description": "View, query, compare, diagnose, and export Apache Parquet files in VS Code.",
-  "version": "1.0.9",
+  "description": "View, query, create, compare, diagnose, and export Apache Parquet files in VS Code.",
+  "version": "1.1.0",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",

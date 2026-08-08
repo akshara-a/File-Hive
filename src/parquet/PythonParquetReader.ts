@@ -14,7 +14,11 @@ import {
     ParquetEditSaveResult,
     ParquetExportFormat,
     ParquetExportResult,
-    ParquetSchemaDriftResult
+    ParquetJoinOptions,
+    ParquetJoinResult,
+    ParquetSchemaDriftResult,
+    ParquetWriteOptions,
+    ParquetWriteResult
 } from '../interfaces/IParquetReader';
 import { LoggingService } from '../services/LoggingService';
 
@@ -159,6 +163,67 @@ export class PythonParquetReader implements IParquetReader {
         });
     }
 
+    async createParquetFile(
+        uri: vscode.Uri,
+        outputUri: vscode.Uri,
+        options: ParquetWriteOptions
+    ): Promise<ParquetWriteResult> {
+        const readyPython = await this.getReadyPythonPath();
+
+        if (!readyPython.pythonPath) {
+            return {
+                success: false,
+                error: readyPython.error
+            };
+        }
+        const pythonPath = readyPython.pythonPath;
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            let tempDir: string | undefined;
+
+            try {
+                tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-write-'));
+                const payloadPath = path.join(tempDir, 'write-payload.json');
+                fs.writeFileSync(payloadPath, JSON.stringify(options), 'utf8');
+
+                const cleanup = () => {
+                    if (tempDir) {
+                        fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
+                    }
+                };
+
+                const resolveAndCleanup = (
+                    result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult
+                ) => {
+                    cleanup();
+                    resolve(result as ParquetWriteResult);
+                };
+
+                this.executePythonScriptWithArgs(
+                    [pythonScriptPath, uri.fsPath, '--create-parquet', outputUri.fsPath, payloadPath],
+                    pythonPath,
+                    resolveAndCleanup,
+                    120000
+                );
+            } catch (error) {
+                if (tempDir) {
+                    fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
+                }
+                resolve({
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                });
+            }
+        });
+    }
+
     async getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult> {
         const readyPython = await this.getReadyPythonPath();
 
@@ -224,6 +289,90 @@ export class PythonParquetReader implements IParquetReader {
 
             this.executePythonScriptWithArgs(
                 args,
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async smartDiffParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult> {
+        const readyPython = await this.getReadyPythonPath();
+
+        if (!readyPython.pythonPath) {
+            return {
+                success: false,
+                error: readyPython.error
+            };
+        }
+        const pythonPath = readyPython.pythonPath;
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--smart-diff', compareUri.fsPath],
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async joinParquetFile(uri: vscode.Uri, joinUri: vscode.Uri, options: ParquetJoinOptions): Promise<ParquetJoinResult> {
+        const readyPython = await this.getReadyPythonPath();
+
+        if (!readyPython.pythonPath) {
+            return {
+                success: false,
+                error: readyPython.error
+            };
+        }
+        const pythonPath = readyPython.pythonPath;
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--join', joinUri.fsPath, JSON.stringify(options)],
+                pythonPath,
+                resolve,
+                120000
+            );
+        });
+    }
+
+    async getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<ParquetJoinResult> {
+        const readyPython = await this.getReadyPythonPath();
+
+        if (!readyPython.pythonPath) {
+            return {
+                success: false,
+                error: readyPython.error
+            };
+        }
+        const pythonPath = readyPython.pythonPath;
+
+        return new Promise((resolve) => {
+            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+
+            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
+                return;
+            }
+
+            this.executePythonScriptWithArgs(
+                [pythonScriptPath, uri.fsPath, '--join-metadata', joinUri.fsPath],
                 pythonPath,
                 resolve,
                 120000
@@ -356,7 +505,7 @@ export class PythonParquetReader implements IParquetReader {
     private executePythonScriptWithArgs(
         args: string[],
         pythonPath: string,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult) => void,
         timeoutMs: number
     ): void {
         const pythonProcess = spawn(pythonPath, args);
@@ -404,7 +553,7 @@ export class PythonParquetReader implements IParquetReader {
         signal: NodeJS.Signals | null, 
         stdout: string, 
         stderr: string, 
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult) => void
     ): void {
         this.logger.debug('Python process exited', { code, signal });
         
@@ -437,7 +586,7 @@ export class PythonParquetReader implements IParquetReader {
      */
     private setTimeoutHandler(
         process: any,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult) => void,
+        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult) => void,
         timeoutMs: number
     ): void {
         setTimeout(() => {
