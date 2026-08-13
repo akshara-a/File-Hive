@@ -4,6 +4,19 @@ All notable changes to Parquet-X are documented here.
 
 ## 1.1.x
 
+### [1.1.1] - 2026-08-11
+
+#### Added
+- Added an explicit **Run Doctor Checks** action in the Doctor tab for on-demand diagnostics.
+
+#### Changed
+- Improved startup performance by activating Parquet-X only when a Parquet file is opened or setup is requested.
+- Parquet environment setup now runs only when needed and then reuses the prepared environment.
+- Improved load and query responsiveness by reusing a long-lived local Python worker and Parquet file sessions.
+
+#### Fixed
+- Improved request stability in Python operations by preventing duplicate timeout/response races.
+
 ### [1.1.0] - 2026-07-25
 
 #### Added

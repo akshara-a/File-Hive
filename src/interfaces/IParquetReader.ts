@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 
 export interface IParquetReader {
     readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult>;
+    runParquetDoctor(uri: vscode.Uri): Promise<ParquetDoctorRunResult>;
+    releaseFileSession(uri: vscode.Uri): Promise<void>;
     exportParquetFile(
         uri: vscode.Uri,
         format: ParquetExportFormat,
@@ -44,6 +46,13 @@ export interface ParquetDataResult {
     query?: string;
     resultLimited?: boolean;
     schema?: ParquetSchemaResult;
+    doctor?: ParquetDoctorResult;
+    error?: string;
+    traceback?: string;
+}
+
+export interface ParquetDoctorRunResult {
+    success: boolean;
     doctor?: ParquetDoctorResult;
     error?: string;
     traceback?: string;

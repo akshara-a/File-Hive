@@ -52,7 +52,12 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
      * @returns {Promise<vscode.CustomDocument>} A promise that resolves to a custom document.
      */
     async openCustomDocument(uri: vscode.Uri): Promise<vscode.CustomDocument> {
-        return { uri, dispose: () => {} };
+        return {
+            uri,
+            dispose: () => {
+                void this.parquetReader.releaseFileSession(uri).catch(() => undefined);
+            }
+        };
     }
 
     /**
@@ -148,6 +153,9 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                     break;
                 case 'selectDoctorDatasetFolder':
                     await this.selectDoctorDatasetFolder(webviewPanel, document.uri);
+                    break;
+                case 'runDoctor':
+                    await this.runDoctorChecks(webviewPanel, document.uri);
                     break;
             }
         });
@@ -774,6 +782,11 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         await webviewPanel.webview.postMessage({ type: 'doctorDatasetResult', result });
+    }
+
+    private async runDoctorChecks(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const result = await this.parquetReader.runParquetDoctor(uri);
+        await webviewPanel.webview.postMessage({ type: 'doctorResult', result });
     }
 
         /**

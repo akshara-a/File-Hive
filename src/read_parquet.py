@@ -6,6 +6,7 @@ import sys
 import os
 import difflib
 import re
+import traceback
 
 MAX_RESULT_ROWS = 1000
 MAX_COMPARE_MISMATCHES = 1000
@@ -64,6 +65,59 @@ def create_named_data_view(conn, table_name, file_path):
         return
 
     raise ValueError("Only .parquet and .csv files are supported for joins.")
+
+class WorkerSessionManager:
+    def __init__(self):
+        self._sessions = {}
+
+    def _file_fingerprint(self, file_path):
+        absolute_path = os.path.abspath(file_path)
+        stat = os.stat(absolute_path)
+        return (absolute_path, stat.st_mtime_ns, stat.st_size)
+
+    def get_session_connection(self, session_id, file_path):
+        if not session_id:
+            raise ValueError("Worker request missing sessionId.")
+
+        if not file_path or not os.path.exists(file_path):
+            raise ValueError(f"File does not exist: {file_path}")
+
+        fingerprint = self._file_fingerprint(file_path)
+        session = self._sessions.get(session_id)
+
+        if session is None:
+            conn = duckdb.connect()
+            create_parquet_view(conn, file_path)
+            self._sessions[session_id] = {
+                "conn": conn,
+                "fingerprint": fingerprint
+            }
+            return conn
+
+        conn = session["conn"]
+        if session["fingerprint"] != fingerprint:
+            create_parquet_view(conn, file_path)
+            session["fingerprint"] = fingerprint
+
+        return conn
+
+    def release_session(self, session_id):
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
+
+        conn = session.get("conn")
+        if conn is None:
+            return
+
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def close_all(self):
+        for session_id in list(self._sessions.keys()):
+            self.release_session(session_id)
 
 def convert_rows_to_json(columns, result):
     data = []
@@ -1600,6 +1654,45 @@ def analyze_dataset_partitions(folder_path):
         "recommendations": list(dict.fromkeys(recommendations))
     }
 
+def read_parquet_file_from_connection(conn, file_path, user_query=None):
+    file_size = os.path.getsize(file_path)
+    schema = read_parquet_schema(conn, file_path)
+    query = normalize_query(user_query)
+
+    limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
+    print(f"DEBUG: Executing query: {query}", file=sys.stderr)
+
+    result = conn.execute(limited_query).fetchall()
+    columns = [desc[0] for desc in conn.description]
+    result_limited = len(result) > MAX_RESULT_ROWS
+    if result_limited:
+        result = result[:MAX_RESULT_ROWS]
+
+    total_rows = None if result_limited else len(result)
+
+    print(f"DEBUG: Retrieved {len(result)} rows, {len(columns)} columns", file=sys.stderr)
+    print(f"DEBUG: Columns: {columns}", file=sys.stderr)
+
+    data = convert_rows_to_json(columns, result)
+
+    return {
+        'success': True,
+        'data': data,
+        'columns': columns,
+        'rowCount': len(data),
+        'totalRows': total_rows,
+        'query': query,
+        'resultLimited': result_limited,
+        'schema': schema,
+        'debug': {
+            'file_path': file_path,
+            'file_size': file_size,
+            'columns_count': len(columns),
+            'rows_returned': len(data),
+            'result_limited': result_limited
+        }
+    }
+
 def read_parquet_file(file_path, user_query=None):
     """
     Read parquet file and return data as JSON
@@ -1613,68 +1706,17 @@ def read_parquet_file(file_path, user_query=None):
             'error': f"File does not exist: {file_path}"
         }
     
-    file_size = 0
     conn = None
 
     try:
-        # Get file info
-        file_size = os.path.getsize(file_path)
-        print(f"DEBUG: File size: {file_size} bytes", file=sys.stderr)
-        
-        # Connect to DuckDB
         conn = duckdb.connect()
         print("DEBUG: DuckDB connected successfully", file=sys.stderr)
-
         create_parquet_view(conn, file_path)
-        schema = read_parquet_schema(conn, file_path)
-        doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
-        query = normalize_query(user_query)
-        
-        # Read data with limit
-        limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
-        print(f"DEBUG: Executing query: {query}", file=sys.stderr)
-        
-        result = conn.execute(limited_query).fetchall()
-        columns = [desc[0] for desc in conn.description]
-        result_limited = len(result) > MAX_RESULT_ROWS
-        if result_limited:
-            result = result[:MAX_RESULT_ROWS]
+        result = read_parquet_file_from_connection(conn, file_path, user_query)
 
-        try:
-            total_rows = conn.execute(
-                f"SELECT COUNT(*) FROM ({query}) AS query_result"
-            ).fetchone()[0]
-        except Exception as count_error:
-            print(f"DEBUG: Could not count query rows: {str(count_error)}", file=sys.stderr)
-            total_rows = len(result)
-        
-        print(f"DEBUG: Retrieved {len(result)} rows, {len(columns)} columns", file=sys.stderr)
-        print(f"DEBUG: Columns: {columns}", file=sys.stderr)
-        
-        # Convert to JSON-serializable format
-        data = convert_rows_to_json(columns, result)
-        
         conn.close()
         conn = None
-        
-        return {
-            'success': True,
-            'data': data,
-            'columns': columns,
-            'rowCount': len(data),
-            'totalRows': total_rows,
-            'query': query,
-            'resultLimited': result_limited,
-            'schema': schema,
-            'doctor': doctor,
-            'debug': {
-                'file_path': file_path,
-                'file_size': file_size,
-                'columns_count': len(columns),
-                'rows_returned': len(data),
-                'result_limited': result_limited
-            }
-        }
+        return result
         
     except Exception as e:
         if conn is not None:
@@ -1683,19 +1725,78 @@ def read_parquet_file(file_path, user_query=None):
         import traceback
         print(f"DEBUG: Error reading parquet file: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
-        
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
         return {
             'success': False,
             'error': str(e),
             'traceback': traceback.format_exc(),
             'query': user_query,
-            'doctor': analyze_failed_parquet_doctor(file_path, file_size, str(e)),
             'debug': {
                 'file_path': file_path,
                 'file_exists': True,
                 'file_size': file_size
             }
         }
+
+def run_parquet_doctor_from_connection(conn, file_path):
+    file_size = os.path.getsize(file_path)
+    schema = read_parquet_schema(conn, file_path)
+    doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
+    return {
+        "success": True,
+        "doctor": doctor
+    }
+
+def run_parquet_doctor(file_path):
+    if not os.path.exists(file_path):
+        return {
+            "success": False,
+            "error": f"File does not exist: {file_path}"
+        }
+
+    conn = None
+    file_size = 0
+
+    try:
+        file_size = os.path.getsize(file_path)
+        conn = duckdb.connect()
+        create_parquet_view(conn, file_path)
+        result = run_parquet_doctor_from_connection(conn, file_path)
+        conn.close()
+        conn = None
+        return result
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "doctor": analyze_failed_parquet_doctor(file_path, file_size, str(e))
+        }
+
+def export_parquet_file_from_connection(conn, output_path, export_format, user_query=None):
+    query = normalize_query(user_query)
+    cursor = conn.execute(query)
+    columns = [desc[0] for desc in conn.description]
+
+    if export_format == "csv":
+        rows_exported = export_csv(cursor, columns, output_path)
+    elif export_format == "json":
+        rows_exported = export_json(cursor, make_unique_column_names(columns), output_path)
+    else:
+        rows_exported = export_sqlite(cursor, columns, output_path)
+
+    return {
+        "success": True,
+        "format": export_format,
+        "outputPath": output_path,
+        "rowsExported": rows_exported,
+        "query": query
+    }
 
 def export_parquet_file(file_path, output_path, export_format, user_query=None):
     print(f"DEBUG: Starting export for parquet file: {file_path}", file=sys.stderr)
@@ -1719,27 +1820,11 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
     try:
         conn = duckdb.connect()
         create_parquet_view(conn, file_path)
-        query = normalize_query(user_query)
-        cursor = conn.execute(query)
-        columns = [desc[0] for desc in conn.description]
-
-        if export_format == "csv":
-            rows_exported = export_csv(cursor, columns, output_path)
-        elif export_format == "json":
-            rows_exported = export_json(cursor, make_unique_column_names(columns), output_path)
-        else:
-            rows_exported = export_sqlite(cursor, columns, output_path)
+        result = export_parquet_file_from_connection(conn, output_path, export_format, user_query)
 
         conn.close()
         conn = None
-
-        return {
-            "success": True,
-            "format": export_format,
-            "outputPath": output_path,
-            "rowsExported": rows_exported,
-            "query": query
-        }
+        return result
 
     except Exception as e:
         if conn is not None:
@@ -2658,18 +2743,140 @@ def compare_parquet_files(base_path, compare_path, mappings=None, order_mapping=
             "traceback": traceback.format_exc()
         }
 
+def _worker_payload_text(payload, key):
+    value = payload.get(key)
+    return value if isinstance(value, str) else None
+
+def handle_worker_request(session_manager, request):
+    request_id = request.get("requestId")
+    command = request.get("command")
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+
+    try:
+        if not isinstance(command, str) or not command:
+            raise ValueError("Worker request missing command.")
+
+        if command == "read":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            query = payload.get("query") if isinstance(payload.get("query"), str) else None
+            conn = session_manager.get_session_connection(session_id, file_path)
+            result = read_parquet_file_from_connection(conn, file_path, query)
+        elif command == "doctor":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            conn = session_manager.get_session_connection(session_id, file_path)
+            result = run_parquet_doctor_from_connection(conn, file_path)
+        elif command == "export":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            output_path = _worker_payload_text(payload, "outputPath")
+            export_format = _worker_payload_text(payload, "format")
+            query = payload.get("query") if isinstance(payload.get("query"), str) else None
+            if export_format not in ("csv", "json", "sqlite"):
+                raise ValueError(f"Unsupported export format: {export_format}")
+            if not output_path:
+                raise ValueError("Worker export request missing outputPath.")
+            conn = session_manager.get_session_connection(session_id, file_path)
+            result = export_parquet_file_from_connection(conn, output_path, export_format, query)
+        elif command == "save_edits":
+            file_path = _worker_payload_text(payload, "filePath")
+            output_path = _worker_payload_text(payload, "outputPath")
+            edits_path = _worker_payload_text(payload, "editsPath")
+            result = save_edited_parquet_file(file_path, output_path, edits_path)
+        elif command == "create_parquet":
+            output_path = _worker_payload_text(payload, "outputPath")
+            payload_path = _worker_payload_text(payload, "payloadPath")
+            result = create_parquet_file(output_path, payload_path)
+        elif command == "compare_metadata":
+            file_path = _worker_payload_text(payload, "filePath")
+            compare_path = _worker_payload_text(payload, "comparePath")
+            result = get_compare_metadata(file_path, compare_path)
+        elif command == "compare":
+            file_path = _worker_payload_text(payload, "filePath")
+            compare_path = _worker_payload_text(payload, "comparePath")
+            mappings = payload.get("mappings") if isinstance(payload.get("mappings"), list) else None
+            order_mapping = payload.get("orderMapping") if isinstance(payload.get("orderMapping"), dict) else None
+            result = compare_parquet_files(file_path, compare_path, mappings, order_mapping)
+        elif command == "smart_diff":
+            file_path = _worker_payload_text(payload, "filePath")
+            compare_path = _worker_payload_text(payload, "comparePath")
+            result = smart_diff_parquet_files(file_path, compare_path)
+        elif command == "join_metadata":
+            file_path = _worker_payload_text(payload, "filePath")
+            join_path = _worker_payload_text(payload, "joinPath")
+            result = get_join_metadata(file_path, join_path)
+        elif command == "join":
+            file_path = _worker_payload_text(payload, "filePath")
+            join_path = _worker_payload_text(payload, "joinPath")
+            options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+            result = join_data_files(file_path, join_path, options)
+        elif command == "schema_drift":
+            file_path = _worker_payload_text(payload, "filePath")
+            reference_path = _worker_payload_text(payload, "referencePath")
+            result = detect_schema_drift(file_path, reference_path)
+        elif command == "dataset_scan":
+            folder_path = _worker_payload_text(payload, "folderPath")
+            result = analyze_dataset_partitions(folder_path)
+        elif command == "release_session":
+            session_id = _worker_payload_text(payload, "sessionId")
+            session_manager.release_session(session_id)
+            result = {"success": True}
+        else:
+            raise ValueError(f"Unsupported worker command: {command}")
+
+        return {"requestId": request_id, "result": result}
+    except Exception as error:
+        print(f"DEBUG: Worker command failed ({command}): {error}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+        return {
+            "requestId": request_id,
+            "result": {
+                "success": False,
+                "error": str(error),
+                "traceback": traceback.format_exc()
+            }
+        }
+
+def run_worker():
+    session_manager = WorkerSessionManager()
+    try:
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            try:
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ValueError("Worker request must be a JSON object.")
+            except Exception as error:
+                print(f"DEBUG: Invalid worker request: {error}", file=sys.stderr)
+                continue
+
+            response = handle_worker_request(session_manager, request)
+            print(json.dumps(response), flush=True)
+    finally:
+        session_manager.close_all()
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--worker":
+        run_worker()
+        sys.exit(0)
+
     if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--save-edits output_path edits_json_path] [--create-parquet output_path payload_json_path] [--compare compare_path [mappings_json] [order_mapping_json]] [--smart-diff compare_path] [--compare-metadata compare_path] [--join-metadata join_path] [--join join_path options_json] [--schema-drift reference_path] [--dataset-scan folder_path]'
+            'error': 'Usage: python read_parquet.py <file_path> [query] [--doctor] [--export csv|json|sqlite <output_path>] [--save-edits output_path edits_json_path] [--create-parquet output_path payload_json_path] [--compare compare_path [mappings_json] [order_mapping_json]] [--smart-diff compare_path] [--compare-metadata compare_path] [--join-metadata join_path] [--join join_path options_json] [--schema-drift reference_path] [--dataset-scan folder_path]'
         }))
         sys.exit(1)
     
     file_path = sys.argv[1]
     args = sys.argv[2:]
 
-    if "--join-metadata" in args:
+    if "--doctor" in args:
+        result = run_parquet_doctor(file_path)
+    elif "--join-metadata" in args:
         join_metadata_index = args.index("--join-metadata")
 
         if len(args) < join_metadata_index + 2:

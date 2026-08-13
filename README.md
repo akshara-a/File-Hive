@@ -19,14 +19,14 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 - Join the open Parquet file with another Parquet or CSV file and preview the result.
 - Visualize current query results with bar, line, scatter, and histogram charts.
 - Inspect schema structure, physical types, logical types, nullability, repetition levels, definition levels, decimals, and timestamps.
-- Run Parquet Doctor diagnostics for integrity, schema quality, row groups, statistics, data quality, compression, encoding, schema drift, and dataset partitions.
+- Run Parquet Doctor diagnostics on demand for integrity, schema quality, row groups, statistics, data quality, compression, encoding, schema drift, and dataset partitions.
 - Copy schema JSON or generate Markdown schema documentation.
 
 ## Installation
 
 Install Parquet-X from the Visual Studio Code Marketplace, then open any `.parquet` file from your workspace.
 
-The extension starts quickly and prewarms its local Python/DuckDB environment in the background after VS Code startup when possible. If that setup cannot run yet, Parquet-X falls back to preparing the environment the first time a Parquet workflow needs it. The prepared environment is stored in VS Code global storage and reused afterward.
+Parquet-X activates when you open a `.parquet` file (or run setup) and prepares its local Python/DuckDB environment only when needed. The prepared environment is stored in VS Code global storage and reused afterward.
 
 ## Usage
 
@@ -117,7 +117,7 @@ The Schema subtab can also copy the schema as JSON or generate Markdown document
 
 ### Run Parquet Doctor
 
-Open the Quality group, then choose the Doctor subtab to review diagnostics and suggested fixes. Parquet Doctor includes checks for:
+Open the Quality group, then choose the Doctor subtab and click **Run Doctor Checks** to review diagnostics and suggested fixes. Parquet Doctor includes checks for:
 
 - File integrity and Parquet magic bytes
 - Missing footers and unreadable row groups

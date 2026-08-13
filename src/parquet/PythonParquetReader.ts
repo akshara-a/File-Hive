@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { spawn } from 'child_process';
+import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import {
     IParquetReader,
     ParquetCompareMapping,
@@ -10,6 +10,7 @@ import {
     ParquetCompareMetadataResult,
     ParquetCompareResult,
     ParquetDataResult,
+    ParquetDoctorRunResult,
     ParquetDatasetAnalysisResult,
     ParquetEditSaveResult,
     ParquetExportFormat,
@@ -22,7 +23,43 @@ import {
 } from '../interfaces/IParquetReader';
 import { LoggingService } from '../services/LoggingService';
 
-export class PythonParquetReader implements IParquetReader {
+type PythonScriptResult =
+    | ParquetDataResult
+    | ParquetDoctorRunResult
+    | ParquetExportResult
+    | ParquetEditSaveResult
+    | ParquetCompareResult
+    | ParquetCompareMetadataResult
+    | ParquetJoinResult
+    | ParquetSchemaDriftResult
+    | ParquetDatasetAnalysisResult
+    | ParquetWriteResult;
+
+interface WorkerRequest {
+    requestId: string;
+    command: string;
+    payload?: Record<string, unknown>;
+}
+
+interface WorkerResponse {
+    requestId?: string;
+    result?: PythonScriptResult;
+    error?: string;
+}
+
+interface PendingRequest {
+    resolve: (result: PythonScriptResult) => void;
+    timeoutHandle: NodeJS.Timeout;
+}
+
+export class PythonParquetReader implements IParquetReader, vscode.Disposable {
+    private workerProcess: ChildProcessWithoutNullStreams | null = null;
+    private workerReadyPromise: Promise<void> | null = null;
+    private workerStdoutBuffer = '';
+    private readonly pendingRequests = new Map<string, PendingRequest>();
+    private readonly fileSessions = new Map<string, string>();
+    private requestCounter = 0;
+
     constructor(
         private readonly pythonManager: { getPythonPath(): string | null; ensureInitialized?(): Promise<void> },
         private readonly context: vscode.ExtensionContext,
@@ -44,25 +81,53 @@ export class PythonParquetReader implements IParquetReader {
      * @returns A promise that resolves to a ParquetDataResult.
      */
     async readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return { success: false, error: readyPython.error };
-        }
-        const pythonPath = readyPython.pythonPath;
-
         this.logger.info('Reading parquet file', uri.fsPath);
-        
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-            
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
 
-            this.executePythonScript(pythonScriptPath, uri.fsPath, pythonPath, resolve, query);
-        });
+        const result = await this.sendWorkerRequest(
+            'read',
+            {
+                sessionId: this.getOrCreateSessionId(uri),
+                filePath: uri.fsPath,
+                query: query ?? null
+            },
+            120000
+        );
+        return result as ParquetDataResult;
+    }
+
+    async runParquetDoctor(uri: vscode.Uri): Promise<ParquetDoctorRunResult> {
+        const result = await this.sendWorkerRequest(
+            'doctor',
+            {
+                sessionId: this.getOrCreateSessionId(uri),
+                filePath: uri.fsPath
+            },
+            180000
+        );
+        return result as ParquetDoctorRunResult;
+    }
+
+    async releaseFileSession(uri: vscode.Uri): Promise<void> {
+        const fileKey = this.getFileSessionKey(uri);
+        const sessionId = this.fileSessions.get(fileKey);
+        if (!sessionId) {
+            return;
+        }
+
+        this.fileSessions.delete(fileKey);
+        if (!this.workerProcess) {
+            return;
+        }
+
+        const result = await this.sendWorkerRequest(
+            'release_session',
+            { sessionId },
+            10000
+        );
+
+        if (!result.success) {
+            this.logger.warn('Failed to release Parquet worker session', { sessionId, error: result.error });
+        }
     }
 
     async exportParquetFile(
@@ -71,34 +136,18 @@ export class PythonParquetReader implements IParquetReader {
         outputUri: vscode.Uri,
         query?: string
     ): Promise<ParquetExportResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            const args = [
-                pythonScriptPath,
-                uri.fsPath,
-                query && query.trim() ? query : '',
-                '--export',
+        const result = await this.sendWorkerRequest(
+            'export',
+            {
+                sessionId: this.getOrCreateSessionId(uri),
+                filePath: uri.fsPath,
+                query: query ?? null,
                 format,
-                outputUri.fsPath
-            ];
-            this.executePythonScriptWithArgs(args, pythonPath, resolve, 120000);
-        });
+                outputPath: outputUri.fsPath
+            },
+            120000
+        );
+        return result as ParquetExportResult;
     }
 
     async saveEditedParquetFile(
@@ -107,60 +156,33 @@ export class PythonParquetReader implements IParquetReader {
         columns: string[],
         rows: Record<string, any>[]
     ): Promise<ParquetEditSaveResult> {
-        const readyPython = await this.getReadyPythonPath();
+        let tempDir: string | undefined;
 
-        if (!readyPython.pythonPath) {
+        try {
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-edit-'));
+            const payloadPath = path.join(tempDir, 'edited-rows.json');
+            fs.writeFileSync(payloadPath, JSON.stringify({ columns, rows }), 'utf8');
+
+            const result = await this.sendWorkerRequest(
+                'save_edits',
+                {
+                    filePath: uri.fsPath,
+                    outputPath: outputUri.fsPath,
+                    editsPath: payloadPath
+                },
+                120000
+            );
+            return result as ParquetEditSaveResult;
+        } catch (error) {
             return {
                 success: false,
-                error: readyPython.error
+                error: error instanceof Error ? error.message : String(error)
             };
+        } finally {
+            if (tempDir) {
+                fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
+            }
         }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            let tempDir: string | undefined;
-
-            try {
-                tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-edit-'));
-                const payloadPath = path.join(tempDir, 'edited-rows.json');
-                fs.writeFileSync(payloadPath, JSON.stringify({ columns, rows }), 'utf8');
-
-                const cleanup = () => {
-                    if (tempDir) {
-                        fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
-                    }
-                };
-
-                const resolveAndCleanup = (
-                    result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult
-                ) => {
-                    cleanup();
-                    resolve(result as ParquetEditSaveResult);
-                };
-
-                this.executePythonScriptWithArgs(
-                    [pythonScriptPath, uri.fsPath, '--save-edits', outputUri.fsPath, payloadPath],
-                    pythonPath,
-                    resolveAndCleanup,
-                    120000
-                );
-            } catch (error) {
-                if (tempDir) {
-                    fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
-                }
-                resolve({
-                    success: false,
-                    error: error instanceof Error ? error.message : String(error)
-                });
-            }
-        });
     }
 
     async createParquetFile(
@@ -168,88 +190,44 @@ export class PythonParquetReader implements IParquetReader {
         outputUri: vscode.Uri,
         options: ParquetWriteOptions
     ): Promise<ParquetWriteResult> {
-        const readyPython = await this.getReadyPythonPath();
+        let tempDir: string | undefined;
 
-        if (!readyPython.pythonPath) {
+        try {
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-write-'));
+            const payloadPath = path.join(tempDir, 'write-payload.json');
+            fs.writeFileSync(payloadPath, JSON.stringify(options), 'utf8');
+
+            const result = await this.sendWorkerRequest(
+                'create_parquet',
+                {
+                    outputPath: outputUri.fsPath,
+                    payloadPath
+                },
+                120000
+            );
+            return result as ParquetWriteResult;
+        } catch (error) {
             return {
                 success: false,
-                error: readyPython.error
+                error: error instanceof Error ? error.message : String(error)
             };
+        } finally {
+            if (tempDir) {
+                fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
+            }
         }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            let tempDir: string | undefined;
-
-            try {
-                tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-write-'));
-                const payloadPath = path.join(tempDir, 'write-payload.json');
-                fs.writeFileSync(payloadPath, JSON.stringify(options), 'utf8');
-
-                const cleanup = () => {
-                    if (tempDir) {
-                        fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
-                    }
-                };
-
-                const resolveAndCleanup = (
-                    result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult
-                ) => {
-                    cleanup();
-                    resolve(result as ParquetWriteResult);
-                };
-
-                this.executePythonScriptWithArgs(
-                    [pythonScriptPath, uri.fsPath, '--create-parquet', outputUri.fsPath, payloadPath],
-                    pythonPath,
-                    resolveAndCleanup,
-                    120000
-                );
-            } catch (error) {
-                if (tempDir) {
-                    fs.rm(tempDir, { recursive: true, force: true }, () => undefined);
-                }
-                resolve({
-                    success: false,
-                    error: error instanceof Error ? error.message : String(error)
-                });
-            }
-        });
     }
 
     async getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--compare-metadata', compareUri.fsPath],
-                pythonPath,
-                resolve,
-                120000
-            );
-        });
+        const result = await this.sendWorkerRequest(
+            'compare_metadata',
+            {
+                filePath: uri.fsPath,
+                comparePath: compareUri.fsPath
+            },
+            120000
+        );
+        return result as ParquetCompareMetadataResult;
     }
 
     async compareParquetFile(
@@ -258,182 +236,98 @@ export class PythonParquetReader implements IParquetReader {
         mappings?: ParquetCompareMapping[],
         orderMapping?: ParquetCompareOrderMapping
     ): Promise<ParquetCompareResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            const args = [pythonScriptPath, uri.fsPath, '--compare', compareUri.fsPath];
-            if (mappings && mappings.length > 0) {
-                args.push(JSON.stringify(mappings));
-            } else {
-                args.push('');
-            }
-
-            if (orderMapping) {
-                args.push(JSON.stringify(orderMapping));
-            }
-
-            this.executePythonScriptWithArgs(
-                args,
-                pythonPath,
-                resolve,
-                120000
-            );
-        });
+        const result = await this.sendWorkerRequest(
+            'compare',
+            {
+                filePath: uri.fsPath,
+                comparePath: compareUri.fsPath,
+                mappings: mappings ?? null,
+                orderMapping: orderMapping ?? null
+            },
+            120000
+        );
+        return result as ParquetCompareResult;
     }
 
     async smartDiffParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--smart-diff', compareUri.fsPath],
-                pythonPath,
-                resolve,
-                120000
-            );
-        });
+        const result = await this.sendWorkerRequest(
+            'smart_diff',
+            {
+                filePath: uri.fsPath,
+                comparePath: compareUri.fsPath
+            },
+            120000
+        );
+        return result as ParquetCompareResult;
     }
 
     async joinParquetFile(uri: vscode.Uri, joinUri: vscode.Uri, options: ParquetJoinOptions): Promise<ParquetJoinResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--join', joinUri.fsPath, JSON.stringify(options)],
-                pythonPath,
-                resolve,
-                120000
-            );
-        });
+        const result = await this.sendWorkerRequest(
+            'join',
+            {
+                filePath: uri.fsPath,
+                joinPath: joinUri.fsPath,
+                options
+            },
+            120000
+        );
+        return result as ParquetJoinResult;
     }
 
     async getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<ParquetJoinResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--join-metadata', joinUri.fsPath],
-                pythonPath,
-                resolve,
-                120000
-            );
-        });
+        const result = await this.sendWorkerRequest(
+            'join_metadata',
+            {
+                filePath: uri.fsPath,
+                joinPath: joinUri.fsPath
+            },
+            120000
+        );
+        return result as ParquetJoinResult;
     }
 
     async detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult> {
-        const readyPython = await this.getReadyPythonPath();
-
-        if (!readyPython.pythonPath) {
-            return {
-                success: false,
-                error: readyPython.error
-            };
-        }
-        const pythonPath = readyPython.pythonPath;
-
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--schema-drift', referenceUri.fsPath],
-                pythonPath,
-                resolve,
-                120000
-            );
-        });
+        const result = await this.sendWorkerRequest(
+            'schema_drift',
+            {
+                filePath: uri.fsPath,
+                referencePath: referenceUri.fsPath
+            },
+            120000
+        );
+        return result as ParquetSchemaDriftResult;
     }
 
     async scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult> {
-        const readyPython = await this.getReadyPythonPath();
+        void uri;
+        const result = await this.sendWorkerRequest(
+            'dataset_scan',
+            {
+                folderPath: folderUri.fsPath
+            },
+            180000
+        );
+        return result as ParquetDatasetAnalysisResult;
+    }
 
-        if (!readyPython.pythonPath) {
-            return {
+    public dispose(): void {
+        this.fileSessions.clear();
+        this.workerStdoutBuffer = '';
+        this.workerReadyPromise = null;
+
+        for (const [requestId, pending] of this.pendingRequests.entries()) {
+            clearTimeout(pending.timeoutHandle);
+            pending.resolve({
                 success: false,
-                error: readyPython.error
-            };
+                error: 'Parquet Python worker stopped before completing the request.'
+            });
+            this.pendingRequests.delete(requestId);
         }
-        const pythonPath = readyPython.pythonPath;
 
-        return new Promise((resolve) => {
-            const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
-
-            if (!this.ensurePythonScriptExists(pythonScriptPath)) {
-                resolve({ success: false, error: `Python script not found: ${pythonScriptPath}` });
-                return;
-            }
-
-            this.executePythonScriptWithArgs(
-                [pythonScriptPath, uri.fsPath, '--dataset-scan', folderUri.fsPath],
-                pythonPath,
-                resolve,
-                180000
-            );
-        });
+        if (this.workerProcess) {
+            this.workerProcess.kill();
+            this.workerProcess = null;
+        }
     }
 
     private async getReadyPythonPath(): Promise<{ pythonPath?: string; error?: string }> {
@@ -454,12 +348,6 @@ export class PythonParquetReader implements IParquetReader {
         }
     }
 
-    /**
-     * Checks if a Python script exists at the given path.
-     * If the script does not exist, a message is logged.
-     * @param scriptPath The path to the Python script to check.
-     * @returns True if the script exists, false otherwise.
-     */
     private ensurePythonScriptExists(scriptPath: string): boolean {
         const exists = fs.existsSync(scriptPath);
         if (!exists) {
@@ -468,131 +356,202 @@ export class PythonParquetReader implements IParquetReader {
         return exists;
     }
 
-    /**
-     * Executes a Python script in the background to read a parquet file.
-     * 
-     * This function takes a path to a Python script, a path to the parquet
-     * file to read, and the path to the Python executable as parameters.
-     * It then executes the Python script with the given parameters in the
-     * background and waits for the process to complete.
-     * 
-     * When the process completes, the result is passed to the given callback
-     * function. The result is a ParquetDataResult which contains the
-     * parsed parquet data and any errors that occurred during execution.
-     * 
-     * If the process takes longer than 30 seconds to complete, it is
-     * terminated and an error is returned.
-     * 
-     * @param scriptPath The path to the Python script to execute.
-     * @param filePath The path to the parquet file to read.
-     * @param pythonPath The path to the Python executable.
-     * @param resolve The callback function to call with the result of the
-     *            Python script execution.
-     */
-    private executePythonScript(
-        scriptPath: string,
-        filePath: string,
-        pythonPath: string,
-        resolve: (result: ParquetDataResult) => void,
-        query?: string
-    ): void {
-        const args = query && query.trim()
-            ? [scriptPath, filePath, query]
-            : [scriptPath, filePath];
-        this.executePythonScriptWithArgs(args, pythonPath, resolve, 120000);
-    }
-
-    private executePythonScriptWithArgs(
-        args: string[],
-        pythonPath: string,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult) => void,
+    private async sendWorkerRequest(
+        command: string,
+        payload: Record<string, unknown>,
         timeoutMs: number
-    ): void {
-        const pythonProcess = spawn(pythonPath, args);
-        let stdout = '';
-        let stderr = '';
+    ): Promise<PythonScriptResult> {
+        try {
+            await this.ensureWorkerReady();
+        } catch (error) {
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error)
+            };
+        }
 
-        pythonProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-            this.logger.debug('Python STDOUT', data.toString());
+        const process = this.workerProcess;
+        if (!process || process.killed) {
+            return { success: false, error: 'Parquet Python worker is not available.' };
+        }
+
+        const requestId = this.buildRequestId();
+        const request: WorkerRequest = {
+            requestId,
+            command,
+            payload
+        };
+
+        return new Promise((resolve) => {
+            const timeoutHandle = setTimeout(() => {
+                this.pendingRequests.delete(requestId);
+                resolve({
+                    success: false,
+                    error: `Operation timed out after ${timeoutMs / 1000} seconds`
+                });
+            }, timeoutMs);
+
+            this.pendingRequests.set(requestId, { resolve, timeoutHandle });
+
+            process.stdin.write(`${JSON.stringify(request)}\n`, (writeError) => {
+                if (!writeError) {
+                    return;
+                }
+
+                const pending = this.pendingRequests.get(requestId);
+                if (!pending) {
+                    return;
+                }
+
+                clearTimeout(pending.timeoutHandle);
+                this.pendingRequests.delete(requestId);
+                resolve({
+                    success: false,
+                    error: `Failed to write request to Python worker: ${writeError.message}`
+                });
+            });
         });
-
-        pythonProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-            this.logger.debug('Python STDERR', data.toString());
-        });
-
-        pythonProcess.on('close', (code, signal) => {
-            this.handleProcessClose(code, signal, stdout, stderr, resolve);
-        });
-
-        pythonProcess.on('error', (error) => {
-            this.logger.error('Failed to execute Python script', error);
-            resolve({ success: false, error: `Failed to execute Python script: ${error.message}` });
-        });
-
-        this.setTimeoutHandler(pythonProcess, resolve, timeoutMs);
     }
 
-    /**
-     * Handles the process close event of the Python process.
-     * If the process exits with success, the output of the process is
-     * parsed as JSON and passed to the given callback function.
-     * If the process exits with an error, or if the output cannot be
-     * parsed as JSON, an error message is generated and passed to the
-     * callback function.
-     * @param code The exit code of the process.
-     * @param signal The signal that terminated the process.
-     * @param stdout The output of the process as a string.
-     * @param stderr The error output of the process as a string.
-     * @param resolve The callback function to call with the result of the
-     *            process execution.
-     */
-    private handleProcessClose(
-        code: number | null, 
-        signal: NodeJS.Signals | null, 
-        stdout: string, 
-        stderr: string, 
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult) => void
-    ): void {
-        this.logger.debug('Python process exited', { code, signal });
-        
+    private async ensureWorkerReady(): Promise<void> {
+        if (this.workerProcess && !this.workerProcess.killed) {
+            return;
+        }
+
+        if (this.workerReadyPromise) {
+            await this.workerReadyPromise;
+            return;
+        }
+
+        this.workerReadyPromise = this.startWorker();
         try {
-            if (stdout.trim()) {
-                const result = JSON.parse(stdout);
-                this.logger.debug('Parsed Python output', { success: result.success });
-                resolve(result);
-            } else {
-                const errorMessage = signal 
-                    ? `Process terminated by signal: ${signal}. STDERR: ${stderr}`
-                    : `No output from Python. Exit code: ${code}. STDERR: ${stderr}`;
-                
-                this.logger.error('Python process returned no JSON output', errorMessage);
-                resolve({ success: false, error: errorMessage });
-            }
-        } catch (error) {
-            this.logger.error('Failed to parse Python output', error);
-            resolve({ success: false, error: `Failed to parse Python output: ${error}. STDOUT: ${stdout}` });
+            await this.workerReadyPromise;
+        } finally {
+            this.workerReadyPromise = null;
         }
     }
 
-    /**
-     * Kills the given Python process after the configured timeout period and
-     * resolves the given callback function with an error message indicating that
-     * the operation timed out.
-     * @param process The Python process to kill.
-     * @param resolve The callback function to call with the result of the
-     *            process execution.
-     */
-    private setTimeoutHandler(
-        process: any,
-        resolve: (result: ParquetDataResult | ParquetExportResult | ParquetEditSaveResult | ParquetCompareResult | ParquetCompareMetadataResult | ParquetJoinResult | ParquetSchemaDriftResult | ParquetDatasetAnalysisResult | ParquetWriteResult) => void,
-        timeoutMs: number
-    ): void {
-        setTimeout(() => {
-            process.kill();
-            this.logger.warn('Python process timed out', { timeoutMs });
-            resolve({ success: false, error: `Operation timed out after ${timeoutMs / 1000} seconds` });
-        }, timeoutMs);
+    private async startWorker(): Promise<void> {
+        const readyPython = await this.getReadyPythonPath();
+        if (!readyPython.pythonPath) {
+            throw new Error(readyPython.error || 'Python environment is not configured yet.');
+        }
+
+        const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+        if (!this.ensurePythonScriptExists(pythonScriptPath)) {
+            throw new Error(`Python script not found: ${pythonScriptPath}`);
+        }
+
+        this.workerStdoutBuffer = '';
+        const worker = spawn(readyPython.pythonPath, [pythonScriptPath, '--worker'], {
+            stdio: 'pipe',
+            shell: false
+        });
+
+        this.workerProcess = worker;
+        worker.stdout.setEncoding('utf8');
+        worker.stderr.setEncoding('utf8');
+
+        worker.stdout.on('data', (chunk: string) => {
+            this.handleWorkerStdout(chunk);
+        });
+
+        worker.stderr.on('data', (chunk: string) => {
+            this.logger.debug('Python worker STDERR', chunk);
+        });
+
+        worker.on('close', (code, signal) => {
+            this.handleWorkerClose(code, signal);
+        });
+
+        worker.on('error', (error) => {
+            this.logger.error('Python worker failed', error);
+            this.rejectAllPending(`Python worker error: ${error.message}`);
+        });
+    }
+
+    private handleWorkerStdout(chunk: string): void {
+        this.workerStdoutBuffer += chunk;
+        const lines = this.workerStdoutBuffer.split(/\r?\n/);
+        this.workerStdoutBuffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) {
+                continue;
+            }
+
+            let response: WorkerResponse;
+            try {
+                response = JSON.parse(line) as WorkerResponse;
+            } catch (error) {
+                this.logger.error('Failed to parse worker response line', { line, error });
+                continue;
+            }
+
+            const requestId = response.requestId;
+            if (!requestId) {
+                this.logger.warn('Worker response missing requestId', response);
+                continue;
+            }
+
+            const pending = this.pendingRequests.get(requestId);
+            if (!pending) {
+                continue;
+            }
+
+            clearTimeout(pending.timeoutHandle);
+            this.pendingRequests.delete(requestId);
+
+            if (response.result) {
+                pending.resolve(response.result);
+                continue;
+            }
+
+            pending.resolve({
+                success: false,
+                error: response.error || 'Worker returned an empty response.'
+            });
+        }
+    }
+
+    private handleWorkerClose(code: number | null, signal: NodeJS.Signals | null): void {
+        this.logger.warn('Python worker exited', { code, signal });
+        this.workerProcess = null;
+        this.workerStdoutBuffer = '';
+        this.rejectAllPending(signal ? `Python worker terminated by signal: ${signal}` : `Python worker exited with code ${code}`);
+    }
+
+    private rejectAllPending(errorMessage: string): void {
+        for (const [requestId, pending] of this.pendingRequests.entries()) {
+            clearTimeout(pending.timeoutHandle);
+            pending.resolve({ success: false, error: errorMessage });
+            this.pendingRequests.delete(requestId);
+        }
+    }
+
+    private getFileSessionKey(uri: vscode.Uri): string {
+        const normalized = path.resolve(uri.fsPath);
+        if (os.platform() === 'win32') {
+            return normalized.toLowerCase();
+        }
+
+        return normalized;
+    }
+
+    private getOrCreateSessionId(uri: vscode.Uri): string {
+        const key = this.getFileSessionKey(uri);
+        const existing = this.fileSessions.get(key);
+        if (existing) {
+            return existing;
+        }
+
+        const sessionId = `${Date.now()}-${++this.requestCounter}`;
+        this.fileSessions.set(key, sessionId);
+        return sessionId;
+    }
+
+    private buildRequestId(): string {
+        return `req-${Date.now()}-${++this.requestCounter}`;
     }
 }

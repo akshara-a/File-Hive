@@ -21,7 +21,11 @@ export class ParquetViewerFactory {
     ): vscode.Disposable {
         const parquetReader = new PythonParquetReader(pythonManager, context, logger);
         const webviewRenderer = new InlineWebviewRenderer();
-        
-        return ParquetViewer.register(parquetReader, webviewRenderer);
+        const providerDisposable = ParquetViewer.register(parquetReader, webviewRenderer);
+
+        return vscode.Disposable.from(
+            providerDisposable,
+            parquetReader
+        );
     }
 }

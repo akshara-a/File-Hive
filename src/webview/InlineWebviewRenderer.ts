@@ -233,6 +233,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <p>Integrity, schema, row group, statistics, data quality, compression, and dataset diagnostics.</p>
                 </div>
                 <div class="doctor-actions">
+                    <button id="doctor-run-btn" class="btn">Run Doctor Checks</button>
                     <button id="doctor-schema-drift-btn" class="btn btn-secondary">Schema Drift</button>
                     <button id="doctor-dataset-scan-btn" class="btn btn-secondary">Scan Dataset</button>
                 </div>
@@ -689,8 +690,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentSchemaDocs = '';
         let currentCompareResult = null;
         let currentCompareMetadata = null;
+        let currentDoctor = null;
         let currentDoctorSchemaDrift = null;
         let currentDoctorDataset = null;
+        let doctorRequestInFlight = false;
         let currentColumns = [];
         let currentRows = [];
         let currentTotalRows = 0;
@@ -800,6 +803,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             if (showWrite) {
                 refreshWritePreview();
+            }
+            if (showDoctor && !currentDoctor && !doctorRequestInFlight) {
+                requestDoctorChecks(false);
             }
         }
 
@@ -3021,8 +3027,50 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             createCompareTables(result.columns || [], result.mismatches || []);
         }
 
+        function requestDoctorChecks(forceRefresh) {
+            if (doctorRequestInFlight) {
+                return;
+            }
+
+            if (!forceRefresh && currentDoctor) {
+                return;
+            }
+
+            doctorRequestInFlight = true;
+            setActiveView('doctor');
+            setStatus('Running Parquet Doctor checks...', 'status-loading');
+            vscode.postMessage({ type: 'runDoctor' });
+        }
+
+        function renderDoctorNotLoadedState(message) {
+            const placeholder = message || 'Run Doctor checks to load integrity, schema, statistics, and data quality diagnostics.';
+            document.getElementById('doctor-health-score').textContent = '0';
+            document.getElementById('doctor-error-count').textContent = '0';
+            document.getElementById('doctor-warning-count').textContent = '0';
+            document.getElementById('doctor-pass-count').textContent = '0';
+
+            [
+                'doctor-integrity',
+                'doctor-health-report',
+                'doctor-schema-validation',
+                'doctor-column-statistics',
+                'doctor-data-quality',
+                'doctor-decimal-timestamp',
+                'doctor-compression-encoding',
+                'doctor-row-groups'
+            ].forEach((containerId) => {
+                const container = document.getElementById(containerId);
+                container.innerHTML = '';
+                container.appendChild(createDoctorEmpty(placeholder));
+            });
+
+            renderDoctorSchemaDrift(currentDoctorSchemaDrift);
+            renderDoctorDatasetAnalysis(currentDoctorDataset);
+        }
+
         function renderDoctorPanel(doctor) {
             if (!doctor) {
+                renderDoctorNotLoadedState();
                 return;
             }
 
@@ -3531,7 +3579,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             if (!data.success) {
                 if (data.doctor) {
-                    renderDoctorPanel(data.doctor);
+                    currentDoctor = data.doctor;
+                    renderDoctorPanel(currentDoctor);
+                } else if (!currentDoctor) {
+                    renderDoctorPanel(null);
                 }
                 errorText.textContent = data.error || 'Unknown error occurred';
                 errorContainer.classList.remove('hidden');
@@ -3541,7 +3592,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             
             // Update summary information
-            document.getElementById('total-rows').textContent = formatCount(data.totalRows);
+            document.getElementById('total-rows').textContent = typeof data.totalRows === 'number'
+                ? formatCount(data.totalRows)
+                : '-';
             document.getElementById('showing-rows').textContent = formatCount(data.rowCount);
             document.getElementById('column-count').textContent = data.columns ? data.columns.length : 0;
             if (data.query) {
@@ -3562,12 +3615,17 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
 
             if (data.doctor) {
-                renderDoctorPanel(data.doctor);
+                currentDoctor = data.doctor;
+                renderDoctorPanel(currentDoctor);
+            } else if (!currentDoctor) {
+                renderDoctorPanel(null);
             }
 
             currentColumns = data.columns || [];
             currentRows = cloneRows(data.data || []);
-            currentTotalRows = Number(data.totalRows || currentRows.length);
+            currentTotalRows = typeof data.totalRows === 'number'
+                ? data.totalRows
+                : currentRows.length;
             currentResultLimited = Boolean(data.resultLimited);
             editRows = cloneRows(currentRows);
             resetEditColumnNames();
@@ -3885,6 +3943,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const saveEditsBtn = document.getElementById('save-edits-btn');
             const editTableHeader = document.getElementById('edit-table-header');
             const editTableBody = document.getElementById('edit-table-body');
+            const doctorRunBtn = document.getElementById('doctor-run-btn');
             const doctorSchemaDriftBtn = document.getElementById('doctor-schema-drift-btn');
             const doctorDatasetScanBtn = document.getElementById('doctor-dataset-scan-btn');
             const selectCompareFileBtn = document.getElementById('select-compare-file-btn');
@@ -3967,6 +4026,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (doctorTab) {
                 doctorTab.addEventListener('click', () => {
                     setActiveView('doctor');
+                });
+            }
+
+            if (doctorRunBtn) {
+                doctorRunBtn.addEventListener('click', () => {
+                    requestDoctorChecks(true);
                 });
             }
 
@@ -4386,6 +4451,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     break;
                 case 'joinPreviewExportResult':
                     setStatus(message.result && message.result.success ? 'Join preview exported' : (message.result && message.result.error) || 'Join preview export failed', message.result && message.result.success ? 'status-success' : 'status-error');
+                    break;
+                case 'doctorResult':
+                    doctorRequestInFlight = false;
+                    currentDoctor = message.result && message.result.doctor ? message.result.doctor : null;
+                    renderDoctorPanel(currentDoctor);
+                    setStatus(message.result && message.result.success ? 'Doctor checks complete' : (message.result && message.result.error) || 'Doctor checks failed', message.result && message.result.success ? 'status-success' : 'status-error');
                     break;
                 case 'doctorSchemaDriftResult':
                     currentDoctorSchemaDrift = message.result;

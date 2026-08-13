@@ -86,8 +86,6 @@ export async function activate(context: vscode.ExtensionContext) {
             })
         );
 
-        pythonManager.prewarmEnvironmentInBackground();
-        
         logger.info('Parquet Viewer extension activated successfully');
         
     } catch (error) {
