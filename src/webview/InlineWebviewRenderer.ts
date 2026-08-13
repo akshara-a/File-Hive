@@ -33,9 +33,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     ${this.generateQueryContainer()}
                     ${this.generateDataContainer()}
                 </div>
+                ${this.generateEdaContainer()}
+                ${this.generateWriteContainer()}
+                ${this.generateEditContainer()}
                 ${this.generateSchemaContainer()}
                 ${this.generateDoctorContainer()}
                 ${this.generateCompareContainer()}
+                ${this.generateJoinContainer()}
+                ${this.generateVisualizerContainer()}
             </div>
 
             <script nonce="${nonce}">
@@ -64,12 +69,159 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
     private generateViewTabs(): string {
         return `
-        <div class="view-tabs" role="tablist">
-            <button id="data-tab" class="tab-btn active" role="tab" aria-selected="true">Data</button>
-            <button id="doctor-tab" class="tab-btn" role="tab" aria-selected="false">Doctor</button>
-            <button id="schema-tab" class="tab-btn" role="tab" aria-selected="false">Schema</button>
-            <button id="compare-tab" class="tab-btn" role="tab" aria-selected="false">Compare</button>
-        </div>`;
+        <nav class="view-navigation" aria-label="Parquet viewer sections">
+            <div class="view-tabs primary-tabs" role="tablist" aria-label="Feature groups">
+                <button id="explore-tab" class="tab-btn primary-tab active" data-view-group="explore" role="tab" aria-selected="true">Explore</button>
+                <button id="transform-tab" class="tab-btn primary-tab" data-view-group="transform" role="tab" aria-selected="false">Transform</button>
+                <button id="combine-tab" class="tab-btn primary-tab" data-view-group="combine" role="tab" aria-selected="false">Compare &amp; Join</button>
+                <button id="quality-tab" class="tab-btn primary-tab" data-view-group="quality" role="tab" aria-selected="false">Quality</button>
+            </div>
+            <div class="subtabs" aria-label="Feature subtabs">
+                <div class="subtab-group" data-tab-group="explore" role="tablist">
+                    <button id="data-tab" class="tab-btn subtab-btn active" role="tab" aria-selected="true">Data</button>
+                    <button id="eda-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">EDA</button>
+                    <button id="visualizer-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Visualize</button>
+                    <button id="schema-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Schema</button>
+                </div>
+                <div class="subtab-group hidden" data-tab-group="transform" role="tablist">
+                    <button id="edit-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Edit Data</button>
+                    <button id="write-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Create Parquet</button>
+                </div>
+                <div class="subtab-group hidden" data-tab-group="combine" role="tablist">
+                    <button id="compare-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Compare</button>
+                    <button id="join-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Join</button>
+                </div>
+                <div class="subtab-group hidden" data-tab-group="quality" role="tablist">
+                    <button id="doctor-tab" class="tab-btn subtab-btn" role="tab" aria-selected="false">Doctor</button>
+                </div>
+            </div>
+        </nav>`;
+    }
+
+    private generateWriteContainer(): string {
+        return `
+        <section id="write-container" class="write-container view-panel hidden">
+            <div class="write-toolbar">
+                <div>
+                    <h2>Create Parquet</h2>
+                    <p>Create a new Parquet file from pasted JSON, NDJSON, or the current query result.</p>
+                </div>
+                <button id="write-create-btn" class="btn">Create Parquet</button>
+            </div>
+            <div class="write-controls">
+                <label>
+                    Source
+                    <select id="write-source">
+                        <option value="current">Current Result</option>
+                        <option value="json">JSON Array</option>
+                        <option value="ndjson">NDJSON Stream</option>
+                    </select>
+                </label>
+                <label>
+                    Compression
+                    <select id="write-compression">
+                        <option value="snappy">Snappy</option>
+                        <option value="zstd">Zstd</option>
+                        <option value="gzip">Gzip</option>
+                        <option value="brotli">Brotli</option>
+                        <option value="uncompressed">Uncompressed</option>
+                    </select>
+                </label>
+                <label>
+                    Row Group Size
+                    <input id="write-row-group-size" type="number" min="1" max="10000000" value="100000" />
+                </label>
+                <button id="write-preview-btn" class="btn btn-secondary">Preview Structure</button>
+            </div>
+            <textarea id="write-json-input" spellcheck="false" placeholder='[{"id":1,"name":"Ada","score":98.5}]'></textarea>
+            <div id="write-message" class="write-message hidden"></div>
+            <div class="write-summary">
+                <div class="summary-item">Rows: <span id="write-row-count">0</span></div>
+                <div class="summary-item">Columns: <span id="write-column-count">0</span></div>
+                <div class="summary-item">Compression: <span id="write-compression-summary">Snappy</span></div>
+                <div class="summary-item">Row Group Size: <span id="write-row-group-summary">100,000</span></div>
+            </div>
+            <section class="write-panel">
+                <h3>Structure</h3>
+                <div class="write-table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Parquet Column</th>
+                                <th>Type</th>
+                                <th>Sample</th>
+                                <th>Nulls</th>
+                            </tr>
+                        </thead>
+                        <tbody id="write-schema-body"></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>`;
+    }
+
+    private generateEdaContainer(): string {
+        return `
+        <section id="eda-container" class="eda-container view-panel hidden">
+            <div class="eda-toolbar">
+                <div>
+                    <h2>Exploratory Data Analysis</h2>
+                    <p>Profile the current query result and surface useful next checks.</p>
+                </div>
+            </div>
+            <div class="eda-summary">
+                <div class="summary-item">Rows: <span id="eda-row-count">0</span></div>
+                <div class="summary-item">Columns: <span id="eda-column-count">0</span></div>
+                <div class="summary-item">Numeric: <span id="eda-numeric-count">0</span></div>
+                <div class="summary-item">Missing Cells: <span id="eda-missing-count">0</span></div>
+                <div class="summary-item">Duplicate Rows: <span id="eda-duplicate-count">0</span></div>
+            </div>
+            <div class="eda-grid">
+                <section class="eda-panel">
+                    <h3>Suggestions</h3>
+                    <div id="eda-suggestions" class="eda-list"></div>
+                </section>
+                <section class="eda-panel">
+                    <h3>Data Quality</h3>
+                    <div id="eda-quality" class="eda-list"></div>
+                </section>
+                <section class="eda-panel">
+                    <h3>Numeric Summary</h3>
+                    <div class="eda-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Column</th>
+                                    <th>Missing</th>
+                                    <th>Mean</th>
+                                    <th>Min</th>
+                                    <th>Max</th>
+                                </tr>
+                            </thead>
+                            <tbody id="eda-numeric-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+                <section class="eda-panel">
+                    <h3>Column Profile</h3>
+                    <div class="eda-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Column</th>
+                                    <th>Type</th>
+                                    <th>Distinct</th>
+                                    <th>Missing</th>
+                                    <th>Top Values</th>
+                                </tr>
+                            </thead>
+                            <tbody id="eda-profile-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </section>`;
     }
 
     private generateDoctorContainer(): string {
@@ -81,6 +233,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <p>Integrity, schema, row group, statistics, data quality, compression, and dataset diagnostics.</p>
                 </div>
                 <div class="doctor-actions">
+                    <button id="doctor-run-btn" class="btn">Run Doctor Checks</button>
                     <button id="doctor-schema-drift-btn" class="btn btn-secondary">Schema Drift</button>
                     <button id="doctor-dataset-scan-btn" class="btn btn-secondary">Scan Dataset</button>
                 </div>
@@ -139,6 +292,60 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </section>`;
     }
 
+    private generateVisualizerContainer(): string {
+        return `
+        <section id="visualizer-container" class="visualizer-container view-panel hidden">
+            <div class="visualizer-toolbar">
+                <div>
+                    <h2>Data Visualizer</h2>
+                    <p>Chart the current query result locally.</p>
+                </div>
+                <div class="visualizer-controls">
+                    <label>
+                        Chart
+                        <select id="visualizer-chart-type">
+                            <option value="bar">Bar</option>
+                            <option value="line">Line</option>
+                            <option value="scatter">Scatter</option>
+                            <option value="histogram">Histogram</option>
+                        </select>
+                    </label>
+                    <label>
+                        X
+                        <select id="visualizer-x-column"></select>
+                    </label>
+                    <label>
+                        Y
+                        <select id="visualizer-y-column"></select>
+                    </label>
+                    <label>
+                        Aggregate
+                        <select id="visualizer-aggregation">
+                            <option value="count">Count</option>
+                            <option value="sum">Sum</option>
+                            <option value="avg">Average</option>
+                            <option value="min">Min</option>
+                            <option value="max">Max</option>
+                        </select>
+                    </label>
+                    <label>
+                        Limit
+                        <input id="visualizer-limit" type="number" min="5" max="100" value="25" />
+                    </label>
+                </div>
+            </div>
+            <div class="visualizer-summary">
+                <div class="summary-item">Rows: <span id="visualizer-row-count">0</span></div>
+                <div class="summary-item">Points: <span id="visualizer-point-count">0</span></div>
+                <div class="summary-item">Mode: <span id="visualizer-mode">-</span></div>
+            </div>
+            <div id="visualizer-message" class="visualizer-message hidden"></div>
+            <div class="visualizer-chart-wrap">
+                <svg id="visualizer-chart" viewBox="0 0 900 420" role="img" aria-label="Data chart"></svg>
+            </div>
+        </section>`;
+    }
+
     private generateQueryContainer(): string {
         return `
         <section class="query-container">
@@ -157,6 +364,34 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 Table: <code>parquet_data</code>
                 <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
             </div>
+            <div class="quick-aggregation">
+                <label>
+                    Group
+                    <select id="aggregation-group-column"></select>
+                </label>
+                <label>
+                    Metric
+                    <select id="aggregation-value-column"></select>
+                </label>
+                <label>
+                    Function
+                    <select id="aggregation-function">
+                        <option value="count">Count</option>
+                        <option value="sum">Sum</option>
+                        <option value="avg">Average</option>
+                        <option value="min">Min</option>
+                        <option value="max">Max</option>
+                    </select>
+                </label>
+                <label>
+                    Limit
+                    <input id="aggregation-limit" type="number" min="1" max="1000" value="100" />
+                </label>
+                <div class="aggregation-actions">
+                    <button id="run-aggregation-btn" class="btn btn-secondary">Run Aggregation</button>
+                    <button id="reset-aggregation-btn" class="btn btn-secondary">Reset</button>
+                </div>
+            </div>
         </section>`;
     }
 
@@ -166,7 +401,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <div class="compare-toolbar">
                 <div>
                     <h2>Compare Parquet Files</h2>
-                    <p>Strict compare requires matching column names and order. Custom mapping compares selected same-type columns by row order.</p>
+                    <p>Smart Diff auto-maps renamed columns and matches reordered rows by an inferred key. Strict and custom modes remain available for exact checks.</p>
                 </div>
                 <div class="compare-actions">
                     <label class="compare-toggle">
@@ -174,11 +409,27 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                         Custom mapping
                     </label>
                     <button id="select-compare-file-btn" class="btn">Choose Compare File</button>
+                    <button id="run-smart-diff-btn" class="btn">Run Smart Diff</button>
                     <button id="run-strict-compare-btn" class="btn btn-secondary">Run Strict Compare</button>
                     <button id="run-custom-compare-btn" class="btn btn-secondary hidden">Run Custom Compare</button>
                 </div>
             </div>
             <div id="compare-error" class="compare-error hidden"></div>
+            <div id="compare-smart-summary" class="compare-smart-summary hidden">
+                <div class="smart-summary-header">
+                    <h3>Smart Diff Plan</h3>
+                    <span id="smart-diff-key">Key: -</span>
+                </div>
+                <div class="smart-summary-grid">
+                    <div class="summary-item">Mapped Columns: <span id="smart-mapped-columns">0</span></div>
+                    <div class="summary-item">Auto Rename Matches: <span id="smart-fuzzy-columns">0</span></div>
+                    <div class="summary-item">Added Rows: <span id="smart-inserted-rows">0</span></div>
+                    <div class="summary-item">Deleted Rows: <span id="smart-deleted-rows">0</span></div>
+                    <div class="summary-item">Changed Rows: <span id="smart-changed-rows">0</span></div>
+                    <div class="summary-item">Unchanged Rows: <span id="smart-unchanged-rows">0</span></div>
+                </div>
+                <div id="smart-skipped-columns" class="smart-skipped-columns hidden"></div>
+            </div>
             <div id="compare-order-panel" class="compare-order-panel hidden">
                 <h3>Order Rows By</h3>
                 <div class="compare-order-controls">
@@ -239,6 +490,60 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </section>`;
     }
 
+    private generateJoinContainer(): string {
+        return `
+        <section id="join-container" class="join-container view-panel hidden">
+            <div class="join-toolbar">
+                <div>
+                    <h2>Join Data Files</h2>
+                    <p>Join the current Parquet file with another Parquet or CSV file.</p>
+                </div>
+                <div class="join-actions">
+                    <button id="select-join-file-btn" class="btn">Choose Join File</button>
+                    <button id="run-join-btn" class="btn btn-secondary">Preview Join</button>
+                    <button id="export-join-preview-btn" class="btn btn-secondary">Export Preview CSV</button>
+                </div>
+            </div>
+            <div id="join-error" class="join-error hidden"></div>
+            <div id="join-controls" class="join-controls hidden">
+                <label>
+                    Current file key
+                    <select id="join-base-column"></select>
+                </label>
+                <label>
+                    Join file key
+                    <select id="join-other-column"></select>
+                </label>
+                <label>
+                    Type
+                    <select id="join-type">
+                        <option value="inner">Inner</option>
+                        <option value="left">Left</option>
+                        <option value="right">Right</option>
+                        <option value="full">Full Outer</option>
+                    </select>
+                </label>
+                <label>
+                    Preview Rows
+                    <input id="join-limit" type="number" min="1" max="1000" value="100" />
+                </label>
+            </div>
+            <div id="join-summary" class="join-summary hidden">
+                <div class="summary-item">Join File: <span id="join-selected-file">None</span></div>
+                <div class="summary-item">Rows: <span id="join-row-count">0</span></div>
+                <div class="summary-item">Total: <span id="join-total-rows">0</span></div>
+                <div class="summary-item">Columns: <span id="join-column-count">0</span></div>
+            </div>
+            <div id="join-empty" class="empty-value">Choose a Parquet or CSV file to join.</div>
+            <div id="join-results" class="join-results hidden">
+                <table>
+                    <thead id="join-table-header"></thead>
+                    <tbody id="join-table-body"></tbody>
+                </table>
+            </div>
+        </section>`;
+    }
+
     private generateErrorContainer(): string {
         return `
         <div id="error-container" class="error-container hidden">
@@ -265,6 +570,33 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="summary-item">Showing: <span id="showing-rows">0</span> rows</div>
                 <div class="summary-item">Columns: <span id="column-count">0</span></div>
             </div>
+            <div class="table-tools">
+                <label>
+                    Sort
+                    <select id="table-sort-column"></select>
+                </label>
+                <label>
+                    Direction
+                    <select id="table-sort-direction">
+                        <option value="asc">Ascending</option>
+                        <option value="desc">Descending</option>
+                    </select>
+                </label>
+                <div class="table-column-picker">
+                    <label for="column-picker-toggle">Columns</label>
+                    <button id="column-picker-toggle" class="column-picker-toggle" type="button">
+                        <span id="column-picker-summary">Columns</span>
+                        <span class="column-picker-caret">v</span>
+                    </button>
+                    <div id="column-picker-menu" class="column-picker-menu hidden">
+                        <div id="column-picker-list" class="column-picker-list"></div>
+                    </div>
+                </div>
+                <div class="table-tool-actions">
+                    <button id="show-all-columns-btn" class="btn btn-secondary">Show All</button>
+                    <button id="reset-table-view-btn" class="btn btn-secondary">Reset View</button>
+                </div>
+            </div>
             
             <div class="table-container">
                 <table id="data-table">
@@ -273,6 +605,43 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 </table>
             </div>
         </div>`;
+    }
+
+    private generateEditContainer(): string {
+        return `
+        <section id="edit-container" class="edit-container view-panel hidden">
+            <div class="edit-toolbar">
+                <div>
+                    <h2>Edit Data</h2>
+                    <p>Edits will be saved as a new Parquet file. To view the changes, open that new Parquet file.</p>
+                </div>
+                <div class="edit-actions">
+                    <button id="add-edit-row-btn" class="btn btn-secondary">Add Row</button>
+                    <button id="reset-edits-btn" class="btn btn-secondary">Reset Edits</button>
+                    <button id="save-edits-btn" class="btn">Save New Parquet</button>
+                </div>
+            </div>
+            <div class="edit-column-tools">
+                <div>
+                    <h3>Column Names</h3>
+                    <p>Rename columns here before saving the edited data as a new Parquet file.</p>
+                </div>
+                <button id="reset-column-names-btn" class="btn btn-secondary">Reset Names</button>
+            </div>
+            <div class="edit-summary">
+                <div class="summary-item">Editable Rows: <span id="edit-row-count">0</span></div>
+                <div class="summary-item">Columns: <span id="edit-column-count">0</span></div>
+                <div class="summary-item">Changes: <span id="edit-change-count">0</span></div>
+                <div class="summary-item">Renamed Columns: <span id="edit-renamed-column-count">0</span></div>
+            </div>
+            <div id="edit-result-message" class="edit-message hidden"></div>
+            <div class="edit-table-container">
+                <table id="edit-table">
+                    <thead id="edit-table-header"></thead>
+                    <tbody id="edit-table-body"></tbody>
+                </table>
+            </div>
+        </section>`;
     }
 
     private generateSchemaContainer(): string {
@@ -321,11 +690,28 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentSchemaDocs = '';
         let currentCompareResult = null;
         let currentCompareMetadata = null;
+        let currentDoctor = null;
         let currentDoctorSchemaDrift = null;
         let currentDoctorDataset = null;
+        let doctorRequestInFlight = false;
+        let currentColumns = [];
+        let currentRows = [];
+        let currentTotalRows = 0;
+        let currentResultLimited = false;
+        let editRows = [];
+        let editColumnNames = [];
+        let writeRows = [];
+        let writeSchema = [];
+        let currentJoinMetadata = null;
+        let currentJoinResult = null;
+        let tableViewState = {
+            columnOrder: [],
+            visibleColumns: [],
+            sortColumn: '',
+            sortDirection: 'asc'
+        };
 
         function initialize(data) {
-            console.log('Webview initialized with data:', data);
             const queryInput = document.getElementById('query-input');
             currentQuery = data.query || DEFAULT_QUERY;
             if (queryInput) {
@@ -351,30 +737,76 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function setActiveView(viewName) {
-            const dataTab = document.getElementById('data-tab');
-            const doctorTab = document.getElementById('doctor-tab');
-            const schemaTab = document.getElementById('schema-tab');
-            const compareTab = document.getElementById('compare-tab');
             const dataView = document.getElementById('data-view');
+            const edaContainer = document.getElementById('eda-container');
+            const writeContainer = document.getElementById('write-container');
+            const visualizerContainer = document.getElementById('visualizer-container');
+            const editContainer = document.getElementById('edit-container');
             const doctorContainer = document.getElementById('doctor-container');
             const schemaContainer = document.getElementById('schema-container');
             const compareContainer = document.getElementById('compare-container');
+            const joinContainer = document.getElementById('join-container');
+            const viewToGroup = {
+                data: 'explore',
+                eda: 'explore',
+                visualizer: 'explore',
+                schema: 'explore',
+                edit: 'transform',
+                write: 'transform',
+                compare: 'combine',
+                join: 'combine',
+                doctor: 'quality'
+            };
+            const activeGroup = viewToGroup[viewName] || 'explore';
 
+            const showEda = viewName === 'eda';
+            const showWrite = viewName === 'write';
+            const showVisualizer = viewName === 'visualizer';
+            const showEdit = viewName === 'edit';
             const showDoctor = viewName === 'doctor';
             const showSchema = viewName === 'schema';
             const showCompare = viewName === 'compare';
-            dataTab.classList.toggle('active', !showDoctor && !showSchema && !showCompare);
-            doctorTab.classList.toggle('active', showDoctor);
-            schemaTab.classList.toggle('active', showSchema);
-            compareTab.classList.toggle('active', showCompare);
-            dataTab.setAttribute('aria-selected', String(!showDoctor && !showSchema && !showCompare));
-            doctorTab.setAttribute('aria-selected', String(showDoctor));
-            schemaTab.setAttribute('aria-selected', String(showSchema));
-            compareTab.setAttribute('aria-selected', String(showCompare));
-            dataView.classList.toggle('hidden', showDoctor || showSchema || showCompare);
+            const showJoin = viewName === 'join';
+            const showData = !showEda && !showWrite && !showVisualizer && !showEdit && !showDoctor && !showSchema && !showCompare && !showJoin;
+
+            document.querySelectorAll('[data-view-group]').forEach((tab) => {
+                const isActiveGroup = tab.dataset.viewGroup === activeGroup;
+                tab.classList.toggle('active', isActiveGroup);
+                tab.setAttribute('aria-selected', String(isActiveGroup));
+            });
+
+            document.querySelectorAll('[data-tab-group]').forEach((group) => {
+                group.classList.toggle('hidden', group.dataset.tabGroup !== activeGroup);
+            });
+
+            document.querySelectorAll('.subtab-btn').forEach((tab) => {
+                const isActive = tab.id === viewName + '-tab' || (showData && tab.id === 'data-tab');
+                tab.classList.toggle('active', isActive);
+                tab.setAttribute('aria-selected', String(isActive));
+            });
+
+            dataView.classList.toggle('hidden', !showData);
+            edaContainer.classList.toggle('hidden', !showEda);
+            writeContainer.classList.toggle('hidden', !showWrite);
+            visualizerContainer.classList.toggle('hidden', !showVisualizer);
+            editContainer.classList.toggle('hidden', !showEdit);
             doctorContainer.classList.toggle('hidden', !showDoctor);
             schemaContainer.classList.toggle('hidden', !showSchema);
             compareContainer.classList.toggle('hidden', !showCompare);
+            joinContainer.classList.toggle('hidden', !showJoin);
+
+            if (showVisualizer) {
+                renderVisualizer();
+            }
+            if (showEda) {
+                renderEdaPanel();
+            }
+            if (showWrite) {
+                refreshWritePreview();
+            }
+            if (showDoctor && !currentDoctor && !doctorRequestInFlight) {
+                requestDoctorChecks(false);
+            }
         }
 
         function writeTextToClipboard(text, successMessage) {
@@ -407,6 +839,1483 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 statusElement.textContent = 'Copy failed';
                 statusElement.className = 'status status-error';
             }
+        }
+
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+
+        function isNumericValue(value) {
+            if (value === null || value === undefined || value === '') {
+                return false;
+            }
+
+            const numberValue = typeof value === 'number' ? value : Number(value);
+            return Number.isFinite(numberValue);
+        }
+
+        function toNumber(value) {
+            return typeof value === 'number' ? value : Number(value);
+        }
+
+        function getNumericColumns() {
+            return currentColumns.filter((column) => currentRows.some((row) => isNumericValue(row[column])));
+        }
+
+        function formatPercent(part, total) {
+            if (!total) {
+                return '0%';
+            }
+
+            return ((part / total) * 100).toFixed(1) + '%';
+        }
+
+        function formatEdaNumber(value) {
+            if (!Number.isFinite(value)) {
+                return '-';
+            }
+
+            const absoluteValue = Math.abs(value);
+            if (absoluteValue >= 1000) {
+                return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+            }
+            if (absoluteValue > 0 && absoluteValue < 0.01) {
+                return value.toExponential(2);
+            }
+            return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+        }
+
+        function normalizeEdaValue(value) {
+            if (value === null || value === undefined || value === '') {
+                return 'NULL';
+            }
+            if (typeof value === 'object') {
+                try {
+                    return JSON.stringify(value);
+                } catch (error) {
+                    return String(value);
+                }
+            }
+            return String(value);
+        }
+
+        function truncateEdaText(value, maxLength) {
+            const text = String(value);
+            return text.length > maxLength ? text.slice(0, maxLength - 1) + '...' : text;
+        }
+
+        function countDuplicateRows() {
+            const seenRows = new Set();
+            let duplicateCount = 0;
+
+            currentRows.forEach((row) => {
+                const signature = JSON.stringify(currentColumns.map((column) => normalizeEdaValue(row[column])));
+                if (seenRows.has(signature)) {
+                    duplicateCount += 1;
+                    return;
+                }
+                seenRows.add(signature);
+            });
+
+            return duplicateCount;
+        }
+
+        function buildEdaProfiles() {
+            const rowCount = currentRows.length;
+            return currentColumns.map((column) => {
+                const values = currentRows.map((row) => row[column]);
+                const presentValues = values.filter((value) => value !== null && value !== undefined && value !== '');
+                const missingCount = rowCount - presentValues.length;
+                const numericValues = presentValues.filter(isNumericValue).map(toNumber);
+                const booleanCount = presentValues.filter((value) => {
+                    const text = String(value).toLowerCase();
+                    return typeof value === 'boolean' || text === 'true' || text === 'false';
+                }).length;
+                const dateCount = presentValues.filter((value) => {
+                    if (isNumericValue(value)) {
+                        return false;
+                    }
+                    return Number.isFinite(Date.parse(String(value)));
+                }).length;
+                const distinctValues = new Set(presentValues.map(normalizeEdaValue));
+                const topValueCounts = new Map();
+
+                presentValues.forEach((value) => {
+                    const normalized = normalizeEdaValue(value);
+                    topValueCounts.set(normalized, (topValueCounts.get(normalized) || 0) + 1);
+                });
+
+                const topValues = Array.from(topValueCounts.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 3)
+                    .map(([value, count]) => truncateEdaText(value, 24) + ' (' + count + ')')
+                    .join(', ');
+
+                const presentCount = presentValues.length;
+                const numericRatio = presentCount ? numericValues.length / presentCount : 0;
+                const distinctRatio = presentCount ? distinctValues.size / presentCount : 0;
+                let inferredType = 'mixed';
+                if (!presentCount) {
+                    inferredType = 'empty';
+                } else if (numericRatio >= 0.8) {
+                    inferredType = 'numeric';
+                } else if (booleanCount / presentCount >= 0.8) {
+                    inferredType = 'boolean';
+                } else if (dateCount / presentCount >= 0.8) {
+                    inferredType = 'date';
+                } else if (distinctValues.size <= Math.max(20, Math.ceil(presentCount * 0.2))) {
+                    inferredType = 'categorical';
+                } else {
+                    inferredType = 'text';
+                }
+
+                const numericSum = numericValues.reduce((sum, value) => sum + value, 0);
+                const numericMean = numericValues.length ? numericSum / numericValues.length : NaN;
+                const numericMin = numericValues.length ? Math.min(...numericValues) : NaN;
+                const numericMax = numericValues.length ? Math.max(...numericValues) : NaN;
+
+                return {
+                    column,
+                    inferredType,
+                    rowCount,
+                    presentCount,
+                    missingCount,
+                    missingRatio: rowCount ? missingCount / rowCount : 0,
+                    distinctCount: distinctValues.size,
+                    distinctRatio,
+                    topValues,
+                    numericCount: numericValues.length,
+                    numericMean,
+                    numericMin,
+                    numericMax
+                };
+            });
+        }
+
+        function renderEdaPanel() {
+            const rowCount = currentRows.length;
+            const columnCount = currentColumns.length;
+            const profiles = buildEdaProfiles();
+            const numericProfiles = profiles.filter((profile) => profile.inferredType === 'numeric');
+            const missingCells = profiles.reduce((sum, profile) => sum + profile.missingCount, 0);
+            const duplicateRows = countDuplicateRows();
+
+            document.getElementById('eda-row-count').textContent = formatCount(rowCount);
+            document.getElementById('eda-column-count').textContent = formatCount(columnCount);
+            document.getElementById('eda-numeric-count').textContent = formatCount(numericProfiles.length);
+            document.getElementById('eda-missing-count').textContent = formatCount(missingCells);
+            document.getElementById('eda-duplicate-count').textContent = formatCount(duplicateRows);
+
+            renderEdaSuggestions(profiles, duplicateRows);
+            renderEdaQuality(profiles, duplicateRows);
+            renderEdaNumericSummary(numericProfiles);
+            renderEdaProfileTable(profiles);
+        }
+
+        function renderEdaSuggestions(profiles, duplicateRows) {
+            const suggestions = [];
+            const numericProfiles = profiles.filter((profile) => profile.inferredType === 'numeric');
+            const categoricalProfiles = profiles.filter((profile) => profile.inferredType === 'categorical' || profile.inferredType === 'boolean');
+            const dateProfiles = profiles.filter((profile) => profile.inferredType === 'date');
+            const highMissing = profiles.filter((profile) => profile.missingRatio >= 0.2);
+            const mostlyUnique = profiles.filter((profile) => profile.presentCount > 1 && profile.distinctRatio >= 0.95);
+
+            if (currentResultLimited && currentTotalRows > currentRows.length) {
+                suggestions.push('EDA is based on the current ' + formatCount(currentRows.length) + ' displayed rows from ' + formatCount(currentTotalRows) + ' total rows. Run a narrower query or aggregate for full-file confidence.');
+            }
+            if (numericProfiles.length && categoricalProfiles.length) {
+                suggestions.push('Compare numeric metrics by ' + categoricalProfiles[0].column + ' using Quick Aggregations or the Visualize tab.');
+            }
+            if (dateProfiles.length && numericProfiles.length) {
+                suggestions.push('Plot ' + numericProfiles[0].column + ' over ' + dateProfiles[0].column + ' to check trend, seasonality, and gaps.');
+            }
+            if (highMissing.length) {
+                suggestions.push('Review missing values in ' + highMissing.slice(0, 3).map((profile) => profile.column).join(', ') + ' before modeling or exporting.');
+            }
+            if (duplicateRows > 0) {
+                suggestions.push('Investigate duplicate rows; they may inflate counts, averages, and joins.');
+            }
+            if (mostlyUnique.length) {
+                suggestions.push('Columns like ' + mostlyUnique.slice(0, 3).map((profile) => profile.column).join(', ') + ' look identifier-like. Avoid aggregating by them unless that is intentional.');
+            }
+            if (!suggestions.length) {
+                suggestions.push('Start with a bar chart for categorical columns or a histogram for numeric columns in the Visualize tab.');
+            }
+
+            renderEdaList('eda-suggestions', suggestions, 'eda-suggestion');
+        }
+
+        function renderEdaQuality(profiles, duplicateRows) {
+            const issues = [];
+            const emptyColumns = profiles.filter((profile) => profile.presentCount === 0);
+            const highMissing = profiles.filter((profile) => profile.missingRatio >= 0.2 && profile.presentCount > 0);
+            const constantColumns = profiles.filter((profile) => profile.presentCount > 0 && profile.distinctCount === 1);
+            const mixedColumns = profiles.filter((profile) => profile.inferredType === 'mixed');
+
+            if (!currentRows.length) {
+                issues.push('No rows available for EDA. Run a query that returns rows.');
+            }
+            if (emptyColumns.length) {
+                issues.push('Empty columns: ' + emptyColumns.map((profile) => profile.column).join(', '));
+            }
+            if (highMissing.length) {
+                issues.push('High missingness: ' + highMissing.map((profile) => profile.column + ' ' + formatPercent(profile.missingCount, profile.rowCount)).join(', '));
+            }
+            if (constantColumns.length) {
+                issues.push('Constant columns: ' + constantColumns.slice(0, 5).map((profile) => profile.column).join(', '));
+            }
+            if (mixedColumns.length) {
+                issues.push('Mixed-looking columns: ' + mixedColumns.slice(0, 5).map((profile) => profile.column).join(', '));
+            }
+            if (duplicateRows > 0) {
+                issues.push(formatCount(duplicateRows) + ' duplicate rows detected in the current result.');
+            }
+            if (!issues.length) {
+                issues.push('No obvious quality issues found in the current result.');
+            }
+
+            renderEdaList('eda-quality', issues, 'eda-quality-item');
+        }
+
+        function renderEdaList(elementId, items, className) {
+            const container = document.getElementById(elementId);
+            container.innerHTML = '';
+            items.forEach((item) => {
+                const row = document.createElement('div');
+                row.className = className;
+                row.textContent = item;
+                container.appendChild(row);
+            });
+        }
+
+        function renderEdaNumericSummary(numericProfiles) {
+            const body = document.getElementById('eda-numeric-body');
+            body.innerHTML = '';
+            if (!numericProfiles.length) {
+                appendEdaEmptyRow(body, 5, 'No numeric columns detected.');
+                return;
+            }
+
+            numericProfiles.forEach((profile) => {
+                const row = document.createElement('tr');
+                [
+                    profile.column,
+                    formatPercent(profile.missingCount, profile.rowCount),
+                    formatEdaNumber(profile.numericMean),
+                    formatEdaNumber(profile.numericMin),
+                    formatEdaNumber(profile.numericMax)
+                ].forEach((value) => {
+                    const cell = document.createElement('td');
+                    cell.textContent = value;
+                    cell.title = value;
+                    row.appendChild(cell);
+                });
+                body.appendChild(row);
+            });
+        }
+
+        function renderEdaProfileTable(profiles) {
+            const body = document.getElementById('eda-profile-body');
+            body.innerHTML = '';
+            if (!profiles.length) {
+                appendEdaEmptyRow(body, 5, 'No columns available.');
+                return;
+            }
+
+            profiles.forEach((profile) => {
+                const row = document.createElement('tr');
+                [
+                    profile.column,
+                    profile.inferredType,
+                    formatCount(profile.distinctCount),
+                    formatPercent(profile.missingCount, profile.rowCount),
+                    profile.topValues || '-'
+                ].forEach((value) => {
+                    const cell = document.createElement('td');
+                    cell.textContent = value;
+                    cell.title = value;
+                    row.appendChild(cell);
+                });
+                body.appendChild(row);
+            });
+        }
+
+        function appendEdaEmptyRow(body, colSpan, message) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = colSpan;
+            cell.className = 'empty-value';
+            cell.textContent = message;
+            row.appendChild(cell);
+            body.appendChild(row);
+        }
+
+        const WRITE_TYPE_OPTIONS = ['VARCHAR', 'BOOLEAN', 'BIGINT', 'DOUBLE', 'DECIMAL(18, 4)', 'DATE', 'TIMESTAMP'];
+
+        function refreshWritePreview() {
+            const sourceSelect = document.getElementById('write-source');
+            const jsonInput = document.getElementById('write-json-input');
+            const source = sourceSelect ? sourceSelect.value : 'current';
+
+            if (jsonInput) {
+                jsonInput.disabled = source === 'current';
+            }
+
+            try {
+                const parsed = parseWriteSourceRows(source);
+                writeRows = parsed.rows;
+                writeSchema = parsed.columns.map((column) => ({
+                    sourceName: column,
+                    name: column,
+                    type: inferWriteType(column, writeRows),
+                    sample: getWriteSample(column, writeRows),
+                    nullCount: writeRows.filter((row) => isMissingWriteValue(row[column])).length
+                }));
+                renderWriteSchema();
+                updateWriteSummary();
+                setWriteMessage(writeRows.length ? '' : 'No rows available for this source.', !writeRows.length);
+            } catch (error) {
+                writeRows = [];
+                writeSchema = [];
+                renderWriteSchema();
+                updateWriteSummary();
+                setWriteMessage(error instanceof Error ? error.message : String(error), true);
+            }
+        }
+
+        function parseWriteSourceRows(source) {
+            if (source === 'current') {
+                if (!currentRows.length) {
+                    return { rows: [], columns: currentColumns.slice() };
+                }
+                return {
+                    rows: cloneRows(currentRows),
+                    columns: currentColumns.length ? currentColumns.slice() : collectColumnsFromRows(currentRows)
+                };
+            }
+
+            const input = document.getElementById('write-json-input');
+            const text = input ? input.value.trim() : '';
+            if (!text) {
+                return { rows: [], columns: [] };
+            }
+
+            let rows;
+            if (source === 'ndjson') {
+                rows = text.split(/\\r?\\n/)
+                    .map((line) => line.trim())
+                    .filter(Boolean)
+                    .map((line) => JSON.parse(line));
+            } else {
+                const parsed = JSON.parse(text);
+                rows = Array.isArray(parsed) ? parsed : [parsed];
+            }
+
+            rows = rows.map((row) => {
+                if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+                    throw new Error('Each row must be a JSON object.');
+                }
+                return row;
+            });
+
+            return {
+                rows,
+                columns: collectColumnsFromRows(rows)
+            };
+        }
+
+        function collectColumnsFromRows(rows) {
+            const seen = new Set();
+            rows.forEach((row) => {
+                Object.keys(row).forEach((column) => {
+                    if (!seen.has(column)) {
+                        seen.add(column);
+                    }
+                });
+            });
+            return Array.from(seen);
+        }
+
+        function inferWriteType(column, rows) {
+            const values = rows.map((row) => row[column]).filter((value) => !isMissingWriteValue(value));
+            if (!values.length) {
+                return 'VARCHAR';
+            }
+
+            if (values.every((value) => typeof value === 'boolean' || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'false')) {
+                return 'BOOLEAN';
+            }
+
+            if (values.every((value) => isNumericValue(value) && Number.isInteger(toNumber(value)))) {
+                return 'BIGINT';
+            }
+
+            if (values.every(isNumericValue)) {
+                return 'DOUBLE';
+            }
+
+            if (values.every((value) => isDateLikeWriteValue(value))) {
+                return values.some((value) => /[tT ]\\d{1,2}:\\d{2}/.test(String(value))) ? 'TIMESTAMP' : 'DATE';
+            }
+
+            return 'VARCHAR';
+        }
+
+        function isDateLikeWriteValue(value) {
+            if (value instanceof Date) {
+                return true;
+            }
+            if (isNumericValue(value)) {
+                return false;
+            }
+            return Number.isFinite(Date.parse(String(value)));
+        }
+
+        function isMissingWriteValue(value) {
+            return value === null || value === undefined || value === '';
+        }
+
+        function getWriteSample(column, rows) {
+            const row = rows.find((candidate) => !isMissingWriteValue(candidate[column]));
+            if (!row) {
+                return '-';
+            }
+            return truncateEdaText(normalizeEdaValue(row[column]), 48);
+        }
+
+        function renderWriteSchema() {
+            const body = document.getElementById('write-schema-body');
+            body.innerHTML = '';
+
+            if (!writeSchema.length) {
+                appendEdaEmptyRow(body, 5, 'Preview a source to define structure.');
+                return;
+            }
+
+            writeSchema.forEach((column) => {
+                const row = document.createElement('tr');
+                row.dataset.sourceColumn = column.sourceName;
+
+                const sourceCell = document.createElement('td');
+                sourceCell.textContent = column.sourceName;
+                sourceCell.title = column.sourceName;
+
+                const nameCell = document.createElement('td');
+                const nameInput = document.createElement('input');
+                nameInput.className = 'write-column-name';
+                nameInput.value = column.name;
+                nameInput.setAttribute('aria-label', 'Parquet column name');
+                nameCell.appendChild(nameInput);
+
+                const typeCell = document.createElement('td');
+                const typeSelect = document.createElement('select');
+                typeSelect.className = 'write-column-type';
+                WRITE_TYPE_OPTIONS.forEach((type) => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.textContent = type;
+                    typeSelect.appendChild(option);
+                });
+                typeSelect.value = column.type;
+                typeCell.appendChild(typeSelect);
+
+                const sampleCell = document.createElement('td');
+                sampleCell.textContent = column.sample;
+                sampleCell.title = column.sample;
+
+                const nullCell = document.createElement('td');
+                nullCell.textContent = formatCount(column.nullCount);
+
+                row.appendChild(sourceCell);
+                row.appendChild(nameCell);
+                row.appendChild(typeCell);
+                row.appendChild(sampleCell);
+                row.appendChild(nullCell);
+                body.appendChild(row);
+            });
+        }
+
+        function updateWriteSummary() {
+            const rowGroupInput = document.getElementById('write-row-group-size');
+            const compression = document.getElementById('write-compression');
+            document.getElementById('write-row-count').textContent = formatCount(writeRows.length);
+            document.getElementById('write-column-count').textContent = formatCount(writeSchema.length);
+            document.getElementById('write-compression-summary').textContent = compression ? compression.options[compression.selectedIndex].textContent : 'Snappy';
+            document.getElementById('write-row-group-summary').textContent = formatCount(Number(rowGroupInput ? rowGroupInput.value : 100000) || 100000);
+        }
+
+        function setWriteMessage(message, isError) {
+            const messageElement = document.getElementById('write-message');
+            if (!messageElement) {
+                return;
+            }
+
+            messageElement.textContent = message;
+            messageElement.classList.toggle('hidden', !message);
+            messageElement.classList.toggle('write-message-error', Boolean(isError));
+        }
+
+        function collectWriteSchema() {
+            const body = document.getElementById('write-schema-body');
+            const rows = Array.from(body.querySelectorAll('tr'));
+            const seen = new Set();
+            const schema = [];
+
+            rows.forEach((row) => {
+                const nameInput = row.querySelector('.write-column-name');
+                const typeSelect = row.querySelector('.write-column-type');
+                const sourceName = row.dataset.sourceColumn || '';
+                const name = nameInput ? nameInput.value.trim() : '';
+                const type = typeSelect ? typeSelect.value : 'VARCHAR';
+
+                if (!sourceName || !name) {
+                    return;
+                }
+                if (seen.has(name)) {
+                    throw new Error('Column names must be unique.');
+                }
+                seen.add(name);
+                schema.push({ sourceName, name, type });
+            });
+
+            if (!schema.length) {
+                throw new Error('Define at least one column.');
+            }
+
+            return schema;
+        }
+
+        function createParquetFromWrite() {
+            if (!writeRows.length || !writeSchema.length) {
+                refreshWritePreview();
+            }
+
+            if (!writeRows.length) {
+                setWriteMessage('Provide at least one row before creating a Parquet file.', true);
+                return;
+            }
+
+            try {
+                const schema = collectWriteSchema();
+                const compression = document.getElementById('write-compression');
+                const rowGroupInput = document.getElementById('write-row-group-size');
+                const rowGroupSize = Math.min(10000000, Math.max(1, Number(rowGroupInput ? rowGroupInput.value : 100000) || 100000));
+                const rows = writeRows.map((row) => {
+                    const outputRow = {};
+                    schema.forEach((column) => {
+                        outputRow[column.name] = row[column.sourceName];
+                    });
+                    return outputRow;
+                });
+
+                setStatus('Creating Parquet...', 'status-loading');
+                setWriteMessage('', false);
+                vscode.postMessage({
+                    type: 'createParquet',
+                    options: {
+                        columns: schema.map((column) => ({ name: column.name, type: column.type })),
+                        rows,
+                        compression: compression ? compression.value : 'snappy',
+                        rowGroupSize
+                    }
+                });
+            } catch (error) {
+                setWriteMessage(error instanceof Error ? error.message : String(error), true);
+                setStatus('Create Parquet failed', 'status-error');
+            }
+        }
+
+        function handleWriteResult(result) {
+            if (result && result.success) {
+                const message = 'Created ' + formatCount(result.rowsExported || 0) + ' rows with ' + valueOrDash(result.compression) + ' compression.';
+                setWriteMessage(message, false);
+                setStatus('Parquet created', 'status-success');
+                return;
+            }
+
+            const error = result && result.error ? result.error : 'Create Parquet failed';
+            setWriteMessage(error, true);
+            setStatus(error, 'status-error');
+        }
+
+        function populateSelect(select, values, selectedValue, emptyLabel) {
+            if (!select) {
+                return;
+            }
+
+            select.innerHTML = '';
+            if (emptyLabel) {
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = emptyLabel;
+                select.appendChild(emptyOption);
+            }
+
+            values.forEach((value) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = value;
+                select.appendChild(option);
+            });
+
+            if (selectedValue && values.includes(selectedValue)) {
+                select.value = selectedValue;
+            }
+        }
+
+        function populateVisualizerControls() {
+            const xSelect = document.getElementById('visualizer-x-column');
+            const ySelect = document.getElementById('visualizer-y-column');
+            const numericColumns = getNumericColumns();
+            const previousX = xSelect ? xSelect.value : '';
+            const previousY = ySelect ? ySelect.value : '';
+            const defaultX = currentColumns[0] || '';
+            const defaultY = numericColumns[0] || '';
+
+            populateSelect(xSelect, currentColumns, previousX || defaultX, '');
+            populateSelect(ySelect, numericColumns, previousY || defaultY, 'None');
+            syncVisualizerControls();
+        }
+
+        function syncVisualizerControls() {
+            const chartType = document.getElementById('visualizer-chart-type');
+            const aggregation = document.getElementById('visualizer-aggregation');
+            const ySelect = document.getElementById('visualizer-y-column');
+            if (!chartType || !aggregation || !ySelect) {
+                return;
+            }
+
+            const type = chartType.value;
+            const needsY = type === 'scatter' || aggregation.value !== 'count';
+            ySelect.disabled = type === 'histogram' || !needsY;
+            aggregation.disabled = type === 'scatter' || type === 'histogram';
+        }
+
+        function setVisualizerMessage(message, isError) {
+            const messageElement = document.getElementById('visualizer-message');
+            if (!messageElement) {
+                return;
+            }
+
+            if (!message) {
+                messageElement.textContent = '';
+                messageElement.classList.add('hidden');
+                messageElement.classList.remove('visualizer-message-error');
+                return;
+            }
+
+            messageElement.textContent = message;
+            messageElement.classList.remove('hidden');
+            messageElement.classList.toggle('visualizer-message-error', Boolean(isError));
+        }
+
+        function renderVisualizer() {
+            const chartType = document.getElementById('visualizer-chart-type');
+            const xSelect = document.getElementById('visualizer-x-column');
+            const ySelect = document.getElementById('visualizer-y-column');
+            const aggregation = document.getElementById('visualizer-aggregation');
+            const limitInput = document.getElementById('visualizer-limit');
+            const svg = document.getElementById('visualizer-chart');
+
+            if (!chartType || !xSelect || !ySelect || !aggregation || !limitInput || !svg) {
+                return;
+            }
+
+            syncVisualizerControls();
+            clearChart(svg);
+            document.getElementById('visualizer-row-count').textContent = formatCount(currentRows.length);
+            document.getElementById('visualizer-point-count').textContent = '0';
+            document.getElementById('visualizer-mode').textContent = '-';
+
+            if (!currentColumns.length || !currentRows.length) {
+                setVisualizerMessage('No rows are available to visualize.', false);
+                return;
+            }
+
+            const type = chartType.value;
+            const limit = Math.min(100, Math.max(5, Number(limitInput.value) || 25));
+            const chartData = type === 'scatter'
+                ? buildScatterData(xSelect.value, ySelect.value, limit)
+                : type === 'histogram'
+                    ? buildHistogramData(xSelect.value, limit)
+                    : buildGroupedChartData(xSelect.value, ySelect.value, aggregation.value, limit, type);
+
+            if (!chartData.success) {
+                setVisualizerMessage(chartData.error, true);
+                return;
+            }
+
+            setVisualizerMessage('', false);
+            if (type === 'scatter') {
+                drawScatterChart(svg, chartData.points, xSelect.value, ySelect.value);
+            } else {
+                drawCategoryChart(svg, chartData.points, type);
+            }
+
+            document.getElementById('visualizer-point-count').textContent = formatCount(chartData.points.length);
+            document.getElementById('visualizer-mode').textContent = chartData.mode;
+        }
+
+        function buildGroupedChartData(xColumn, yColumn, aggregation, limit, chartType) {
+            if (!xColumn) {
+                return { success: false, error: 'Choose an X column.' };
+            }
+
+            if (aggregation !== 'count' && !yColumn) {
+                return { success: false, error: 'Choose a numeric Y column or use Count.' };
+            }
+
+            const groups = new Map();
+            currentRows.forEach((row) => {
+                const label = valueOrDash(row[xColumn]);
+                const rawValue = aggregation === 'count' ? 1 : row[yColumn];
+                if (aggregation !== 'count' && !isNumericValue(rawValue)) {
+                    return;
+                }
+
+                const value = aggregation === 'count' ? 1 : toNumber(rawValue);
+                if (!groups.has(label)) {
+                    groups.set(label, { label, count: 0, sum: 0, min: value, max: value });
+                }
+
+                const group = groups.get(label);
+                group.count += 1;
+                group.sum += value;
+                group.min = Math.min(group.min, value);
+                group.max = Math.max(group.max, value);
+            });
+
+            let points = Array.from(groups.values()).map((group) => ({
+                label: group.label,
+                value: aggregateValue(group, aggregation)
+            }));
+
+            if (chartType === 'line') {
+                points = sortByLabel(points);
+            } else {
+                points.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+            }
+
+            return {
+                success: points.length > 0,
+                error: 'No plottable values found for this selection.',
+                points: points.slice(0, limit),
+                mode: aggregation === 'count' ? 'Count by ' + xColumn : aggregation + '(' + yColumn + ') by ' + xColumn
+            };
+        }
+
+        function aggregateValue(group, aggregation) {
+            if (aggregation === 'sum') {
+                return group.sum;
+            }
+
+            if (aggregation === 'avg') {
+                return group.count ? group.sum / group.count : 0;
+            }
+
+            if (aggregation === 'min') {
+                return group.min;
+            }
+
+            if (aggregation === 'max') {
+                return group.max;
+            }
+
+            return group.count;
+        }
+
+        function buildScatterData(xColumn, yColumn, limit) {
+            if (!xColumn || !yColumn) {
+                return { success: false, error: 'Choose numeric X and Y columns.' };
+            }
+
+            const points = currentRows
+                .filter((row) => isNumericValue(row[xColumn]) && isNumericValue(row[yColumn]))
+                .slice(0, Math.max(limit, 25))
+                .map((row) => ({
+                    label: valueOrDash(row[xColumn]) + ', ' + valueOrDash(row[yColumn]),
+                    x: toNumber(row[xColumn]),
+                    y: toNumber(row[yColumn])
+                }));
+
+            return {
+                success: points.length > 0,
+                error: 'Scatter charts need numeric X and Y values.',
+                points,
+                mode: yColumn + ' vs ' + xColumn
+            };
+        }
+
+        function buildHistogramData(xColumn, limit) {
+            if (!xColumn) {
+                return { success: false, error: 'Choose a numeric X column.' };
+            }
+
+            const values = currentRows.map((row) => row[xColumn]).filter(isNumericValue).map(toNumber);
+            if (!values.length) {
+                return { success: false, error: 'Histogram needs a numeric X column.' };
+            }
+
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const binCount = Math.min(30, Math.max(5, limit));
+            const binSize = max === min ? 1 : (max - min) / binCount;
+            const bins = Array.from({ length: binCount }, (_, index) => ({
+                label: formatCompactNumber(min + (index * binSize)) + ' - ' + formatCompactNumber(min + ((index + 1) * binSize)),
+                value: 0
+            }));
+
+            values.forEach((value) => {
+                const index = max === min ? 0 : Math.min(binCount - 1, Math.floor((value - min) / binSize));
+                bins[index].value += 1;
+            });
+
+            return {
+                success: true,
+                points: bins,
+                mode: 'Distribution of ' + xColumn
+            };
+        }
+
+        function sortByLabel(points) {
+            return points.slice().sort((a, b) => {
+                const aNumber = Number(a.label);
+                const bNumber = Number(b.label);
+                if (Number.isFinite(aNumber) && Number.isFinite(bNumber)) {
+                    return aNumber - bNumber;
+                }
+
+                const aDate = Date.parse(a.label);
+                const bDate = Date.parse(b.label);
+                if (Number.isFinite(aDate) && Number.isFinite(bDate)) {
+                    return aDate - bDate;
+                }
+
+                return String(a.label).localeCompare(String(b.label));
+            });
+        }
+
+        function clearChart(svg) {
+            while (svg.firstChild) {
+                svg.removeChild(svg.firstChild);
+            }
+        }
+
+        function svgElement(name, attributes) {
+            const element = document.createElementNS(SVG_NS, name);
+            Object.keys(attributes || {}).forEach((key) => {
+                element.setAttribute(key, String(attributes[key]));
+            });
+            return element;
+        }
+
+        function appendSvgText(svg, x, y, text, className, anchor) {
+            const element = svgElement('text', {
+                x,
+                y,
+                class: className || 'chart-label',
+                'text-anchor': anchor || 'middle'
+            });
+            element.textContent = text;
+            svg.appendChild(element);
+            return element;
+        }
+
+        function drawCategoryChart(svg, points, type) {
+            const width = 900;
+            const height = 420;
+            const margin = { top: 28, right: 24, bottom: 86, left: 72 };
+            const plotWidth = width - margin.left - margin.right;
+            const plotHeight = height - margin.top - margin.bottom;
+            const values = points.map((point) => point.value);
+            const minValue = Math.min(0, ...values);
+            const maxValue = Math.max(0, ...values);
+            const range = maxValue - minValue || 1;
+            const yScale = (value) => margin.top + ((maxValue - value) / range) * plotHeight;
+            const baseline = yScale(0);
+
+            drawAxes(svg, margin, width, height, baseline);
+            drawYAxisTicks(svg, margin, plotWidth, minValue, maxValue, yScale);
+
+            if (type === 'line') {
+                drawLineSeries(svg, points, margin, plotWidth, yScale);
+            } else {
+                drawBars(svg, points, margin, plotWidth, baseline, yScale);
+            }
+        }
+
+        function drawBars(svg, points, margin, plotWidth, baseline, yScale) {
+            const band = plotWidth / Math.max(points.length, 1);
+            const barWidth = Math.max(3, band * 0.62);
+
+            points.forEach((point, index) => {
+                const x = margin.left + index * band + (band - barWidth) / 2;
+                const y = yScale(Math.max(point.value, 0));
+                const height = Math.abs(yScale(point.value) - baseline);
+                const rect = svgElement('rect', {
+                    x,
+                    y: point.value >= 0 ? y : baseline,
+                    width: barWidth,
+                    height: Math.max(1, height),
+                    class: 'chart-bar'
+                });
+                const title = svgElement('title', {});
+                title.textContent = point.label + ': ' + formatCompactNumber(point.value);
+                rect.appendChild(title);
+                svg.appendChild(rect);
+
+                if (index % Math.ceil(points.length / 12) === 0) {
+                    appendSvgText(svg, x + barWidth / 2, 358, truncateLabel(point.label), 'chart-axis-label', 'end')
+                        .setAttribute('transform', 'rotate(-35 ' + (x + barWidth / 2) + ' 358)');
+                }
+            });
+        }
+
+        function drawLineSeries(svg, points, margin, plotWidth, yScale) {
+            if (points.length === 1) {
+                const onlyPoint = points[0];
+                const x = margin.left + plotWidth / 2;
+                const y = yScale(onlyPoint.value);
+                svg.appendChild(svgElement('circle', { cx: x, cy: y, r: 5, class: 'chart-point' }));
+                appendSvgText(svg, x, 358, truncateLabel(onlyPoint.label), 'chart-axis-label', 'middle');
+                return;
+            }
+
+            const step = plotWidth / Math.max(points.length - 1, 1);
+            const pathData = points.map((point, index) => {
+                const x = margin.left + index * step;
+                const y = yScale(point.value);
+                return (index === 0 ? 'M ' : 'L ') + x + ' ' + y;
+            }).join(' ');
+
+            svg.appendChild(svgElement('path', { d: pathData, class: 'chart-line' }));
+            points.forEach((point, index) => {
+                const x = margin.left + index * step;
+                const y = yScale(point.value);
+                const circle = svgElement('circle', { cx: x, cy: y, r: 4, class: 'chart-point' });
+                const title = svgElement('title', {});
+                title.textContent = point.label + ': ' + formatCompactNumber(point.value);
+                circle.appendChild(title);
+                svg.appendChild(circle);
+
+                if (index % Math.ceil(points.length / 10) === 0) {
+                    appendSvgText(svg, x, 358, truncateLabel(point.label), 'chart-axis-label', 'end')
+                        .setAttribute('transform', 'rotate(-35 ' + x + ' 358)');
+                }
+            });
+        }
+
+        function drawScatterChart(svg, points, xColumn, yColumn) {
+            const width = 900;
+            const height = 420;
+            const margin = { top: 28, right: 24, bottom: 72, left: 72 };
+            const plotWidth = width - margin.left - margin.right;
+            const plotHeight = height - margin.top - margin.bottom;
+            const minX = Math.min(...points.map((point) => point.x));
+            const maxX = Math.max(...points.map((point) => point.x));
+            const minY = Math.min(...points.map((point) => point.y));
+            const maxY = Math.max(...points.map((point) => point.y));
+            const xRange = maxX - minX || 1;
+            const yRange = maxY - minY || 1;
+            const xScale = (value) => margin.left + ((value - minX) / xRange) * plotWidth;
+            const yScale = (value) => margin.top + ((maxY - value) / yRange) * plotHeight;
+
+            drawAxes(svg, margin, width, height, margin.top + plotHeight);
+            drawYAxisTicks(svg, margin, plotWidth, minY, maxY, yScale);
+            drawXAxisTicks(svg, margin, plotWidth, plotHeight, minX, maxX, xScale);
+
+            points.forEach((point) => {
+                const circle = svgElement('circle', {
+                    cx: xScale(point.x),
+                    cy: yScale(point.y),
+                    r: 4,
+                    class: 'chart-point'
+                });
+                const title = svgElement('title', {});
+                title.textContent = point.label;
+                circle.appendChild(title);
+                svg.appendChild(circle);
+            });
+
+            appendSvgText(svg, margin.left + plotWidth / 2, 404, xColumn, 'chart-axis-title', 'middle');
+            appendSvgText(svg, 18, margin.top + plotHeight / 2, yColumn, 'chart-axis-title', 'middle')
+                .setAttribute('transform', 'rotate(-90 18 ' + (margin.top + plotHeight / 2) + ')');
+        }
+
+        function drawAxes(svg, margin, width, height, baseline) {
+            svg.appendChild(svgElement('line', {
+                x1: margin.left,
+                y1: margin.top,
+                x2: margin.left,
+                y2: height - margin.bottom,
+                class: 'chart-axis'
+            }));
+            svg.appendChild(svgElement('line', {
+                x1: margin.left,
+                y1: baseline,
+                x2: width - margin.right,
+                y2: baseline,
+                class: 'chart-axis'
+            }));
+        }
+
+        function drawYAxisTicks(svg, margin, plotWidth, minValue, maxValue, yScale) {
+            const tickCount = 5;
+            for (let index = 0; index <= tickCount; index++) {
+                const value = minValue + ((maxValue - minValue) * index / tickCount);
+                const y = yScale(value);
+                svg.appendChild(svgElement('line', {
+                    x1: margin.left,
+                    y1: y,
+                    x2: margin.left + plotWidth,
+                    y2: y,
+                    class: 'chart-grid'
+                }));
+                appendSvgText(svg, margin.left - 10, y + 4, formatCompactNumber(value), 'chart-axis-label', 'end');
+            }
+        }
+
+        function drawXAxisTicks(svg, margin, plotWidth, plotHeight, minValue, maxValue, xScale) {
+            const tickCount = 5;
+            for (let index = 0; index <= tickCount; index++) {
+                const value = minValue + ((maxValue - minValue) * index / tickCount);
+                const x = xScale(value);
+                svg.appendChild(svgElement('line', {
+                    x1: x,
+                    y1: margin.top,
+                    x2: x,
+                    y2: margin.top + plotHeight,
+                    class: 'chart-grid'
+                }));
+                appendSvgText(svg, x, margin.top + plotHeight + 22, formatCompactNumber(value), 'chart-axis-label', 'middle');
+            }
+        }
+
+        function formatCompactNumber(value) {
+            if (!Number.isFinite(value)) {
+                return '-';
+            }
+
+            return Number(value.toPrecision(4)).toLocaleString();
+        }
+
+        function truncateLabel(value) {
+            const text = String(value);
+            return text.length > 16 ? text.slice(0, 15) + '...' : text;
+        }
+
+        function sqlIdentifier(value) {
+            return '"' + String(value).replace(/"/g, '""') + '"';
+        }
+
+        function initializeTableViewState() {
+            tableViewState = {
+                columnOrder: currentColumns.slice(),
+                visibleColumns: currentColumns.slice(),
+                sortColumn: '',
+                sortDirection: 'asc'
+            };
+
+        }
+
+        function populateTableControls() {
+            const sortColumn = document.getElementById('table-sort-column');
+            const sortDirection = document.getElementById('table-sort-direction');
+
+            populateSelect(sortColumn, currentColumns, tableViewState.sortColumn, 'None');
+            if (sortDirection) {
+                sortDirection.value = tableViewState.sortDirection;
+            }
+            renderColumnPickerList();
+            updateColumnPickerSummary();
+        }
+
+        function renderColumnPickerList() {
+            const list = document.getElementById('column-picker-list');
+            if (!list) {
+                return;
+            }
+
+            list.innerHTML = '';
+            if (!tableViewState.columnOrder.length) {
+                const empty = document.createElement('div');
+                empty.className = 'column-picker-empty';
+                empty.textContent = 'No columns';
+                list.appendChild(empty);
+                return;
+            }
+
+            tableViewState.columnOrder.forEach((column) => {
+                const row = document.createElement('div');
+                row.className = 'column-picker-row';
+                row.tabIndex = 0;
+                row.setAttribute('role', 'option');
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = tableViewState.visibleColumns.includes(column);
+                checkbox.dataset.column = column;
+                checkbox.setAttribute('aria-label', 'Show ' + column);
+
+                const label = document.createElement('span');
+                label.className = 'column-picker-label';
+                label.textContent = column;
+
+                row.addEventListener('click', () => {
+                    checkbox.checked = !checkbox.checked;
+                    updateVisibleColumnsFromPicker();
+                });
+                row.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        checkbox.checked = !checkbox.checked;
+                        updateVisibleColumnsFromPicker();
+                    }
+                });
+                checkbox.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                });
+                checkbox.addEventListener('change', updateVisibleColumnsFromPicker);
+
+                row.appendChild(checkbox);
+                row.appendChild(label);
+                list.appendChild(row);
+            });
+        }
+
+        function updateColumnPickerSummary() {
+            const summary = document.getElementById('column-picker-summary');
+            if (!summary) {
+                return;
+            }
+
+            const visibleCount = getVisibleOrderedColumns().length;
+            summary.textContent = visibleCount + ' of ' + currentColumns.length + ' columns';
+        }
+
+        function updateVisibleColumnsFromPicker() {
+            const list = document.getElementById('column-picker-list');
+            tableViewState.visibleColumns = list
+                ? Array.from(list.querySelectorAll('input[type="checkbox"]'))
+                    .filter((checkbox) => checkbox.checked)
+                    .map((checkbox) => checkbox.dataset.column || '')
+                    .filter(Boolean)
+                : currentColumns.slice();
+
+            if (!tableViewState.visibleColumns.length) {
+                tableViewState.visibleColumns = tableViewState.columnOrder.slice();
+            }
+
+            populateTableControls();
+            applyTableView();
+        }
+
+        function getVisibleOrderedColumns() {
+            return tableViewState.columnOrder.filter((column) => tableViewState.visibleColumns.includes(column));
+        }
+
+        function getSortedRows() {
+            const rows = currentRows.slice();
+            const sortColumn = tableViewState.sortColumn;
+            if (!sortColumn) {
+                return rows;
+            }
+
+            const direction = tableViewState.sortDirection === 'desc' ? -1 : 1;
+            rows.sort((a, b) => compareValues(a[sortColumn], b[sortColumn]) * direction);
+            return rows;
+        }
+
+        function compareValues(a, b) {
+            if (a === b) {
+                return 0;
+            }
+
+            if (a === null || a === undefined) {
+                return 1;
+            }
+
+            if (b === null || b === undefined) {
+                return -1;
+            }
+
+            if (isNumericValue(a) && isNumericValue(b)) {
+                return toNumber(a) - toNumber(b);
+            }
+
+            const aDate = Date.parse(String(a));
+            const bDate = Date.parse(String(b));
+            if (Number.isFinite(aDate) && Number.isFinite(bDate)) {
+                return aDate - bDate;
+            }
+
+            return String(a).localeCompare(String(b));
+        }
+
+        function applyTableView() {
+            const visibleColumns = getVisibleOrderedColumns();
+            createTable(visibleColumns, getSortedRows());
+            document.getElementById('column-count').textContent = visibleColumns.length;
+        }
+
+        function updateTableViewFromControls() {
+            const sortColumn = document.getElementById('table-sort-column');
+            const sortDirection = document.getElementById('table-sort-direction');
+            const columnPickerList = document.getElementById('column-picker-list');
+
+            tableViewState.sortColumn = sortColumn ? sortColumn.value : '';
+            tableViewState.sortDirection = sortDirection && sortDirection.value === 'desc' ? 'desc' : 'asc';
+            tableViewState.visibleColumns = columnPickerList
+                ? Array.from(columnPickerList.querySelectorAll('input[type="checkbox"]'))
+                    .filter((checkbox) => checkbox.checked)
+                    .map((checkbox) => checkbox.dataset.column || '')
+                    .filter(Boolean)
+                : currentColumns.slice();
+
+            if (!tableViewState.visibleColumns.length) {
+                tableViewState.visibleColumns = tableViewState.columnOrder.slice();
+                populateTableControls();
+            }
+
+            updateColumnPickerSummary();
+            applyTableView();
+        }
+
+        function showAllColumns() {
+            tableViewState.visibleColumns = tableViewState.columnOrder.slice();
+            populateTableControls();
+            applyTableView();
+        }
+
+        function resetTableViewPreference() {
+            tableViewState = {
+                columnOrder: currentColumns.slice(),
+                visibleColumns: currentColumns.slice(),
+                sortColumn: '',
+                sortDirection: 'asc'
+            };
+
+            populateTableControls();
+            applyTableView();
+            setStatus('Table view reset', 'status-success');
+        }
+
+        function populateQuickAggregationControls() {
+            const groupColumn = document.getElementById('aggregation-group-column');
+            const valueColumn = document.getElementById('aggregation-value-column');
+            populateSelect(groupColumn, currentColumns, currentColumns[0] || '', 'None');
+            populateSelect(valueColumn, getNumericColumns(), getNumericColumns()[0] || '', 'None');
+            syncAggregationControls();
+        }
+
+        function syncAggregationControls() {
+            const aggregationFunction = document.getElementById('aggregation-function');
+            const valueColumn = document.getElementById('aggregation-value-column');
+            if (!aggregationFunction || !valueColumn) {
+                return;
+            }
+
+            valueColumn.disabled = aggregationFunction.value === 'count';
+        }
+
+        function runQuickAggregation() {
+            const groupColumn = document.getElementById('aggregation-group-column');
+            const valueColumn = document.getElementById('aggregation-value-column');
+            const aggregationFunction = document.getElementById('aggregation-function');
+            const aggregationLimit = document.getElementById('aggregation-limit');
+            const queryInput = document.getElementById('query-input');
+            const aggregate = aggregationFunction ? aggregationFunction.value : 'count';
+            const group = groupColumn ? groupColumn.value : '';
+            const metric = valueColumn ? valueColumn.value : '';
+            const limit = Math.min(1000, Math.max(1, Number(aggregationLimit ? aggregationLimit.value : 100) || 100));
+
+            if (aggregate !== 'count' && !metric) {
+                setStatus('Choose a numeric metric column', 'status-error');
+                return;
+            }
+
+            const metricExpression = aggregate === 'count'
+                ? 'COUNT(*) AS row_count'
+                : aggregate.toUpperCase() + '(' + sqlIdentifier(metric) + ') AS ' + sqlIdentifier(aggregate + '_' + metric);
+            const orderAlias = aggregate === 'count' ? 'row_count' : aggregate + '_' + metric;
+            const query = group
+                ? 'SELECT ' + sqlIdentifier(group) + ', ' + metricExpression + ' FROM parquet_data GROUP BY ' + sqlIdentifier(group) + ' ORDER BY ' + sqlIdentifier(orderAlias) + ' DESC LIMIT ' + limit
+                : 'SELECT ' + metricExpression + ' FROM parquet_data';
+
+            currentQuery = query;
+            if (queryInput) {
+                queryInput.value = query;
+            }
+            setLoading('Running aggregation...');
+            vscode.postMessage({ type: 'query', query });
+        }
+
+        function resetQuickAggregation() {
+            const aggregationFunction = document.getElementById('aggregation-function');
+            const aggregationLimit = document.getElementById('aggregation-limit');
+            const queryInput = document.getElementById('query-input');
+
+            populateQuickAggregationControls();
+            if (aggregationFunction) {
+                aggregationFunction.value = 'count';
+            }
+            if (aggregationLimit) {
+                aggregationLimit.value = '100';
+            }
+            syncAggregationControls();
+
+            currentQuery = DEFAULT_QUERY;
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
+            setLoading('Resetting aggregation...');
+            vscode.postMessage({ type: 'query', query: currentQuery });
+        }
+
+        function resetJoinState() {
+            currentJoinMetadata = null;
+            currentJoinResult = null;
+            document.getElementById('join-controls').classList.add('hidden');
+            document.getElementById('join-summary').classList.add('hidden');
+            document.getElementById('join-results').classList.add('hidden');
+            document.getElementById('join-error').classList.add('hidden');
+            document.getElementById('join-empty').textContent = 'Choose a Parquet or CSV file to join.';
+            document.getElementById('join-empty').classList.remove('hidden');
+            document.getElementById('join-table-header').innerHTML = '';
+            document.getElementById('join-table-body').innerHTML = '';
+        }
+
+        function handleJoinMetadata(result) {
+            if (!result || !result.success) {
+                resetJoinState();
+                document.getElementById('join-error').textContent = result && result.error ? result.error : 'Could not read join columns.';
+                document.getElementById('join-error').classList.remove('hidden');
+                setStatus(result && result.error ? result.error : 'Could not read join columns', 'status-error');
+                return;
+            }
+
+            currentJoinMetadata = result;
+            currentJoinResult = null;
+            document.getElementById('join-error').classList.add('hidden');
+            document.getElementById('join-controls').classList.remove('hidden');
+            document.getElementById('join-summary').classList.remove('hidden');
+            document.getElementById('join-results').classList.add('hidden');
+            document.getElementById('join-empty').textContent = 'Choose keys, then preview the join.';
+            document.getElementById('join-empty').classList.remove('hidden');
+            document.getElementById('join-selected-file').textContent = result.joinPath || 'Join file selected';
+            populateJoinColumnOptions(result);
+            setStatus('Join file loaded', 'status-success');
+        }
+
+        function populateJoinColumnOptions(metadata) {
+            const baseSelect = document.getElementById('join-base-column');
+            const joinSelect = document.getElementById('join-other-column');
+            const baseColumns = (metadata.baseColumns || []).map((column) => column.name);
+            const joinColumns = (metadata.joinColumns || []).map((column) => column.name);
+            populateSelect(baseSelect, baseColumns, baseColumns[0] || '', '');
+            populateSelect(joinSelect, joinColumns, joinColumns[0] || '', '');
+
+            const sameName = baseColumns.find((column) => joinColumns.includes(column));
+            if (sameName) {
+                baseSelect.value = sameName;
+                joinSelect.value = sameName;
+            }
+        }
+
+        function runJoinPreview() {
+            if (!currentJoinMetadata || !currentJoinMetadata.success) {
+                setStatus('Choose a join file first', 'status-error');
+                return;
+            }
+
+            const baseColumn = document.getElementById('join-base-column').value;
+            const joinColumn = document.getElementById('join-other-column').value;
+            const joinType = document.getElementById('join-type').value;
+            const limit = Math.min(1000, Math.max(1, Number(document.getElementById('join-limit').value) || 100));
+
+            if (!baseColumn || !joinColumn) {
+                setStatus('Choose join keys first', 'status-error');
+                return;
+            }
+
+            setActiveView('join');
+            setStatus('Previewing join...', 'status-loading');
+            vscode.postMessage({
+                type: 'runJoin',
+                options: { baseColumn, joinColumn, joinType, limit }
+            });
+        }
+
+        function handleJoinResult(result) {
+            if (!result || !result.success) {
+                document.getElementById('join-error').textContent = result && result.error ? result.error : 'Join failed.';
+                document.getElementById('join-error').classList.remove('hidden');
+                document.getElementById('join-results').classList.add('hidden');
+                setStatus(result && result.error ? result.error : 'Join failed', 'status-error');
+                return;
+            }
+
+            currentJoinResult = result;
+            currentJoinMetadata = result;
+            document.getElementById('join-error').classList.add('hidden');
+            document.getElementById('join-empty').classList.add('hidden');
+            document.getElementById('join-summary').classList.remove('hidden');
+            document.getElementById('join-results').classList.remove('hidden');
+            document.getElementById('join-selected-file').textContent = result.joinPath || 'Join file selected';
+            document.getElementById('join-row-count').textContent = formatCount(result.rowCount);
+            document.getElementById('join-total-rows').textContent = formatCount(result.totalRows);
+            document.getElementById('join-column-count').textContent = formatCount((result.columns || []).length);
+            createJoinTable(result.columns || [], result.data || []);
+            setStatus('Join preview loaded' + (result.resultLimited ? ' (limited)' : ''), 'status-success');
+        }
+
+        function createJoinTable(columns, rows) {
+            const header = document.getElementById('join-table-header');
+            const body = document.getElementById('join-table-body');
+            header.innerHTML = '';
+            body.innerHTML = '';
+
+            const headerRow = document.createElement('tr');
+            columns.forEach((column) => {
+                const cell = document.createElement('th');
+                cell.textContent = column;
+                cell.title = column;
+                headerRow.appendChild(cell);
+            });
+            header.appendChild(headerRow);
+
+            if (!rows.length) {
+                const row = document.createElement('tr');
+                const cell = document.createElement('td');
+                cell.colSpan = Math.max(columns.length, 1);
+                cell.className = 'empty-value';
+                cell.textContent = 'No joined rows matched.';
+                row.appendChild(cell);
+                body.appendChild(row);
+                return;
+            }
+
+            rows.forEach((rowData) => {
+                const row = document.createElement('tr');
+                columns.forEach((column) => {
+                    const cell = document.createElement('td');
+                    const value = rowData[column];
+                    cell.textContent = value === null || value === undefined ? 'NULL' : String(value);
+                    row.appendChild(cell);
+                });
+                body.appendChild(row);
+            });
+        }
+
+        function exportJoinPreview() {
+            if (!currentJoinResult || !currentJoinResult.success) {
+                setStatus('Preview a join before exporting', 'status-error');
+                return;
+            }
+
+            vscode.postMessage({
+                type: 'exportJoinPreview',
+                columns: currentJoinResult.columns || [],
+                rows: currentJoinResult.data || []
+            });
         }
 
         function setLoading(message) {
@@ -451,6 +2360,330 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             );
         }
 
+        function cloneRows(rows) {
+            return JSON.parse(JSON.stringify(rows || []));
+        }
+
+        function resetEditColumnNames() {
+            editColumnNames = currentColumns.slice();
+        }
+
+        function getRenamedColumnCount() {
+            return currentColumns.reduce((count, column, index) => {
+                return count + (editColumnNames[index] !== column ? 1 : 0);
+            }, 0);
+        }
+
+        function validateEditColumnNames() {
+            const normalizedNames = editColumnNames.map((column) => String(column || '').trim());
+            const emptyIndex = normalizedNames.findIndex((column) => !column);
+
+            if (emptyIndex >= 0) {
+                return {
+                    success: false,
+                    error: 'Column ' + (emptyIndex + 1) + ' needs a name before saving.'
+                };
+            }
+
+            const seen = new Set();
+            const duplicateName = normalizedNames.find((column) => {
+                const key = column.toLowerCase();
+                if (seen.has(key)) {
+                    return true;
+                }
+                seen.add(key);
+                return false;
+            });
+
+            if (duplicateName) {
+                return {
+                    success: false,
+                    error: 'Column names must be unique before saving. Duplicate: ' + duplicateName
+                };
+            }
+
+            return {
+                success: true,
+                columns: normalizedNames
+            };
+        }
+
+        function buildRenamedEditRows(outputColumns) {
+            return editRows.map((row) => {
+                const renamedRow = {};
+                currentColumns.forEach((sourceColumn, index) => {
+                    renamedRow[outputColumns[index]] = row[sourceColumn];
+                });
+                return renamedRow;
+            });
+        }
+
+        function formatEditableValue(value) {
+            if (value === null || value === undefined) {
+                return 'NULL';
+            }
+
+            if (typeof value === 'object') {
+                return JSON.stringify(value);
+            }
+
+            return String(value);
+        }
+
+        function parseEditedValue(rawValue, originalValue) {
+            const text = String(rawValue);
+            const trimmed = text.trim();
+
+            if (trimmed.toLowerCase() === 'null') {
+                return null;
+            }
+
+            if (typeof originalValue === 'number') {
+                const numericValue = Number(trimmed);
+                return Number.isNaN(numericValue) ? text : numericValue;
+            }
+
+            if (typeof originalValue === 'boolean') {
+                if (trimmed.toLowerCase() === 'true') {
+                    return true;
+                }
+
+                if (trimmed.toLowerCase() === 'false') {
+                    return false;
+                }
+
+                return text;
+            }
+
+            if (typeof originalValue === 'object' && originalValue !== null) {
+                try {
+                    return JSON.parse(trimmed);
+                } catch {
+                    return text;
+                }
+            }
+
+            return text;
+        }
+
+        function valuesMatch(left, right) {
+            return JSON.stringify(left) === JSON.stringify(right);
+        }
+
+        function countEditedCells() {
+            let changes = getRenamedColumnCount() + Math.abs(editRows.length - currentRows.length) * Math.max(currentColumns.length, 1);
+            const rowCount = Math.min(editRows.length, currentRows.length);
+
+            for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+                currentColumns.forEach((column) => {
+                    const originalValue = currentRows[rowIndex] ? currentRows[rowIndex][column] : undefined;
+                    const editedValue = editRows[rowIndex] ? editRows[rowIndex][column] : undefined;
+                    if (!valuesMatch(originalValue, editedValue)) {
+                        changes++;
+                    }
+                });
+            }
+
+            return changes;
+        }
+
+        function updateEditSummary() {
+            const rowCount = document.getElementById('edit-row-count');
+            const columnCount = document.getElementById('edit-column-count');
+            const changeCount = document.getElementById('edit-change-count');
+            const renamedColumnCount = document.getElementById('edit-renamed-column-count');
+
+            if (rowCount) {
+                rowCount.textContent = formatCount(editRows.length);
+            }
+
+            if (columnCount) {
+                columnCount.textContent = formatCount(currentColumns.length);
+            }
+
+            if (changeCount) {
+                changeCount.textContent = formatCount(countEditedCells());
+            }
+
+            if (renamedColumnCount) {
+                renamedColumnCount.textContent = formatCount(getRenamedColumnCount());
+            }
+        }
+
+        function renderEditPanel() {
+            const tableHeader = document.getElementById('edit-table-header');
+            const tableBody = document.getElementById('edit-table-body');
+            const resultMessage = document.getElementById('edit-result-message');
+
+            tableHeader.innerHTML = '';
+            tableBody.innerHTML = '';
+            resultMessage.classList.add('hidden');
+            resultMessage.textContent = '';
+
+            const headerRow = document.createElement('tr');
+            const actionHeader = document.createElement('th');
+            actionHeader.textContent = '';
+            actionHeader.className = 'edit-action-column';
+            headerRow.appendChild(actionHeader);
+
+            currentColumns.forEach((column, columnIndex) => {
+                const th = document.createElement('th');
+                th.className = 'edit-column-name-cell';
+                th.title = 'Original column: ' + column;
+
+                const label = document.createElement('span');
+                label.className = 'edit-column-original-name';
+                label.textContent = column;
+
+                const input = document.createElement('input');
+                input.className = 'edit-column-name-input';
+                input.dataset.columnIndex = String(columnIndex);
+                input.value = editColumnNames[columnIndex] || column;
+                input.title = 'Saved column name';
+
+                th.appendChild(label);
+                th.appendChild(input);
+                headerRow.appendChild(th);
+            });
+            tableHeader.appendChild(headerRow);
+
+            if (!currentColumns.length) {
+                const emptyRow = document.createElement('tr');
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = 1;
+                emptyCell.className = 'empty-value';
+                emptyCell.textContent = 'No editable data loaded';
+                emptyRow.appendChild(emptyCell);
+                tableBody.appendChild(emptyRow);
+                updateEditSummary();
+                return;
+            }
+
+            if (!editRows.length) {
+                const emptyRow = document.createElement('tr');
+                const emptyCell = document.createElement('td');
+                emptyCell.colSpan = currentColumns.length + 1;
+                emptyCell.className = 'empty-value';
+                emptyCell.textContent = 'No rows. Add a row to create data.';
+                emptyRow.appendChild(emptyCell);
+                tableBody.appendChild(emptyRow);
+                updateEditSummary();
+                return;
+            }
+
+            editRows.forEach((row, rowIndex) => {
+                const tr = document.createElement('tr');
+                const actionCell = document.createElement('td');
+                actionCell.className = 'edit-action-column';
+
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.className = 'btn btn-danger edit-delete-row-btn';
+                deleteButton.textContent = 'Delete';
+                deleteButton.dataset.rowIndex = String(rowIndex);
+                actionCell.appendChild(deleteButton);
+                tr.appendChild(actionCell);
+
+                currentColumns.forEach((column) => {
+                    const td = document.createElement('td');
+                    td.className = 'edit-cell';
+
+                    const input = document.createElement('input');
+                    input.className = 'edit-cell-input';
+                    input.dataset.rowIndex = String(rowIndex);
+                    input.dataset.column = column;
+                    input.value = formatEditableValue(row[column]);
+                    input.title = column;
+                    td.appendChild(input);
+                    tr.appendChild(td);
+                });
+
+                tableBody.appendChild(tr);
+            });
+
+            updateEditSummary();
+        }
+
+        function resetEditRows() {
+            editRows = cloneRows(currentRows);
+            renderEditPanel();
+            setStatus('Edits reset', 'status-success');
+        }
+
+        function addEditRow() {
+            if (!currentColumns.length) {
+                setStatus('Load data before adding rows', 'status-error');
+                return;
+            }
+
+            const row = {};
+            currentColumns.forEach((column) => {
+                row[column] = null;
+            });
+            editRows.push(row);
+            renderEditPanel();
+        }
+
+        function deleteEditRow(rowIndex) {
+            editRows.splice(rowIndex, 1);
+            renderEditPanel();
+        }
+
+        function saveEditedParquet() {
+            if (!currentColumns.length) {
+                setStatus('No editable data loaded', 'status-error');
+                return;
+            }
+
+            const columnValidation = validateEditColumnNames();
+            if (!columnValidation.success) {
+                setStatus(columnValidation.error, 'status-error');
+                const message = document.getElementById('edit-result-message');
+                if (message) {
+                    message.textContent = columnValidation.error;
+                    message.className = 'edit-message edit-message-error';
+                    message.classList.remove('hidden');
+                }
+                return;
+            }
+
+            setStatus('Saving new Parquet...', 'status-loading');
+            vscode.postMessage({
+                type: 'saveEditedParquet',
+                columns: columnValidation.columns,
+                rows: buildRenamedEditRows(columnValidation.columns)
+            });
+        }
+
+        function handleEditSaveResult(result) {
+            const message = document.getElementById('edit-result-message');
+
+            if (!result || !result.success) {
+                if (result && result.error === 'Save cancelled.') {
+                    setStatus('Save cancelled', 'status-success');
+                } else {
+                    setStatus(result && result.error ? result.error : 'Save failed', 'status-error');
+                }
+
+                if (message) {
+                    message.textContent = result && result.error ? result.error : 'Save failed';
+                    message.className = 'edit-message edit-message-error';
+                    message.classList.remove('hidden');
+                }
+                return;
+            }
+
+            const outputPath = result.outputPath || 'the new Parquet file';
+            const successText = 'Saved ' + formatCount(result.rowsExported) + ' rows as a new Parquet file. To view the changes, open ' + outputPath + '.';
+            setStatus('Saved new Parquet', 'status-success');
+
+            if (message) {
+                message.textContent = successText;
+                message.className = 'edit-message edit-message-success';
+                message.classList.remove('hidden');
+            }
+        }
+
         function handleCompareResult(result) {
             if (result && result.error === 'Compare cancelled.') {
                 resetCompareState();
@@ -467,8 +2700,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
 
             setActiveView('compare');
+            const resultLabel = result.diffMode === 'smart' ? 'Smart Diff found ' : 'Found ';
             setStatus(
-                'Found ' + formatCount(result.mismatchCount) + ' mismatched rows',
+                resultLabel + formatCount(result.mismatchCount) + ' mismatched rows',
                 result.mismatchCount ? 'status-error' : 'status-success'
             );
         }
@@ -478,6 +2712,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             currentCompareMetadata = null;
 
             document.getElementById('compare-error').classList.add('hidden');
+            document.getElementById('compare-smart-summary').classList.add('hidden');
             document.getElementById('compare-summary').classList.add('hidden');
             document.getElementById('compare-results').classList.add('hidden');
             document.getElementById('compare-order-panel').classList.add('hidden');
@@ -503,6 +2738,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
 
             document.getElementById('compare-error').classList.add('hidden');
+            document.getElementById('compare-smart-summary').classList.add('hidden');
             document.getElementById('compare-summary').classList.add('hidden');
             document.getElementById('compare-results').classList.add('hidden');
             document.getElementById('compare-empty').textContent = 'Select an order column, then run compare.';
@@ -562,9 +2798,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         function populateCompareOrderOptions(metadata) {
             const baseSelect = document.getElementById('compare-base-order-select');
             const compareSelect = document.getElementById('compare-other-order-select');
-            const customCompareToggle = document.getElementById('custom-compare-toggle');
             const baseColumn = (metadata.baseColumns || []).find((column) => column.name === baseSelect.value);
             compareSelect.innerHTML = '';
+            compareSelect.disabled = false;
 
             const emptyOption = document.createElement('option');
             emptyOption.value = '';
@@ -587,8 +2823,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (sameNameOption) {
                 compareSelect.value = baseColumn.name;
             }
-
-            compareSelect.disabled = !customCompareToggle.checked;
         }
 
         function renderCompareColumnList(elementId, columns) {
@@ -711,13 +2945,53 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             };
         }
 
+        function renderSmartDiffSummary(result) {
+            const summaryElement = document.getElementById('compare-smart-summary');
+            const skippedElement = document.getElementById('smart-skipped-columns');
+            const smartDiff = result && result.smartDiff;
+
+            if (!summaryElement || !smartDiff) {
+                if (summaryElement) {
+                    summaryElement.classList.add('hidden');
+                }
+                return;
+            }
+
+            const keyMapping = smartDiff.keyMapping || result.orderMapping || {};
+            const keyText = keyMapping.baseColumn && keyMapping.compareColumn
+                ? 'Key: ' + keyMapping.baseColumn + (keyMapping.baseColumn === keyMapping.compareColumn ? '' : ' -> ' + keyMapping.compareColumn)
+                : 'Key: inferred';
+
+            document.getElementById('smart-diff-key').textContent = keyText;
+            document.getElementById('smart-mapped-columns').textContent = formatCount(smartDiff.mappedColumns);
+            document.getElementById('smart-fuzzy-columns').textContent = formatCount(smartDiff.fuzzyMatches);
+            document.getElementById('smart-inserted-rows').textContent = formatCount(smartDiff.insertedRows);
+            document.getElementById('smart-deleted-rows').textContent = formatCount(smartDiff.deletedRows);
+            document.getElementById('smart-changed-rows').textContent = formatCount(smartDiff.changedRows);
+            document.getElementById('smart-unchanged-rows').textContent = formatCount(smartDiff.unchangedRows);
+
+            const skippedBase = smartDiff.skippedBaseColumns || [];
+            const skippedCompare = smartDiff.skippedCompareColumns || [];
+            if (skippedBase.length || skippedCompare.length) {
+                skippedElement.textContent = 'Skipped unmapped columns: current file ' + formatCount(skippedBase.length) + ', compare file ' + formatCount(skippedCompare.length) + '.';
+                skippedElement.classList.remove('hidden');
+            } else {
+                skippedElement.textContent = '';
+                skippedElement.classList.add('hidden');
+            }
+
+            summaryElement.classList.remove('hidden');
+        }
+
         function renderCompareResult(result) {
             const errorElement = document.getElementById('compare-error');
+            const smartSummaryElement = document.getElementById('compare-smart-summary');
             const summaryElement = document.getElementById('compare-summary');
             const emptyElement = document.getElementById('compare-empty');
             const resultsElement = document.getElementById('compare-results');
 
             errorElement.classList.add('hidden');
+            smartSummaryElement.classList.add('hidden');
             summaryElement.classList.add('hidden');
             resultsElement.classList.add('hidden');
             emptyElement.classList.remove('hidden');
@@ -740,6 +3014,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             document.getElementById('compare-other-rows').textContent = formatCount(result.totalRowsCompare);
             document.getElementById('compare-rows-checked').textContent = formatCount(result.rowsCompared);
             document.getElementById('compare-mismatch-count').textContent = formatCount(result.mismatchCount);
+            renderSmartDiffSummary(result);
             summaryElement.classList.remove('hidden');
             emptyElement.classList.add('hidden');
             resultsElement.classList.remove('hidden');
@@ -752,8 +3027,50 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             createCompareTables(result.columns || [], result.mismatches || []);
         }
 
+        function requestDoctorChecks(forceRefresh) {
+            if (doctorRequestInFlight) {
+                return;
+            }
+
+            if (!forceRefresh && currentDoctor) {
+                return;
+            }
+
+            doctorRequestInFlight = true;
+            setActiveView('doctor');
+            setStatus('Running Parquet Doctor checks...', 'status-loading');
+            vscode.postMessage({ type: 'runDoctor' });
+        }
+
+        function renderDoctorNotLoadedState(message) {
+            const placeholder = message || 'Run Doctor checks to load integrity, schema, statistics, and data quality diagnostics.';
+            document.getElementById('doctor-health-score').textContent = '0';
+            document.getElementById('doctor-error-count').textContent = '0';
+            document.getElementById('doctor-warning-count').textContent = '0';
+            document.getElementById('doctor-pass-count').textContent = '0';
+
+            [
+                'doctor-integrity',
+                'doctor-health-report',
+                'doctor-schema-validation',
+                'doctor-column-statistics',
+                'doctor-data-quality',
+                'doctor-decimal-timestamp',
+                'doctor-compression-encoding',
+                'doctor-row-groups'
+            ].forEach((containerId) => {
+                const container = document.getElementById(containerId);
+                container.innerHTML = '';
+                container.appendChild(createDoctorEmpty(placeholder));
+            });
+
+            renderDoctorSchemaDrift(currentDoctorSchemaDrift);
+            renderDoctorDatasetAnalysis(currentDoctorDataset);
+        }
+
         function renderDoctorPanel(doctor) {
             if (!doctor) {
+                renderDoctorNotLoadedState();
                 return;
             }
 
@@ -991,7 +3308,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             const table = document.createElement('table');
             const header = document.createElement('thead');
-            header.innerHTML = '<tr><th>Row Group</th><th>Rows</th><th>Compressed</th><th>Uncompressed</th><th>Compression Ratio</th><th>Column Chunks</th><th>Warnings</th></tr>';
+            header.innerHTML = '<tr><th>Row Group</th><th>Rows</th><th>Compression</th><th>Compressed</th><th>Uncompressed</th><th>Compression Ratio</th><th>Column Chunks</th><th>Warnings</th></tr>';
             const body = document.createElement('tbody');
             rowGroups.forEach((rowGroup) => {
                 const row = document.createElement('tr');
@@ -1001,6 +3318,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 [
                     rowGroup.id,
                     formatCount(rowGroup.rowCount),
+                    valueOrDash(rowGroup.compression),
                     formatBytes(rowGroup.compressedSize || 0),
                     formatBytes(rowGroup.uncompressedSize || 0),
                     valueOrDash(rowGroup.compressionRatio),
@@ -1150,8 +3468,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function createCompareTables(columns, mismatches) {
-            createCompareHeader(document.getElementById('compare-base-header'), columns);
-            createCompareHeader(document.getElementById('compare-other-header'), columns);
+            const showKey = mismatches.some((mismatch) => Object.prototype.hasOwnProperty.call(mismatch, 'keyValue'));
+            createCompareHeader(document.getElementById('compare-base-header'), columns, showKey);
+            createCompareHeader(document.getElementById('compare-other-header'), columns, showKey);
 
             const baseBody = document.getElementById('compare-base-body');
             const otherBody = document.getElementById('compare-other-body');
@@ -1159,23 +3478,29 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             otherBody.innerHTML = '';
 
             if (!mismatches.length) {
-                appendCompareEmptyRow(baseBody, columns.length + 1, 'No mismatches found');
-                appendCompareEmptyRow(otherBody, columns.length + 1, 'No mismatches found');
+                appendCompareEmptyRow(baseBody, columns.length + (showKey ? 2 : 1), 'No mismatches found');
+                appendCompareEmptyRow(otherBody, columns.length + (showKey ? 2 : 1), 'No mismatches found');
                 return;
             }
 
             mismatches.forEach((mismatch) => {
-                baseBody.appendChild(createCompareRow(columns, mismatch, mismatch.base, 'base'));
-                otherBody.appendChild(createCompareRow(columns, mismatch, mismatch.compare, 'compare'));
+                baseBody.appendChild(createCompareRow(columns, mismatch, mismatch.base, 'base', showKey));
+                otherBody.appendChild(createCompareRow(columns, mismatch, mismatch.compare, 'compare', showKey));
             });
         }
 
-        function createCompareHeader(headerElement, columns) {
+        function createCompareHeader(headerElement, columns, showKey) {
             headerElement.innerHTML = '';
             const row = document.createElement('tr');
             const rowIndexHeader = document.createElement('th');
             rowIndexHeader.textContent = '#';
             row.appendChild(rowIndexHeader);
+
+            if (showKey) {
+                const keyHeader = document.createElement('th');
+                keyHeader.textContent = 'Key';
+                row.appendChild(keyHeader);
+            }
 
             columns.forEach((column) => {
                 const th = document.createElement('th');
@@ -1187,7 +3512,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             headerElement.appendChild(row);
         }
 
-        function createCompareRow(columns, mismatch, rowData, side) {
+        function createCompareRow(columns, mismatch, rowData, side, showKey) {
             const row = document.createElement('tr');
             row.className = 'compare-row-mismatch';
 
@@ -1200,6 +3525,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             rowIndexCell.textContent = String(mismatch.rowIndex + 1);
             rowIndexCell.className = 'compare-row-index';
             row.appendChild(rowIndexCell);
+
+            if (showKey) {
+                const keyCell = document.createElement('td');
+                keyCell.textContent = mismatch.keyValue === null || mismatch.keyValue === undefined ? 'NULL' : String(mismatch.keyValue);
+                keyCell.title = keyCell.textContent;
+                keyCell.className = 'compare-row-index';
+                row.appendChild(keyCell);
+            }
 
             columns.forEach((column) => {
                 const cell = document.createElement('td');
@@ -1246,7 +3579,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             if (!data.success) {
                 if (data.doctor) {
-                    renderDoctorPanel(data.doctor);
+                    currentDoctor = data.doctor;
+                    renderDoctorPanel(currentDoctor);
+                } else if (!currentDoctor) {
+                    renderDoctorPanel(null);
                 }
                 errorText.textContent = data.error || 'Unknown error occurred';
                 errorContainer.classList.remove('hidden');
@@ -1256,7 +3592,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             
             // Update summary information
-            document.getElementById('total-rows').textContent = formatCount(data.totalRows);
+            document.getElementById('total-rows').textContent = typeof data.totalRows === 'number'
+                ? formatCount(data.totalRows)
+                : '-';
             document.getElementById('showing-rows').textContent = formatCount(data.rowCount);
             document.getElementById('column-count').textContent = data.columns ? data.columns.length : 0;
             if (data.query) {
@@ -1277,12 +3615,32 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
 
             if (data.doctor) {
-                renderDoctorPanel(data.doctor);
+                currentDoctor = data.doctor;
+                renderDoctorPanel(currentDoctor);
+            } else if (!currentDoctor) {
+                renderDoctorPanel(null);
             }
-            
+
+            currentColumns = data.columns || [];
+            currentRows = cloneRows(data.data || []);
+            currentTotalRows = typeof data.totalRows === 'number'
+                ? data.totalRows
+                : currentRows.length;
+            currentResultLimited = Boolean(data.resultLimited);
+            editRows = cloneRows(currentRows);
+            resetEditColumnNames();
+            renderEditPanel();
+            initializeTableViewState();
+            populateTableControls();
+            populateQuickAggregationControls();
+            renderEdaPanel();
+            refreshWritePreview();
+            populateVisualizerControls();
+            renderVisualizer();
+             
             // Create table
             if (data.columns) {
-                createTable(data.columns, data.data || []);
+                applyTableView();
                 dataContainer.classList.remove('hidden');
                 statusElement.textContent = 'Loaded ' + formatCount(data.rowCount) + ' rows';
                 if (data.resultLimited) {
@@ -1488,7 +3846,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             // Clear existing content
             tableHeader.innerHTML = '';
             tableBody.innerHTML = '';
-            console.log('Cleared existing table content');
             
             if (!columns || !data) {
                 return;
@@ -1497,7 +3854,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             // Create header row
             const headerRow = document.createElement('tr');
             
-            columns.forEach(column => {
+            columns.forEach((column) => {
                 const th = document.createElement('th');
                 th.textContent = column;
                 th.title = column;
@@ -1519,7 +3876,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             // Create data rows
             data.forEach((row, rowIndex) => {
                 const tr = document.createElement('tr');
-                columns.forEach(column => {
+                columns.forEach((column) => {
                     const td = document.createElement('td');
                     const value = row[column];
                     
@@ -1547,26 +3904,94 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         document.addEventListener('DOMContentLoaded', () => {
             
             const refreshBtn = document.getElementById('refresh-btn');
+            const exploreTab = document.getElementById('explore-tab');
+            const transformTab = document.getElementById('transform-tab');
+            const combineTab = document.getElementById('combine-tab');
+            const qualityTab = document.getElementById('quality-tab');
             const dataTab = document.getElementById('data-tab');
+            const edaTab = document.getElementById('eda-tab');
+            const writeTab = document.getElementById('write-tab');
+            const visualizerTab = document.getElementById('visualizer-tab');
+            const editTab = document.getElementById('edit-tab');
             const doctorTab = document.getElementById('doctor-tab');
             const schemaTab = document.getElementById('schema-tab');
             const compareTab = document.getElementById('compare-tab');
+            const joinTab = document.getElementById('join-tab');
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
+            const runAggregationBtn = document.getElementById('run-aggregation-btn');
+            const resetAggregationBtn = document.getElementById('reset-aggregation-btn');
+            const aggregationFunction = document.getElementById('aggregation-function');
             const exportCsvBtn = document.getElementById('export-csv-btn');
             const exportJsonBtn = document.getElementById('export-json-btn');
             const exportSqliteBtn = document.getElementById('export-sqlite-btn');
+            const tableSortColumn = document.getElementById('table-sort-column');
+            const tableSortDirection = document.getElementById('table-sort-direction');
+            const columnPickerToggle = document.getElementById('column-picker-toggle');
+            const columnPickerMenu = document.getElementById('column-picker-menu');
+            const showAllColumnsBtn = document.getElementById('show-all-columns-btn');
+            const resetTableViewBtn = document.getElementById('reset-table-view-btn');
+            const writeSource = document.getElementById('write-source');
+            const writeCompression = document.getElementById('write-compression');
+            const writeRowGroupSize = document.getElementById('write-row-group-size');
+            const writeJsonInput = document.getElementById('write-json-input');
+            const writePreviewBtn = document.getElementById('write-preview-btn');
+            const writeCreateBtn = document.getElementById('write-create-btn');
+            const addEditRowBtn = document.getElementById('add-edit-row-btn');
+            const resetEditsBtn = document.getElementById('reset-edits-btn');
+            const resetColumnNamesBtn = document.getElementById('reset-column-names-btn');
+            const saveEditsBtn = document.getElementById('save-edits-btn');
+            const editTableHeader = document.getElementById('edit-table-header');
+            const editTableBody = document.getElementById('edit-table-body');
+            const doctorRunBtn = document.getElementById('doctor-run-btn');
             const doctorSchemaDriftBtn = document.getElementById('doctor-schema-drift-btn');
             const doctorDatasetScanBtn = document.getElementById('doctor-dataset-scan-btn');
             const selectCompareFileBtn = document.getElementById('select-compare-file-btn');
+            const runSmartDiffBtn = document.getElementById('run-smart-diff-btn');
             const runStrictCompareBtn = document.getElementById('run-strict-compare-btn');
             const runCustomCompareBtn = document.getElementById('run-custom-compare-btn');
             const customCompareToggle = document.getElementById('custom-compare-toggle');
+            const selectJoinFileBtn = document.getElementById('select-join-file-btn');
+            const runJoinBtn = document.getElementById('run-join-btn');
+            const exportJoinPreviewBtn = document.getElementById('export-join-preview-btn');
+            const joinBaseColumn = document.getElementById('join-base-column');
+            const joinOtherColumn = document.getElementById('join-other-column');
+            const joinType = document.getElementById('join-type');
+            const joinLimit = document.getElementById('join-limit');
             const queryInput = document.getElementById('query-input');
             const schemaSearchInput = document.getElementById('schema-search-input');
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
             const generateSchemaDocsBtn = document.getElementById('generate-schema-docs-btn');
             const copySchemaDocsBtn = document.getElementById('copy-schema-docs-btn');
+            const visualizerChartType = document.getElementById('visualizer-chart-type');
+            const visualizerXColumn = document.getElementById('visualizer-x-column');
+            const visualizerYColumn = document.getElementById('visualizer-y-column');
+            const visualizerAggregation = document.getElementById('visualizer-aggregation');
+            const visualizerLimit = document.getElementById('visualizer-limit');
+
+            if (exploreTab) {
+                exploreTab.addEventListener('click', () => {
+                    setActiveView('data');
+                });
+            }
+
+            if (transformTab) {
+                transformTab.addEventListener('click', () => {
+                    setActiveView('edit');
+                });
+            }
+
+            if (combineTab) {
+                combineTab.addEventListener('click', () => {
+                    setActiveView('compare');
+                });
+            }
+
+            if (qualityTab) {
+                qualityTab.addEventListener('click', () => {
+                    setActiveView('doctor');
+                });
+            }
 
             if (dataTab) {
                 dataTab.addEventListener('click', () => {
@@ -1574,9 +3999,39 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (edaTab) {
+                edaTab.addEventListener('click', () => {
+                    setActiveView('eda');
+                });
+            }
+
+            if (writeTab) {
+                writeTab.addEventListener('click', () => {
+                    setActiveView('write');
+                });
+            }
+
+            if (visualizerTab) {
+                visualizerTab.addEventListener('click', () => {
+                    setActiveView('visualizer');
+                });
+            }
+
+            if (editTab) {
+                editTab.addEventListener('click', () => {
+                    setActiveView('edit');
+                });
+            }
+
             if (doctorTab) {
                 doctorTab.addEventListener('click', () => {
                     setActiveView('doctor');
+                });
+            }
+
+            if (doctorRunBtn) {
+                doctorRunBtn.addEventListener('click', () => {
+                    requestDoctorChecks(true);
                 });
             }
 
@@ -1591,6 +4046,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     setActiveView('compare');
                 });
             }
+
+            if (joinTab) {
+                joinTab.addEventListener('click', () => {
+                    setActiveView('join');
+                });
+            }
             
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
@@ -1598,8 +4059,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     setLoading('Refreshing...');
                     vscode.postMessage({ type: 'refresh', query: currentQuery });
                 });
-            } else {
-                console.log('Refresh button not found!');
             }
 
             if (runQueryBtn) {
@@ -1632,6 +4091,74 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (runAggregationBtn) {
+                runAggregationBtn.addEventListener('click', runQuickAggregation);
+            }
+
+            if (resetAggregationBtn) {
+                resetAggregationBtn.addEventListener('click', resetQuickAggregation);
+            }
+
+            if (aggregationFunction) {
+                aggregationFunction.addEventListener('change', syncAggregationControls);
+            }
+
+            [tableSortColumn, tableSortDirection].forEach((control) => {
+                if (control) {
+                    control.addEventListener('change', updateTableViewFromControls);
+                }
+            });
+
+            if (columnPickerToggle && columnPickerMenu) {
+                columnPickerToggle.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    columnPickerMenu.classList.toggle('hidden');
+                });
+                columnPickerMenu.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                });
+                document.addEventListener('click', () => {
+                    columnPickerMenu.classList.add('hidden');
+                });
+            }
+
+            if (showAllColumnsBtn) {
+                showAllColumnsBtn.addEventListener('click', showAllColumns);
+            }
+
+            if (resetTableViewBtn) {
+                resetTableViewBtn.addEventListener('click', resetTableViewPreference);
+            }
+
+            if (writeSource) {
+                writeSource.addEventListener('change', refreshWritePreview);
+            }
+
+            if (writeCompression) {
+                writeCompression.addEventListener('change', updateWriteSummary);
+            }
+
+            if (writeRowGroupSize) {
+                writeRowGroupSize.addEventListener('input', updateWriteSummary);
+            }
+
+            if (writeJsonInput) {
+                writeJsonInput.addEventListener('input', () => {
+                    writeRows = [];
+                    writeSchema = [];
+                    renderWriteSchema();
+                    updateWriteSummary();
+                });
+            }
+
+            if (writePreviewBtn) {
+                writePreviewBtn.addEventListener('click', refreshWritePreview);
+            }
+
+            if (writeCreateBtn) {
+                writeCreateBtn.addEventListener('click', createParquetFromWrite);
+            }
+
             if (exportCsvBtn) {
                 exportCsvBtn.addEventListener('click', () => {
                     exportCurrentQuery('csv');
@@ -1647,6 +4174,80 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (exportSqliteBtn) {
                 exportSqliteBtn.addEventListener('click', () => {
                     exportCurrentQuery('sqlite');
+                });
+            }
+
+            if (addEditRowBtn) {
+                addEditRowBtn.addEventListener('click', () => {
+                    addEditRow();
+                });
+            }
+
+            if (resetEditsBtn) {
+                resetEditsBtn.addEventListener('click', () => {
+                    resetEditRows();
+                });
+            }
+
+            if (resetColumnNamesBtn) {
+                resetColumnNamesBtn.addEventListener('click', () => {
+                    resetEditColumnNames();
+                    renderEditPanel();
+                    setStatus('Column names reset', 'status-success');
+                });
+            }
+
+            if (saveEditsBtn) {
+                saveEditsBtn.addEventListener('click', () => {
+                    saveEditedParquet();
+                });
+            }
+
+            if (editTableHeader) {
+                editTableHeader.addEventListener('input', (event) => {
+                    const target = event.target;
+                    if (!target || !target.classList || !target.classList.contains('edit-column-name-input')) {
+                        return;
+                    }
+
+                    const columnIndex = Number(target.dataset.columnIndex);
+                    if (!Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex >= currentColumns.length) {
+                        return;
+                    }
+
+                    editColumnNames[columnIndex] = target.value;
+                    updateEditSummary();
+                });
+            }
+
+            if (editTableBody) {
+                editTableBody.addEventListener('input', (event) => {
+                    const target = event.target;
+                    if (!target || !target.classList || !target.classList.contains('edit-cell-input')) {
+                        return;
+                    }
+
+                    const rowIndex = Number(target.dataset.rowIndex);
+                    const column = target.dataset.column;
+                    if (!Number.isInteger(rowIndex) || !column || !editRows[rowIndex]) {
+                        return;
+                    }
+
+                    const originalValue = currentRows[rowIndex] ? currentRows[rowIndex][column] : null;
+                    editRows[rowIndex][column] = parseEditedValue(target.value, originalValue);
+                    updateEditSummary();
+                });
+
+                editTableBody.addEventListener('click', (event) => {
+                    const target = event.target;
+                    if (!target || !target.classList || !target.classList.contains('edit-delete-row-btn')) {
+                        return;
+                    }
+
+                    const rowIndex = Number(target.dataset.rowIndex);
+                    if (Number.isInteger(rowIndex)) {
+                        deleteEditRow(rowIndex);
+                    }
                 });
             }
 
@@ -1676,6 +4277,45 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     });
                 });
             }
+
+            if (runSmartDiffBtn) {
+                runSmartDiffBtn.addEventListener('click', () => {
+                    if (!currentCompareMetadata || !currentCompareMetadata.success) {
+                        setStatus('Choose a compare file before running Smart Diff', 'status-error');
+                        return;
+                    }
+
+                    setActiveView('compare');
+                    setStatus('Running Smart Parquet Diff...', 'status-loading');
+                    vscode.postMessage({ type: 'runSmartDiff' });
+                });
+            }
+
+            if (selectJoinFileBtn) {
+                selectJoinFileBtn.addEventListener('click', () => {
+                    setActiveView('join');
+                    setStatus('Choosing join file...', 'status-loading');
+                    vscode.postMessage({ type: 'selectJoinFile' });
+                });
+            }
+
+            if (runJoinBtn) {
+                runJoinBtn.addEventListener('click', runJoinPreview);
+            }
+
+            if (exportJoinPreviewBtn) {
+                exportJoinPreviewBtn.addEventListener('click', exportJoinPreview);
+            }
+
+            [joinBaseColumn, joinOtherColumn, joinType, joinLimit].forEach((control) => {
+                if (control) {
+                    control.addEventListener('change', () => {
+                        if (currentJoinMetadata && currentJoinMetadata.success) {
+                            runJoinPreview();
+                        }
+                    });
+                }
+            });
 
             if (runStrictCompareBtn) {
                 runStrictCompareBtn.addEventListener('click', () => {
@@ -1769,6 +4409,16 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     }
                 });
             }
+
+            [visualizerChartType, visualizerXColumn, visualizerYColumn, visualizerAggregation, visualizerLimit].forEach((control) => {
+                if (control) {
+                    control.addEventListener('change', renderVisualizer);
+                }
+            });
+
+            if (visualizerLimit) {
+                visualizerLimit.addEventListener('input', renderVisualizer);
+            }
         });
 
         // Handle messages from extension
@@ -1781,11 +4431,32 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 case 'exportResult':
                     handleExportResult(message.result);
                     break;
+                case 'editSaveResult':
+                    handleEditSaveResult(message.result);
+                    break;
+                case 'writeResult':
+                    handleWriteResult(message.result);
+                    break;
                 case 'compareResult':
                     handleCompareResult(message.result);
                     break;
                 case 'compareMetadata':
                     handleCompareMetadata(message.result);
+                    break;
+                case 'joinMetadata':
+                    handleJoinMetadata(message.result);
+                    break;
+                case 'joinResult':
+                    handleJoinResult(message.result);
+                    break;
+                case 'joinPreviewExportResult':
+                    setStatus(message.result && message.result.success ? 'Join preview exported' : (message.result && message.result.error) || 'Join preview export failed', message.result && message.result.success ? 'status-success' : 'status-error');
+                    break;
+                case 'doctorResult':
+                    doctorRequestInFlight = false;
+                    currentDoctor = message.result && message.result.doctor ? message.result.doctor : null;
+                    renderDoctorPanel(currentDoctor);
+                    setStatus(message.result && message.result.success ? 'Doctor checks complete' : (message.result && message.result.error) || 'Doctor checks failed', message.result && message.result.success ? 'status-success' : 'status-error');
                     break;
                 case 'doctorSchemaDriftResult':
                     currentDoctorSchemaDrift = message.result;
@@ -1797,12 +4468,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     renderDoctorDatasetAnalysis(currentDoctorDataset);
                     setStatus(message.result && message.result.success ? 'Dataset scan complete' : (message.result && message.result.error) || 'Dataset scan failed', message.result && message.result.success ? 'status-success' : 'status-error');
                     break;
-                default:
-                    console.log('Unknown message type:', message.type);
             }
         });
-
-        console.log('JavaScript loaded successfully');
         `;
     }
 
@@ -1827,29 +4494,51 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .controls { display: flex; align-items: center; gap: 10px; }
         .btn { 
-            background-color: var(--vscode-button-background); 
-            color: var(--vscode-button-foreground); border: none; 
+            background-color: var(--vscode-button-background, #0e639c); 
+            color: var(--vscode-button-foreground, #ffffff);
+            border: 1px solid var(--vscode-button-border, transparent); 
             padding: 8px 12px; border-radius: 3px; cursor: pointer; 
-            display: flex; align-items: center; gap: 5px; 
+            display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+            min-height: 32px; font-weight: 600;
         }
-        .btn:hover { background-color: var(--vscode-button-hoverBackground); }
+        .btn:hover { background-color: var(--vscode-button-hoverBackground, #1177bb); }
         .btn-secondary {
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
+            background-color: var(--vscode-button-secondaryBackground, #3a3d41);
+            color: var(--vscode-button-secondaryForeground, #ffffff);
+            border-color: var(--vscode-panel-border);
         }
-        .btn-secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
+        .btn-secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground, #45494e); }
+        .btn-danger {
+            background-color: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+            color: var(--vscode-inputValidation-errorForeground, #ffffff);
+            border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+        }
+        .btn-danger:hover { background-color: rgba(190, 17, 0, 0.35); }
         .status { font-size: 12px; padding: 4px 8px; border-radius: 3px; }
-        .view-tabs {
-            display: flex; gap: 4px; margin-bottom: 14px;
+        .view-navigation {
+            display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;
+        }
+        .view-tabs, .subtab-group {
+            display: flex; gap: 4px; flex-wrap: wrap;
             border-bottom: 1px solid var(--vscode-panel-border);
         }
+        .subtabs { min-height: 33px; }
         .tab-btn {
-            background: transparent; color: var(--vscode-descriptionForeground);
+            background: var(--vscode-toolbar-hoverBackground, transparent);
+            color: var(--vscode-descriptionForeground);
             border: none; border-bottom: 2px solid transparent;
-            padding: 8px 12px; cursor: pointer;
+            padding: 8px 12px; cursor: pointer; border-radius: 3px 3px 0 0;
         }
+        .primary-tab {
+            font-weight: 600;
+        }
+        .subtab-btn {
+            padding: 6px 10px;
+        }
+        .tab-btn:hover { background: var(--vscode-list-hoverBackground); }
         .tab-btn.active {
             color: var(--vscode-foreground);
+            background: var(--vscode-panelSectionHeader-background);
             border-bottom-color: var(--vscode-focusBorder);
         }
         .view-panel { width: 100%; }
@@ -1920,7 +4609,310 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             font-family: var(--vscode-editor-font-family);
             color: var(--vscode-textPreformat-foreground);
         }
+        .quick-aggregation {
+            display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)) auto;
+            gap: 8px; align-items: end; padding-top: 4px;
+        }
+        .aggregation-actions {
+            display: grid; grid-template-columns: repeat(2, minmax(82px, 1fr));
+            gap: 8px;
+        }
+        .quick-aggregation label, .table-tools label, .join-controls label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .quick-aggregation select, .quick-aggregation input,
+        .table-tools select, .table-tools input,
+        .write-controls select, .write-controls input,
+        .join-controls select, .join-controls input {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+        }
         .data-container { display: flex; flex-direction: column; gap: 15px; }
+        .table-tools {
+            display: grid; grid-template-columns: minmax(130px, 1fr) minmax(120px, 0.7fr) minmax(240px, 1.4fr) auto;
+            gap: 10px; align-items: end;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .table-column-picker {
+            position: relative;
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .column-picker-toggle {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            text-align: left; cursor: pointer;
+        }
+        .column-picker-caret {
+            color: var(--vscode-descriptionForeground);
+            font-size: 11px;
+        }
+        .column-picker-menu {
+            position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+            z-index: 50; padding: 6px; border: 1px solid var(--vscode-dropdown-border);
+            border-radius: 3px; background-color: var(--vscode-dropdown-background);
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+        }
+        .column-picker-list {
+            display: flex; flex-direction: column; gap: 2px;
+            max-height: 220px; overflow: auto;
+        }
+        .column-picker-row {
+            display: grid; grid-template-columns: 18px 1fr; gap: 7px; align-items: center;
+            min-height: 28px; padding: 4px 6px; border-radius: 3px;
+            color: var(--vscode-dropdown-foreground); cursor: pointer;
+        }
+        .column-picker-row:hover {
+            background-color: var(--vscode-list-hoverBackground);
+            color: var(--vscode-list-hoverForeground);
+        }
+        .column-picker-row input {
+            margin: 0;
+        }
+        .column-picker-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .column-picker-empty {
+            padding: 8px; color: var(--vscode-descriptionForeground);
+        }
+        .table-tool-actions {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .table-tool-actions .btn {
+            min-width: 86px;
+        }
+        .write-container { display: flex; flex-direction: column; gap: 14px; }
+        .write-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .write-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .write-toolbar p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .write-controls {
+            display: grid; grid-template-columns: minmax(160px, 0.8fr) minmax(140px, 0.7fr) minmax(150px, 0.7fr) auto;
+            gap: 10px; align-items: end;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .write-controls label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        #write-json-input {
+            width: 100%; min-height: 150px; resize: vertical; padding: 10px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: var(--vscode-editor-font-size);
+            line-height: 1.45; border-radius: 3px;
+        }
+        #write-json-input:disabled {
+            opacity: 0.55;
+        }
+        .write-message {
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .write-message-error {
+            border-color: var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+        }
+        .write-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .write-panel {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            padding: 12px; min-width: 0;
+        }
+        .write-panel h3 {
+            font-size: 13px; margin-bottom: 10px;
+            color: var(--vscode-foreground);
+        }
+        .write-table-wrap {
+            overflow: auto; max-height: 360px;
+        }
+        .write-panel table {
+            width: 100%; border-collapse: collapse; min-width: 760px;
+        }
+        .write-panel th,
+        .write-panel td {
+            padding: 7px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+            text-align: left; white-space: nowrap;
+        }
+        .write-panel th {
+            position: sticky; top: 0; z-index: 1;
+            background-color: var(--vscode-panelSectionHeader-background);
+            color: var(--vscode-foreground);
+        }
+        .write-panel td {
+            color: var(--vscode-descriptionForeground);
+            max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+        }
+        .write-column-name,
+        .write-column-type {
+            width: 100%; min-height: 30px; padding: 5px 7px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+        .eda-container { display: flex; flex-direction: column; gap: 14px; }
+        .eda-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .eda-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .eda-toolbar p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .eda-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .eda-grid {
+            display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+            gap: 12px; align-items: start;
+        }
+        .eda-panel {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+            padding: 12px; min-width: 0;
+        }
+        .eda-panel h3 {
+            font-size: 13px; margin-bottom: 10px;
+            color: var(--vscode-foreground);
+        }
+        .eda-list {
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .eda-suggestion,
+        .eda-quality-item {
+            padding: 9px 10px; border-radius: 3px;
+            border: 1px solid var(--vscode-panel-border);
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-foreground);
+            line-height: 1.4;
+        }
+        .eda-suggestion {
+            border-left: 3px solid var(--vscode-focusBorder);
+        }
+        .eda-quality-item {
+            color: var(--vscode-descriptionForeground);
+        }
+        .eda-table-wrap {
+            overflow: auto; max-height: 360px;
+        }
+        .eda-panel table {
+            width: 100%; border-collapse: collapse; min-width: 620px;
+        }
+        .eda-panel th,
+        .eda-panel td {
+            padding: 7px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+            text-align: left; white-space: nowrap;
+        }
+        .eda-panel th {
+            position: sticky; top: 0; z-index: 1;
+            background-color: var(--vscode-panelSectionHeader-background);
+            color: var(--vscode-foreground);
+        }
+        .eda-panel td {
+            color: var(--vscode-descriptionForeground);
+            max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+        }
+        .visualizer-container { display: flex; flex-direction: column; gap: 14px; }
+        .visualizer-toolbar {
+            display: grid; grid-template-columns: minmax(220px, 0.6fr) minmax(420px, 1.4fr);
+            gap: 12px; align-items: end;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .visualizer-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .visualizer-toolbar p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .visualizer-controls {
+            display: grid; grid-template-columns: repeat(5, minmax(96px, 1fr));
+            gap: 8px; align-items: end;
+        }
+        .visualizer-controls label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .visualizer-controls select, .visualizer-controls input {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+        }
+        .visualizer-controls select:disabled {
+            opacity: 0.55;
+        }
+        .visualizer-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .visualizer-message {
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .visualizer-message-error {
+            border-color: var(--vscode-inputValidation-warningBorder);
+            background-color: var(--vscode-inputValidation-warningBackground);
+            color: var(--vscode-inputValidation-warningForeground);
+        }
+        .visualizer-chart-wrap {
+            width: 100%; min-height: 420px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-editor-background);
+            overflow: auto;
+        }
+        #visualizer-chart {
+            display: block; width: 100%; min-width: 760px; height: 420px;
+        }
+        .chart-axis {
+            stroke: var(--vscode-descriptionForeground); stroke-width: 1;
+        }
+        .chart-grid {
+            stroke: var(--vscode-panel-border); stroke-width: 1;
+        }
+        .chart-axis-label, .chart-axis-title {
+            fill: var(--vscode-descriptionForeground); font-size: 11px;
+            font-family: var(--vscode-font-family);
+        }
+        .chart-axis-title {
+            fill: var(--vscode-foreground); font-weight: 600;
+        }
+        .chart-bar {
+            fill: var(--vscode-charts-blue, #3794ff);
+        }
+        .chart-bar:hover {
+            fill: var(--vscode-charts-orange, #d18616);
+        }
+        .chart-line {
+            fill: none; stroke: var(--vscode-charts-green, #89d185);
+            stroke-width: 3; stroke-linejoin: round; stroke-linecap: round;
+        }
+        .chart-point {
+            fill: var(--vscode-charts-purple, #b180d7);
+            stroke: var(--vscode-editor-background); stroke-width: 1.5;
+        }
+        .chart-point:hover {
+            fill: var(--vscode-charts-yellow, #cca700);
+        }
         .summary {
             display: flex; gap: 20px; padding: 15px;
             background-color: var(--vscode-panelSectionHeader-background);
@@ -1955,6 +4947,95 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
         .empty-value {
             text-align: center; padding: 20px; color: var(--vscode-descriptionForeground);
+        }
+        .edit-container { display: flex; flex-direction: column; gap: 14px; }
+        .edit-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .edit-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .edit-toolbar p {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .edit-actions {
+            display: flex; align-items: center; justify-content: flex-end;
+            gap: 8px; flex-wrap: wrap;
+        }
+        .edit-column-tools {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 10px 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .edit-column-tools h3 {
+            font-size: 13px; margin-bottom: 4px;
+        }
+        .edit-column-tools p {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .edit-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .edit-message {
+            border-radius: 3px; padding: 10px 12px; font-size: 12px;
+            word-break: break-word;
+        }
+        .edit-message-success {
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+        }
+        .edit-message-error {
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+        }
+        .edit-table-container {
+            overflow: auto; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; max-height: 70vh;
+        }
+        #edit-table { width: max-content; min-width: 100%; }
+        .edit-action-column {
+            width: 92px; min-width: 92px; max-width: 92px;
+            text-align: center;
+        }
+        .edit-cell { min-width: 160px; padding: 4px; }
+        .edit-column-name-cell {
+            min-width: 180px; padding: 6px;
+            vertical-align: top;
+        }
+        .edit-column-original-name {
+            display: block; max-width: 220px; margin-bottom: 4px;
+            color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 400;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .edit-column-name-input {
+            width: 100%; min-width: 160px; height: 28px;
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 3px; padding: 4px 7px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px; font-weight: 600;
+        }
+        .edit-column-name-input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
+        .edit-cell-input {
+            width: 100%; min-width: 150px; height: 30px;
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 3px; padding: 4px 7px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+        }
+        .edit-cell-input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
         }
         .schema-container { display: flex; flex-direction: column; gap: 14px; }
         .schema-toolbar {
@@ -2149,6 +5230,15 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             min-width: 760px;
         }
         @media (max-width: 820px) {
+            .quick-aggregation { grid-template-columns: 1fr; }
+            .aggregation-actions { grid-template-columns: 1fr; }
+            .table-tools { grid-template-columns: 1fr; }
+            .write-toolbar { align-items: stretch; flex-direction: column; }
+            .edit-toolbar, .edit-column-tools { align-items: stretch; flex-direction: column; }
+            .write-controls { grid-template-columns: 1fr; }
+            .eda-grid { grid-template-columns: 1fr; }
+            .visualizer-toolbar { grid-template-columns: 1fr; }
+            .visualizer-controls { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
             .schema-layout { grid-template-columns: 1fr; }
             .schema-toolbar { align-items: stretch; }
             .schema-actions { width: 100%; }
@@ -2275,6 +5365,31 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-inputValidation-errorForeground);
             border-radius: 3px; padding: 10px 12px;
         }
+        .compare-smart-summary {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; padding: 12px;
+            background-color: var(--vscode-sideBar-background);
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .smart-summary-header {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            flex-wrap: wrap;
+        }
+        .smart-summary-header h3 {
+            font-size: 14px;
+        }
+        .smart-summary-header span {
+            color: var(--vscode-descriptionForeground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+        }
+        .smart-summary-grid {
+            display: flex; gap: 12px; flex-wrap: wrap;
+        }
+        .smart-skipped-columns {
+            color: var(--vscode-descriptionForeground);
+            font-size: 12px;
+        }
         .compare-summary {
             display: flex; gap: 20px; padding: 12px;
             background-color: var(--vscode-panelSectionHeader-background);
@@ -2320,6 +5435,46 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             outline: 1px solid rgba(220, 170, 60, 0.7);
             outline-offset: -1px;
         }
+        .join-container {
+            display: flex; flex-direction: column; gap: 14px;
+        }
+        .join-toolbar {
+            display: grid; grid-template-columns: minmax(240px, 1fr) auto; align-items: center;
+            gap: 12px; padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .join-toolbar h2 {
+            font-size: 15px; margin-bottom: 4px;
+        }
+        .join-toolbar p {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .join-actions {
+            display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+        }
+        .join-controls {
+            display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr));
+            gap: 10px; padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .join-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .join-error {
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .join-results {
+            overflow: auto; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; max-height: 70vh;
+        }
+        .join-results table {
+            min-width: 100%; width: max-content;
+        }
         @media (max-width: 980px) {
             .compare-toolbar { grid-template-columns: 1fr; }
             .compare-actions { justify-content: stretch; grid-template-columns: 1fr; }
@@ -2327,6 +5482,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             .compare-column-lists { grid-template-columns: 1fr; }
             .compare-mapping-row { grid-template-columns: 1fr; }
             .compare-order-controls { grid-template-columns: 1fr; }
+            .join-toolbar { grid-template-columns: 1fr; }
+            .join-actions { justify-content: stretch; }
+            .join-controls { grid-template-columns: 1fr; }
         }
         .icon { font-size: 14px; }
         `;

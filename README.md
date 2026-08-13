@@ -1,33 +1,42 @@
 # Parquet-X
 
-A VS Code extension for viewing, querying, exporting, comparing, and diagnosing Apache Parquet files directly in your editor.
+Parquet-X is an open-source Visual Studio Code extension for inspecting Apache Parquet files without leaving your editor. It provides a local viewer for browsing data, running read-only SQL queries, creating Parquet files, performing exploratory data analysis, exporting results, comparing and joining files, visualizing query results, reviewing schema metadata, and diagnosing common Parquet issues.
+
+All file processing runs locally through DuckDB in an isolated Python environment created by the extension.
 
 ## Features
 
-- **View Parquet Files** - Open and explore Parquet files with a custom viewer.
-- **Data Browser** - Browse data in a clean table interface.
-- **SQL Querying** - Run read-only `SELECT` and `WITH` queries against the open file.
-- **Export Data** - Export the current query result to CSV, JSON, or SQLite.
-- **Compare Parquet Files** - Compare matching files or custom same-type column mappings with highlighted row/value mismatches.
-- **Schema Explorer** - Inspect physical types, logical types, nullability, levels, decimals, timestamps, and nested structure.
-- **Parquet Doctor** - Diagnose file integrity, schema quality, row groups, statistics, data quality, schema drift, compression, partitions, and suggested fixes.
-- **Local Processing** - Powered by DuckDB and a local Python environment.
+- Open `.parquet` files in a custom VS Code editor.
+- Navigate grouped tabs with subtabs for Explore, Transform, Compare & Join, and Quality workflows.
+- Browse rows in a table view with result counts, column counts, sorting, and column visibility.
+- Run read-only SQL using the `parquet_data` table alias.
+- Build quick group-by aggregations without writing SQL.
+- Profile the current query result in the EDA tab with column types, missing values, duplicate rows, numeric summaries, quality checks, and suggested next steps.
+- Create Parquet files from pasted JSON arrays, NDJSON streams, or the current query result with editable schema, compression, and row group size controls.
+- Export the current query result to CSV, JSON, or SQLite.
+- Edit loaded result rows, rename output columns, and save the result as a new Parquet file.
+- Compare Parquet files with Smart Diff, strict column matching, or custom same-type column mapping.
+- Join the open Parquet file with another Parquet or CSV file and preview the result.
+- Visualize current query results with bar, line, scatter, and histogram charts.
+- Inspect schema structure, physical types, logical types, nullability, repetition levels, definition levels, decimals, and timestamps.
+- Run Parquet Doctor diagnostics on demand for integrity, schema quality, row groups, statistics, data quality, compression, encoding, schema drift, and dataset partitions.
+- Copy schema JSON or generate Markdown schema documentation.
 
 ## Installation
 
-1. Install the extension from the VS Code Marketplace.
-2. Open any `.parquet` file.
-3. Wait for the initial Python environment setup to finish. The first setup may take a little time.
+Install Parquet-X from the Visual Studio Code Marketplace, then open any `.parquet` file from your workspace.
+
+Parquet-X activates when you open a `.parquet` file (or run setup) and prepares its local Python/DuckDB environment only when needed. The prepared environment is stored in VS Code global storage and reused afterward.
 
 ## Usage
 
-### Opening Parquet Files
+### Open A Parquet File
 
-Click any `.parquet` file in your workspace. Parquet-X opens it in the custom Parquet Viewer.
+Select a `.parquet` file in VS Code. Parquet-X opens it in the custom viewer and renders an initial preview of the data.
 
-### Querying Data
+### Query Data
 
-Use the SQL query box to query the open file as the `parquet_data` table.
+Use the SQL editor in the Explore group's Data subtab to query the open file as `parquet_data`.
 
 Only read-only `SELECT` and `WITH` queries are supported.
 
@@ -38,122 +47,158 @@ WHERE status = 'active'
 LIMIT 100;
 ```
 
-### Exporting Data
+### Refine The Table View
 
-Use the export buttons in the query panel to save the current query result as:
+Use the table tools in the Explore group's Data subtab to sort rows, choose visible columns from a dropdown, show all columns again, and reset the table layout.
+
+### Quick Aggregations
+
+Use the aggregation controls in the Explore group's Data subtab to choose a group column, metric column, count/sum/average/min/max function, and result limit. Parquet-X generates the DuckDB SQL and runs it against `parquet_data`.
+
+### Explore Data
+
+Open the Explore group, then choose the EDA subtab to profile the current query result. Parquet-X summarizes inferred column types, distinct values, missingness, duplicate rows, numeric min/mean/max values, quality checks, and suggested follow-up analysis.
+
+### Create Parquet Files
+
+Open the Transform group, then choose the Create Parquet subtab to create a new `.parquet` file from the current query result, pasted JSON array, or pasted NDJSON stream. Preview the inferred structure, edit output column names and types, choose Snappy, Gzip, Brotli, Zstd, or uncompressed output, set the row group size, and save the new file.
+
+### Export Results
+
+Use the export buttons in the Explore group's Data subtab to save the current query result as:
 
 - CSV
 - JSON
-- SQLite database
+- SQLite
 
-Exports use the current SQL query, so you can filter rows or select columns before saving.
+Exports respect the active SQL query, so you can filter rows or select columns before saving.
 
-### Comparing Parquet Files
+### Edit Data
 
-Open the **Compare** tab and choose another `.parquet` file to compare with the current file.
+Open the Transform group, then choose the Edit Data subtab to modify the currently loaded result rows. You can update cell values, add rows, delete rows, reset edits, rename output columns, and save the edited data.
 
-Strict compare validates that both files have the same column names in the same order before comparison starts. Before running compare, choose the column that should be used to order rows in both files.
+Parquet-X does not overwrite the original file. Edited data is saved as a new `.parquet` file. After saving, open the new Parquet file to view the edited result.
 
-For files with different column names, enable **Custom mapping** to map columns manually. Custom mapped columns must have the same type before comparison runs, including the selected order columns.
+### Compare Files
 
-Rows are sorted by the selected order column and then compared by row order. Mismatched rows are marked in red, and mismatched values are highlighted in the split current-file and compare-file tables.
+Open the Compare & Join group, choose the Compare subtab, and select another `.parquet` file.
 
-### Running Parquet Doctor
+Smart Diff automatically maps compatible columns, including likely renamed columns, infers a row key, and compares rows by that key so reordered, added, and deleted rows are easier to inspect. The Smart Diff summary shows the inferred key, mapped columns, added rows, deleted rows, changed rows, and unchanged rows.
 
-Open the **Doctor** tab to review the file health report. Parquet Doctor includes:
+Strict compare requires both files to have the same columns in the same order. Custom mapping lets you compare selected columns with different names, as long as mapped columns have compatible types.
 
-- File integrity checks for magic bytes, missing footers, unreadable row groups, and incomplete writes.
-- Schema validation for physical types, logical types, nullability, decimals, and timestamps.
-- Row group analysis with row counts, sizes, compression ratio, and column-chunk details.
-- Column statistics checks for min/max, null count, distinct count, all-null columns, constant-value columns, and missing statistics.
-- Schema drift detection against a reference Parquet file, including added, removed, renamed, and type-changed columns.
-- Data quality validation for high-null columns, duplicate rows, invalid date ranges, empty strings, and suspicious default values.
-- Decimal and timestamp diagnostics for precision/scale mismatches, floating-point risk, timestamp unit differences, and timezone ambiguity.
-- Compression and encoding analysis by column, with recommendations for weak compression or dictionary encoding choices.
-- Dataset and partition analysis for folders of Parquet files, including inconsistent schemas, missing partition keys, empty files, small-file problems, and uneven partition sizes.
-- Health score with errors, warnings, passed checks, and suggested fixes.
+Before comparing, choose an order column for both files. Rows are sorted by that column and then compared by row order. Mismatched rows and values are highlighted in the comparison table.
 
-### Exploring Schema
+### Join Files
 
-Open the **Schema** tab to inspect the Parquet schema. The schema panel includes:
+Open the Compare & Join group, then choose the Join subtab and select another `.parquet` or `.csv` file. Select the current file key, the join file key, the join type, and the preview row limit.
 
-- Searchable column list.
-- Nested parent-child structure.
-- Column name and full path.
-- Physical Parquet type and logical type.
-- Nullable, required, or repeated status.
-- Repetition and definition levels.
-- Decimal precision and scale.
-- Timestamp unit and timezone interpretation.
-- Copy schema as JSON.
-- Generate schema documentation.
+Supported join types are inner, left, right, and full outer joins. The join preview can be exported as CSV.
 
-Logical types are shown because Parquet physical types do not always describe the actual data meaning. For example, strings may be stored physically as `BYTE_ARRAY` with a logical string annotation.
+### Visualize Results
+
+Open the Explore group, then choose the Visualize subtab to chart the current query result. Charts update when you change the chart type, columns, aggregation, or limit.
+
+Supported charts are bar, line, scatter, and histogram.
+
+### Inspect Schema
+
+Open the Explore group, then choose the Schema subtab to explore:
+
+- Column names and full paths
+- Nested parent-child structure
+- Physical and logical Parquet types
+- Nullable, required, and repeated fields
+- Repetition and definition levels
+- Decimal precision and scale
+- Timestamp unit and timezone interpretation
+
+The Schema subtab can also copy the schema as JSON or generate Markdown documentation.
+
+### Run Parquet Doctor
+
+Open the Quality group, then choose the Doctor subtab and click **Run Doctor Checks** to review diagnostics and suggested fixes. Parquet Doctor includes checks for:
+
+- File integrity and Parquet magic bytes
+- Missing footers and unreadable row groups
+- Schema consistency and suspicious type annotations
+- Row group sizes and compression ratios
+- Column statistics, null counts, and constant values
+- High-null columns, duplicate rows, empty strings, and suspicious defaults
+- Decimal and timestamp metadata issues
+- Compression and encoding choices
+- Schema drift against a reference file
+- Dataset and partition folder health
 
 ## Commands
 
-Access these commands from the Command Palette:
+The following commands are available from the Command Palette:
 
-- `Parquet Viewer: Show Parquet Viewer Logs` - View extension logs for troubleshooting.
-- `Parquet Viewer: Reset Python Environment` - Recreate the local Python environment.
-- `Refresh` - Reload the current Parquet file.
+- `Parquet Viewer: Show Parquet Viewer Logs`
+- `Parquet Viewer: Setup Python Environment`
+- `Parquet Viewer: Reset Python Environment`
+- `Refresh`
 
-## How It Works
+## Privacy
 
-1. Parquet-X uses a local isolated Python environment with DuckDB.
-2. Parquet data, schema metadata, and diagnostics are processed locally.
-3. SQL queries run against the open file through DuckDB.
-4. Schema metadata is read from Parquet metadata to show physical types, logical annotations, nesting, and levels.
+- Parquet-X processes files locally.
+- No file contents are sent to external services.
+- The extension only accesses files you open or explicitly choose for compare, join, and diagnostics workflows.
+- No telemetry or analytics collection is included.
 
-## Troubleshooting
+## Requirements
 
-### Extension Not Loading Files
-
-1. Restart VS Code.
-2. Check if the file is a valid Parquet file.
-3. Run `Parquet Viewer: Show Parquet Viewer Logs` to see detailed error messages.
-
-### Large Files Loading Slowly
-
-- For files larger than 1 GB, use a more powerful machine when possible.
-- The extension limits rendered result rows for better UI performance.
-- Doctor diagnostics may take longer because they scan file metadata and selected data-quality signals.
-
-### Behind Corporate Proxy or Firewall
-
-1. Configure your system proxy settings for VS Code.
-2. Check if your firewall allows VS Code extensions.
-3. Check logs with `Parquet Viewer: Show Parquet Viewer Logs`.
-
-### General Issues
-
-1. Open the Command Palette.
-2. Run `Parquet Viewer: Show Parquet Viewer Logs`.
-3. Try `Developer: Reload Window`.
-
-## Privacy and Data
-
-- All data processing happens locally on your machine.
-- No data is sent to external servers.
-- The extension only accesses Parquet files you explicitly open or choose for compare/diagnostics.
-- No telemetry or data collection is included.
+- Visual Studio Code `1.104.0` or newer.
+- A working Python installation. The extension manages its own isolated Python environment for DuckDB and stores it in VS Code global storage for reuse.
 
 ## Known Limitations
 
-- Very large files may take longer to load or diagnose.
-- Some complex nested Parquet schemas may not display optimally.
-- Dataset scans can take longer on folders with many Parquet files.
-- The viewer is limited by VS Code webview rendering constraints for very large result sets.
+- The viewer renders a limited number of result rows for UI performance.
+- Very large files or broad diagnostics may take longer to process.
+- Editing applies to the currently loaded result rows and saves them as a new Parquet file.
+- Visualizations use the currently loaded query result rows.
+- Join export currently exports the preview rows shown in the Join subtab.
+- Some deeply nested schemas may not display as cleanly as flat or moderately nested schemas.
+- Dataset scans can take longer on folders with many files.
 
-## Changelog
+## Development
 
-See [CHANGELOG.md](CHANGELOG.md).
+Install dependencies:
+
+```sh
+npm install
+```
+
+Compile the extension:
+
+```sh
+npm run compile
+```
+
+Copy Python runtime files into `out/`:
+
+```sh
+npm run copy-files
+```
+
+Run type checking without emitting output:
+
+```sh
+npx tsc --noEmit
+```
+
+## Contributing
+
+Contributions are welcome. Please keep changes focused, include clear testing notes, and avoid sending sample data that contains private or production information.
+
+Useful contribution areas include performance improvements, nested schema rendering, additional diagnostics, accessibility improvements, and test coverage.
+
+## Issues
+
+Please report bugs and feature requests in the project issue tracker:
+
+https://github.com/akshara-a/Parquet-X/issues
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-
-## Author
-
-Akshara A  
-akshararajan26@outlook.in
+Parquet-X is released under the MIT License. See [LICENSE](LICENSE).

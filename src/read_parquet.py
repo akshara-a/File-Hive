@@ -5,6 +5,8 @@ import sqlite3
 import sys
 import os
 import difflib
+import re
+import traceback
 
 MAX_RESULT_ROWS = 1000
 MAX_COMPARE_MISMATCHES = 1000
@@ -47,6 +49,75 @@ def create_named_parquet_view(conn, table_name, file_path):
         f"CREATE OR REPLACE TEMP VIEW {table_name} AS "
         f"SELECT * FROM read_parquet({parquet_path})"
     )
+
+def create_named_data_view(conn, table_name, file_path):
+    data_path = sql_string(file_path)
+    lower_path = file_path.lower()
+    if lower_path.endswith(".csv"):
+        conn.execute(
+            f"CREATE OR REPLACE TEMP VIEW {table_name} AS "
+            f"SELECT * FROM read_csv_auto({data_path}, HEADER = TRUE)"
+        )
+        return
+
+    if lower_path.endswith(".parquet"):
+        create_named_parquet_view(conn, table_name, file_path)
+        return
+
+    raise ValueError("Only .parquet and .csv files are supported for joins.")
+
+class WorkerSessionManager:
+    def __init__(self):
+        self._sessions = {}
+
+    def _file_fingerprint(self, file_path):
+        absolute_path = os.path.abspath(file_path)
+        stat = os.stat(absolute_path)
+        return (absolute_path, stat.st_mtime_ns, stat.st_size)
+
+    def get_session_connection(self, session_id, file_path):
+        if not session_id:
+            raise ValueError("Worker request missing sessionId.")
+
+        if not file_path or not os.path.exists(file_path):
+            raise ValueError(f"File does not exist: {file_path}")
+
+        fingerprint = self._file_fingerprint(file_path)
+        session = self._sessions.get(session_id)
+
+        if session is None:
+            conn = duckdb.connect()
+            create_parquet_view(conn, file_path)
+            self._sessions[session_id] = {
+                "conn": conn,
+                "fingerprint": fingerprint
+            }
+            return conn
+
+        conn = session["conn"]
+        if session["fingerprint"] != fingerprint:
+            create_parquet_view(conn, file_path)
+            session["fingerprint"] = fingerprint
+
+        return conn
+
+    def release_session(self, session_id):
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
+
+        conn = session.get("conn")
+        if conn is None:
+            return
+
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def close_all(self):
+        for session_id in list(self._sessions.keys()):
+            self.release_session(session_id)
 
 def convert_rows_to_json(columns, result):
     data = []
@@ -530,9 +601,16 @@ def analyze_row_groups(metadata_rows, report):
                 "encodings": get_first_value(row, ["encodings"])
             })
 
+        compression = ", ".join(sorted(set(
+            str(chunk.get("compression"))
+            for chunk in column_chunks
+            if chunk.get("compression")
+        )))
+
         row_group = {
             "id": row_group_id,
             "rowCount": row_count,
+            "compression": compression or None,
             "compressedSize": compressed_size,
             "uncompressedSize": uncompressed_size,
             "compressionRatio": compression_ratio,
@@ -1035,6 +1113,193 @@ def read_compare_columns(conn, file_path):
 
     return columns
 
+def read_join_columns(conn, table_name, file_path):
+    create_named_data_view(conn, table_name, file_path)
+    schema_by_name = {}
+    if file_path.lower().endswith(".parquet"):
+        schema = read_parquet_schema(conn, file_path)
+        schema_by_name = {
+            column["name"]: column
+            for column in schema.get("columns", [])
+        }
+
+    describe_rows = conn.execute(f"DESCRIBE SELECT * FROM {table_name}").fetchall()
+    columns = []
+
+    for row in describe_rows:
+        name = row[0]
+        duckdb_type = row[1]
+        schema_column = schema_by_name.get(name, {})
+        column = {
+            "name": name,
+            "path": schema_column.get("path") or name,
+            "duckdbType": duckdb_type,
+            "physicalType": schema_column.get("physicalType"),
+            "logicalType": schema_column.get("logicalType"),
+            "nullableStatus": schema_column.get("nullableStatus"),
+            "decimalPrecision": schema_column.get("decimalPrecision"),
+            "decimalScale": schema_column.get("decimalScale"),
+            "timestampUnit": schema_column.get("timestampUnit")
+        }
+        column["typeSignature"] = type_signature(column)
+        columns.append(column)
+
+    return columns
+
+def get_join_metadata(base_path, join_path):
+    if not os.path.exists(base_path):
+        return {
+            "success": False,
+            "error": f"Base file does not exist: {base_path}"
+        }
+
+    if not os.path.exists(join_path):
+        return {
+            "success": False,
+            "error": f"Join file does not exist: {join_path}"
+        }
+
+    conn = None
+    try:
+        conn = duckdb.connect()
+        base_columns = read_join_columns(conn, TABLE_NAME, base_path)
+        join_columns = read_join_columns(conn, COMPARE_TABLE_NAME, join_path)
+        conn.close()
+        conn = None
+
+        return {
+            "success": True,
+            "basePath": base_path,
+            "joinPath": join_path,
+            "baseColumns": base_columns,
+            "joinColumns": join_columns
+        }
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        return {
+            "success": False,
+            "basePath": base_path,
+            "joinPath": join_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+def normalize_join_type(value):
+    join_types = {
+        "inner": "INNER JOIN",
+        "left": "LEFT JOIN",
+        "right": "RIGHT JOIN",
+        "full": "FULL OUTER JOIN"
+    }
+    normalized = str(value or "inner").lower()
+    if normalized not in join_types:
+        raise ValueError("Join type must be one of: inner, left, right, full.")
+
+    return normalized, join_types[normalized]
+
+def build_join_select_columns(base_columns, join_columns):
+    select_parts = []
+    output_columns = []
+
+    for column in base_columns:
+        alias = f"base.{column['name']}"
+        select_parts.append(f"base.{duckdb_identifier(column['name'])} AS {duckdb_identifier(alias)}")
+        output_columns.append(alias)
+
+    for column in join_columns:
+        alias = f"join.{column['name']}"
+        select_parts.append(f"joined.{duckdb_identifier(column['name'])} AS {duckdb_identifier(alias)}")
+        output_columns.append(alias)
+
+    return select_parts, output_columns
+
+def join_data_files(base_path, join_path, options):
+    if not os.path.exists(base_path):
+        return {
+            "success": False,
+            "error": f"Base file does not exist: {base_path}"
+        }
+
+    if not os.path.exists(join_path):
+        return {
+            "success": False,
+            "error": f"Join file does not exist: {join_path}"
+        }
+
+    conn = None
+    try:
+        options = options or {}
+        base_column = options.get("baseColumn")
+        join_column = options.get("joinColumn")
+        join_type_key, join_type_sql = normalize_join_type(options.get("joinType"))
+        limit = int(options.get("limit") or 100)
+        limit = max(1, min(limit, MAX_RESULT_ROWS))
+
+        if not base_column or not join_column:
+            raise ValueError("Both baseColumn and joinColumn are required.")
+
+        conn = duckdb.connect()
+        base_columns = read_join_columns(conn, TABLE_NAME, base_path)
+        join_columns = read_join_columns(conn, COMPARE_TABLE_NAME, join_path)
+        base_names = {column["name"] for column in base_columns}
+        join_names = {column["name"] for column in join_columns}
+
+        if base_column not in base_names:
+            raise ValueError(f"Base join column not found: {base_column}")
+        if join_column not in join_names:
+            raise ValueError(f"Join column not found: {join_column}")
+
+        select_parts, output_columns = build_join_select_columns(base_columns, join_columns)
+        join_sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM {TABLE_NAME} AS base "
+            f"{join_type_sql} {COMPARE_TABLE_NAME} AS joined "
+            f"ON base.{duckdb_identifier(base_column)} = joined.{duckdb_identifier(join_column)}"
+        )
+        limited_query = f"SELECT * FROM ({join_sql}) AS join_result LIMIT {limit + 1}"
+        result = conn.execute(limited_query).fetchall()
+        result_limited = len(result) > limit
+        if result_limited:
+            result = result[:limit]
+
+        try:
+            total_rows = conn.execute(f"SELECT COUNT(*) FROM ({join_sql}) AS join_result").fetchone()[0]
+        except Exception:
+            total_rows = len(result)
+
+        data = convert_rows_to_json(output_columns, result)
+        conn.close()
+        conn = None
+
+        return {
+            "success": True,
+            "basePath": base_path,
+            "joinPath": join_path,
+            "joinType": join_type_key,
+            "baseColumns": base_columns,
+            "joinColumns": join_columns,
+            "columns": output_columns,
+            "data": data,
+            "rowCount": len(data),
+            "totalRows": total_rows,
+            "resultLimited": result_limited
+        }
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        return {
+            "success": False,
+            "basePath": base_path,
+            "joinPath": join_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 def get_compare_metadata(base_path, compare_path):
     if not os.path.exists(base_path):
         return {
@@ -1389,6 +1654,45 @@ def analyze_dataset_partitions(folder_path):
         "recommendations": list(dict.fromkeys(recommendations))
     }
 
+def read_parquet_file_from_connection(conn, file_path, user_query=None):
+    file_size = os.path.getsize(file_path)
+    schema = read_parquet_schema(conn, file_path)
+    query = normalize_query(user_query)
+
+    limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
+    print(f"DEBUG: Executing query: {query}", file=sys.stderr)
+
+    result = conn.execute(limited_query).fetchall()
+    columns = [desc[0] for desc in conn.description]
+    result_limited = len(result) > MAX_RESULT_ROWS
+    if result_limited:
+        result = result[:MAX_RESULT_ROWS]
+
+    total_rows = None if result_limited else len(result)
+
+    print(f"DEBUG: Retrieved {len(result)} rows, {len(columns)} columns", file=sys.stderr)
+    print(f"DEBUG: Columns: {columns}", file=sys.stderr)
+
+    data = convert_rows_to_json(columns, result)
+
+    return {
+        'success': True,
+        'data': data,
+        'columns': columns,
+        'rowCount': len(data),
+        'totalRows': total_rows,
+        'query': query,
+        'resultLimited': result_limited,
+        'schema': schema,
+        'debug': {
+            'file_path': file_path,
+            'file_size': file_size,
+            'columns_count': len(columns),
+            'rows_returned': len(data),
+            'result_limited': result_limited
+        }
+    }
+
 def read_parquet_file(file_path, user_query=None):
     """
     Read parquet file and return data as JSON
@@ -1402,68 +1706,17 @@ def read_parquet_file(file_path, user_query=None):
             'error': f"File does not exist: {file_path}"
         }
     
-    file_size = 0
     conn = None
 
     try:
-        # Get file info
-        file_size = os.path.getsize(file_path)
-        print(f"DEBUG: File size: {file_size} bytes", file=sys.stderr)
-        
-        # Connect to DuckDB
         conn = duckdb.connect()
         print("DEBUG: DuckDB connected successfully", file=sys.stderr)
-
         create_parquet_view(conn, file_path)
-        schema = read_parquet_schema(conn, file_path)
-        doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
-        query = normalize_query(user_query)
-        
-        # Read data with limit
-        limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
-        print(f"DEBUG: Executing query: {query}", file=sys.stderr)
-        
-        result = conn.execute(limited_query).fetchall()
-        columns = [desc[0] for desc in conn.description]
-        result_limited = len(result) > MAX_RESULT_ROWS
-        if result_limited:
-            result = result[:MAX_RESULT_ROWS]
+        result = read_parquet_file_from_connection(conn, file_path, user_query)
 
-        try:
-            total_rows = conn.execute(
-                f"SELECT COUNT(*) FROM ({query}) AS query_result"
-            ).fetchone()[0]
-        except Exception as count_error:
-            print(f"DEBUG: Could not count query rows: {str(count_error)}", file=sys.stderr)
-            total_rows = len(result)
-        
-        print(f"DEBUG: Retrieved {len(result)} rows, {len(columns)} columns", file=sys.stderr)
-        print(f"DEBUG: Columns: {columns}", file=sys.stderr)
-        
-        # Convert to JSON-serializable format
-        data = convert_rows_to_json(columns, result)
-        
         conn.close()
         conn = None
-        
-        return {
-            'success': True,
-            'data': data,
-            'columns': columns,
-            'rowCount': len(data),
-            'totalRows': total_rows,
-            'query': query,
-            'resultLimited': result_limited,
-            'schema': schema,
-            'doctor': doctor,
-            'debug': {
-                'file_path': file_path,
-                'file_size': file_size,
-                'columns_count': len(columns),
-                'rows_returned': len(data),
-                'result_limited': result_limited
-            }
-        }
+        return result
         
     except Exception as e:
         if conn is not None:
@@ -1472,19 +1725,78 @@ def read_parquet_file(file_path, user_query=None):
         import traceback
         print(f"DEBUG: Error reading parquet file: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
-        
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
         return {
             'success': False,
             'error': str(e),
             'traceback': traceback.format_exc(),
             'query': user_query,
-            'doctor': analyze_failed_parquet_doctor(file_path, file_size, str(e)),
             'debug': {
                 'file_path': file_path,
                 'file_exists': True,
                 'file_size': file_size
             }
         }
+
+def run_parquet_doctor_from_connection(conn, file_path):
+    file_size = os.path.getsize(file_path)
+    schema = read_parquet_schema(conn, file_path)
+    doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
+    return {
+        "success": True,
+        "doctor": doctor
+    }
+
+def run_parquet_doctor(file_path):
+    if not os.path.exists(file_path):
+        return {
+            "success": False,
+            "error": f"File does not exist: {file_path}"
+        }
+
+    conn = None
+    file_size = 0
+
+    try:
+        file_size = os.path.getsize(file_path)
+        conn = duckdb.connect()
+        create_parquet_view(conn, file_path)
+        result = run_parquet_doctor_from_connection(conn, file_path)
+        conn.close()
+        conn = None
+        return result
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "doctor": analyze_failed_parquet_doctor(file_path, file_size, str(e))
+        }
+
+def export_parquet_file_from_connection(conn, output_path, export_format, user_query=None):
+    query = normalize_query(user_query)
+    cursor = conn.execute(query)
+    columns = [desc[0] for desc in conn.description]
+
+    if export_format == "csv":
+        rows_exported = export_csv(cursor, columns, output_path)
+    elif export_format == "json":
+        rows_exported = export_json(cursor, make_unique_column_names(columns), output_path)
+    else:
+        rows_exported = export_sqlite(cursor, columns, output_path)
+
+    return {
+        "success": True,
+        "format": export_format,
+        "outputPath": output_path,
+        "rowsExported": rows_exported,
+        "query": query
+    }
 
 def export_parquet_file(file_path, output_path, export_format, user_query=None):
     print(f"DEBUG: Starting export for parquet file: {file_path}", file=sys.stderr)
@@ -1508,27 +1820,11 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
     try:
         conn = duckdb.connect()
         create_parquet_view(conn, file_path)
-        query = normalize_query(user_query)
-        cursor = conn.execute(query)
-        columns = [desc[0] for desc in conn.description]
-
-        if export_format == "csv":
-            rows_exported = export_csv(cursor, columns, output_path)
-        elif export_format == "json":
-            rows_exported = export_json(cursor, make_unique_column_names(columns), output_path)
-        else:
-            rows_exported = export_sqlite(cursor, columns, output_path)
+        result = export_parquet_file_from_connection(conn, output_path, export_format, user_query)
 
         conn.close()
         conn = None
-
-        return {
-            "success": True,
-            "format": export_format,
-            "outputPath": output_path,
-            "rowsExported": rows_exported,
-            "query": query
-        }
+        return result
 
     except Exception as e:
         if conn is not None:
@@ -1545,6 +1841,266 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
             "error": str(e),
             "traceback": traceback.format_exc(),
             "query": user_query
+        }
+
+def save_edited_parquet_file(source_path, output_path, edits_path):
+    print(f"DEBUG: Saving edited parquet based on: {source_path}", file=sys.stderr)
+    print(f"DEBUG: Edited parquet output: {output_path}", file=sys.stderr)
+    print(f"DEBUG: Edited rows payload: {edits_path}", file=sys.stderr)
+
+    if not os.path.exists(source_path):
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": f"Source file does not exist: {source_path}"
+        }
+
+    if not os.path.exists(edits_path):
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": f"Edited rows payload does not exist: {edits_path}"
+        }
+
+    conn = None
+    rows_path = None
+
+    try:
+        with open(edits_path, "r", encoding="utf-8") as edits_file:
+            payload = json.load(edits_file)
+
+        columns = payload.get("columns") or []
+        rows = payload.get("rows") or []
+
+        if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
+            raise ValueError("Edited payload columns must be a list of strings.")
+
+        if not isinstance(rows, list):
+            raise ValueError("Edited payload rows must be a list.")
+
+        unique_columns = make_unique_column_names(columns)
+        normalized_rows = []
+
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Each edited row must be an object.")
+
+            normalized_rows.append({
+                unique_column: row.get(column)
+                for column, unique_column in zip(columns, unique_columns)
+            })
+
+        conn = duckdb.connect()
+
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+        if normalized_rows:
+            rows_path = os.path.join(os.path.dirname(edits_path), "normalized-edited-rows.json")
+            with open(rows_path, "w", encoding="utf-8") as rows_file:
+                json.dump(normalized_rows, rows_file, ensure_ascii=False)
+
+            select_columns = ", ".join(
+                duckdb_identifier(column)
+                for column in unique_columns
+            )
+            conn.execute(
+                f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
+                f"TO {sql_string(output_path)} (FORMAT PARQUET)"
+            )
+        else:
+            column_definitions = ", ".join(
+                f"{duckdb_identifier(column)} VARCHAR"
+                for column in unique_columns
+            )
+            conn.execute(f"CREATE TEMP TABLE edited_data ({column_definitions})")
+            conn.execute(
+                f"COPY edited_data TO {sql_string(output_path)} (FORMAT PARQUET)"
+            )
+
+        conn.close()
+        conn = None
+
+        return {
+            "success": True,
+            "format": "parquet",
+            "outputPath": output_path,
+            "rowsExported": len(normalized_rows),
+            "columnsExported": len(unique_columns)
+        }
+
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        print(f"DEBUG: Error saving edited parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+SUPPORTED_WRITE_COMPRESSIONS = {
+    "uncompressed": "uncompressed",
+    "snappy": "snappy",
+    "gzip": "gzip",
+    "brotli": "brotli",
+    "zstd": "zstd"
+}
+
+SUPPORTED_WRITE_TYPES = {
+    "VARCHAR",
+    "BOOLEAN",
+    "BIGINT",
+    "DOUBLE",
+    "DATE",
+    "TIMESTAMP"
+}
+
+def normalize_write_type(value):
+    normalized = str(value or "VARCHAR").strip().upper()
+    if normalized.startswith("DECIMAL"):
+        return "DECIMAL(18, 4)"
+    if normalized not in SUPPORTED_WRITE_TYPES:
+        return "VARCHAR"
+    return normalized
+
+def normalize_write_payload(payload):
+    columns = payload.get("columns") or []
+    rows = payload.get("rows") or []
+
+    if not isinstance(columns, list) or not columns:
+        raise ValueError("Write payload columns must be a non-empty list.")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Write payload rows must be a non-empty list.")
+
+    normalized_columns = []
+    seen_names = set()
+    for index, column in enumerate(columns):
+        if not isinstance(column, dict):
+            raise ValueError("Each column definition must be an object.")
+
+        raw_name = str(column.get("name") or f"column_{index + 1}").strip()
+        if not raw_name:
+            raw_name = f"column_{index + 1}"
+
+        name = raw_name
+        suffix = 2
+        while name in seen_names:
+            name = f"{raw_name}_{suffix}"
+            suffix += 1
+
+        seen_names.add(name)
+        normalized_columns.append({
+            "name": name,
+            "type": normalize_write_type(column.get("type"))
+        })
+
+    normalized_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Each row must be an object.")
+
+        normalized_row = {}
+        for column in normalized_columns:
+            value = row.get(column["name"])
+            if isinstance(value, (dict, list)):
+                normalized_row[column["name"]] = json.dumps(value, ensure_ascii=False)
+            else:
+                normalized_row[column["name"]] = value
+        normalized_rows.append(normalized_row)
+
+    compression = str(payload.get("compression") or "snappy").lower()
+    if compression not in SUPPORTED_WRITE_COMPRESSIONS:
+        raise ValueError("Compression must be one of: uncompressed, snappy, gzip, brotli, zstd.")
+
+    row_group_size = payload.get("rowGroupSize")
+    if row_group_size is not None:
+        row_group_size = max(1, min(int(row_group_size), 10000000))
+
+    return normalized_columns, normalized_rows, compression, row_group_size
+
+def build_create_parquet_copy_options(compression, row_group_size):
+    options = [
+        "FORMAT PARQUET",
+        f"COMPRESSION {sql_string(SUPPORTED_WRITE_COMPRESSIONS[compression])}"
+    ]
+
+    if row_group_size:
+        options.append(f"ROW_GROUP_SIZE {row_group_size}")
+
+    return ", ".join(options)
+
+def create_parquet_file(output_path, payload_path):
+    if not os.path.exists(payload_path):
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": f"Write payload does not exist: {payload_path}"
+        }
+
+    conn = None
+    rows_path = None
+
+    try:
+        with open(payload_path, "r", encoding="utf-8") as payload_file:
+            payload = json.load(payload_file)
+
+        columns, rows, compression, row_group_size = normalize_write_payload(payload)
+        rows_path = os.path.join(os.path.dirname(payload_path), "normalized-write-rows.json")
+
+        with open(rows_path, "w", encoding="utf-8") as rows_file:
+            json.dump(rows, rows_file, ensure_ascii=False)
+
+        conn = duckdb.connect()
+
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+        select_columns = ", ".join(
+            f"TRY_CAST({duckdb_identifier(column['name'])} AS {column['type']}) AS {duckdb_identifier(column['name'])}"
+            for column in columns
+        )
+        copy_options = build_create_parquet_copy_options(compression, row_group_size)
+        conn.execute(
+            f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
+            f"TO {sql_string(output_path)} ({copy_options})"
+        )
+
+        conn.close()
+        conn = None
+
+        return {
+            "success": True,
+            "format": "parquet",
+            "outputPath": output_path,
+            "rowsExported": len(rows),
+            "columnsExported": len(columns),
+            "compression": compression,
+            "rowGroupSize": row_group_size
+        }
+    except Exception as e:
+        if conn is not None:
+            conn.close()
+
+        import traceback
+        print(f"DEBUG: Error creating parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+
+        return {
+            "success": False,
+            "format": "parquet",
+            "outputPath": output_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }
 
 def normalize_compare_mappings(base_columns, compare_columns, mappings):
@@ -1672,6 +2228,365 @@ def normalize_order_mapping(base_columns, compare_columns, order_mapping):
             "compareColumn": compare_name
         }
     }
+
+def normalized_column_name(name):
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+def smart_name_score(base_name, compare_name):
+    base_normalized = normalized_column_name(base_name)
+    compare_normalized = normalized_column_name(compare_name)
+
+    if base_name == compare_name:
+        return 1.0, "exact"
+
+    if str(base_name).lower() == str(compare_name).lower():
+        return 0.96, "case-insensitive"
+
+    if base_normalized and base_normalized == compare_normalized:
+        return 0.9, "normalized"
+
+    similarity = difflib.SequenceMatcher(None, base_normalized, compare_normalized).ratio()
+    if similarity >= 0.78:
+        return similarity, "fuzzy"
+
+    return similarity, "none"
+
+def infer_smart_mappings(base_columns, compare_columns):
+    available_compare = set(column["name"] for column in compare_columns)
+    compare_by_name = {column["name"]: column for column in compare_columns}
+    mappings = []
+
+    for base_column in base_columns:
+        best_candidate = None
+        best_score = 0
+        best_reason = "none"
+
+        for compare_name in available_compare:
+            compare_column = compare_by_name[compare_name]
+            if base_column["typeSignature"] != compare_column["typeSignature"]:
+                continue
+
+            score, reason = smart_name_score(base_column["name"], compare_column["name"])
+            if score > best_score:
+                best_candidate = compare_column
+                best_score = score
+                best_reason = reason
+
+        if best_candidate is not None and best_score >= 0.78:
+            available_compare.remove(best_candidate["name"])
+            mappings.append({
+                "baseColumn": base_column["name"],
+                "compareColumn": best_candidate["name"],
+                "displayColumn": base_column["name"] if base_column["name"] == best_candidate["name"] else f"{base_column['name']} -> {best_candidate['name']}",
+                "matchType": best_reason,
+                "confidence": round(best_score, 2)
+            })
+
+    skipped_base = [
+        column["name"]
+        for column in base_columns
+        if column["name"] not in {mapping["baseColumn"] for mapping in mappings}
+    ]
+    skipped_compare = list(available_compare)
+
+    return {
+        "success": bool(mappings),
+        "mappings": mappings,
+        "skippedBaseColumns": skipped_base,
+        "skippedCompareColumns": skipped_compare,
+        "error": None if mappings else "Smart Diff could not infer any same-type column mappings."
+    }
+
+def smart_key_name_score(name):
+    normalized = normalized_column_name(name)
+    if normalized in ("id", "key", "pk"):
+        return 6
+    if normalized.endswith("id") or normalized.endswith("key"):
+        return 4
+    if any(token in normalized for token in ("uuid", "guid", "code", "number", "no")):
+        return 3
+    return 0
+
+def is_smart_key_type(column):
+    type_text = str(column.get("duckdbType") or column.get("logicalType") or column.get("physicalType") or "").upper()
+    blocked_tokens = ("STRUCT", "LIST", "MAP", "UNION", "BLOB")
+    return not any(token in type_text for token in blocked_tokens)
+
+def get_key_column_stats(conn, table_name, column_name):
+    quoted_column = duckdb_identifier(column_name)
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*), COUNT(DISTINCT {quoted_column}), "
+            f"SUM(CASE WHEN {quoted_column} IS NULL THEN 1 ELSE 0 END) "
+            f"FROM {table_name}"
+        ).fetchone()
+        total = int(row[0] or 0)
+        distinct_count = int(row[1] or 0)
+        null_count = int(row[2] or 0)
+        uniqueness = distinct_count / total if total else 0
+        null_ratio = null_count / total if total else 0
+        return {
+            "total": total,
+            "distinct": distinct_count,
+            "nulls": null_count,
+            "uniqueness": uniqueness,
+            "nullRatio": null_ratio
+        }
+    except Exception:
+        return None
+
+def infer_smart_key_mapping(conn, base_columns, compare_columns, mappings):
+    base_by_name = {column["name"]: column for column in base_columns}
+    compare_by_name = {column["name"]: column for column in compare_columns}
+    best_candidate = None
+    best_score = -1
+
+    for mapping in mappings:
+        base_column = base_by_name.get(mapping["baseColumn"])
+        compare_column = compare_by_name.get(mapping["compareColumn"])
+        if not base_column or not compare_column:
+            continue
+        if not is_smart_key_type(base_column) or not is_smart_key_type(compare_column):
+            continue
+
+        base_stats = get_key_column_stats(conn, "smart_base_data", mapping["baseColumn"])
+        compare_stats = get_key_column_stats(conn, "smart_compare_data", mapping["compareColumn"])
+        if not base_stats or not compare_stats:
+            continue
+
+        name_score = max(
+            smart_key_name_score(mapping["baseColumn"]),
+            smart_key_name_score(mapping["compareColumn"])
+        )
+        if mapping["baseColumn"] == mapping["compareColumn"]:
+            name_score += 1
+
+        uniqueness_score = (base_stats["uniqueness"] + compare_stats["uniqueness"]) * 4
+        null_penalty = (base_stats["nullRatio"] + compare_stats["nullRatio"]) * 4
+        score = name_score + uniqueness_score - null_penalty
+
+        if score > best_score:
+            best_score = score
+            best_candidate = {
+                "baseColumn": mapping["baseColumn"],
+                "compareColumn": mapping["compareColumn"],
+                "displayColumn": mapping["displayColumn"],
+                "score": round(score, 2),
+                "baseStats": base_stats,
+                "compareStats": compare_stats
+            }
+
+    return best_candidate
+
+def create_smart_diff_view(conn, table_name, file_path):
+    parquet_path = sql_string(file_path)
+    row_id_column = duckdb_identifier("__parquet_x_smart_row_id")
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {table_name} AS "
+        f"SELECT row_number() OVER () AS {row_id_column}, * FROM read_parquet({parquet_path})"
+    )
+
+def smart_diff_parquet_files(base_path, compare_path):
+    print(f"DEBUG: Starting smart parquet diff: {base_path} vs {compare_path}", file=sys.stderr)
+
+    if not os.path.exists(base_path):
+        return {
+            "success": False,
+            "error": f"Base file does not exist: {base_path}"
+        }
+
+    if not os.path.exists(compare_path):
+        return {
+            "success": False,
+            "error": f"Compare file does not exist: {compare_path}"
+        }
+
+    base_metadata_conn = None
+    compare_metadata_conn = None
+    diff_conn = None
+
+    try:
+        base_metadata_conn = duckdb.connect()
+        compare_metadata_conn = duckdb.connect()
+        base_columns = read_compare_columns(base_metadata_conn, base_path)
+        compare_columns = read_compare_columns(compare_metadata_conn, compare_path)
+        base_metadata_conn.close()
+        compare_metadata_conn.close()
+        base_metadata_conn = None
+        compare_metadata_conn = None
+
+        mapping_result = infer_smart_mappings(base_columns, compare_columns)
+        if not mapping_result["success"]:
+            return {
+                "success": False,
+                "basePath": base_path,
+                "comparePath": compare_path,
+                "error": mapping_result["error"],
+                "smartDiff": mapping_result
+            }
+
+        diff_conn = duckdb.connect()
+        create_smart_diff_view(diff_conn, "smart_base_data", base_path)
+        create_smart_diff_view(diff_conn, "smart_compare_data", compare_path)
+
+        key_mapping = infer_smart_key_mapping(
+            diff_conn,
+            base_columns,
+            compare_columns,
+            mapping_result["mappings"]
+        )
+        if not key_mapping:
+            key_mapping = {
+                "baseColumn": mapping_result["mappings"][0]["baseColumn"],
+                "compareColumn": mapping_result["mappings"][0]["compareColumn"],
+                "displayColumn": mapping_result["mappings"][0]["displayColumn"],
+                "score": 0
+            }
+
+        normalized_mappings = mapping_result["mappings"]
+        display_columns = [mapping["displayColumn"] for mapping in normalized_mappings]
+        base_row_id_column = duckdb_identifier("__parquet_x_smart_row_id")
+        compare_row_id_column = duckdb_identifier("__parquet_x_smart_row_id")
+        base_key_column = duckdb_identifier(key_mapping["baseColumn"])
+        compare_key_column = duckdb_identifier(key_mapping["compareColumn"])
+        select_parts = [
+            f"b.{base_row_id_column} IS NULL AS __base_missing",
+            f"c.{compare_row_id_column} IS NULL AS __compare_missing",
+            f"COALESCE(CAST(b.{base_key_column} AS VARCHAR), CAST(c.{compare_key_column} AS VARCHAR)) AS __smart_key"
+        ]
+
+        for index, mapping in enumerate(normalized_mappings):
+            select_parts.append(f"b.{duckdb_identifier(mapping['baseColumn'])} AS {duckdb_identifier(f'base_value_{index}')}")
+            select_parts.append(f"c.{duckdb_identifier(mapping['compareColumn'])} AS {duckdb_identifier(f'compare_value_{index}')}")
+
+        diff_query = (
+            f"SELECT {', '.join(select_parts)} "
+            "FROM smart_base_data b "
+            "FULL OUTER JOIN smart_compare_data c "
+            f"ON b.{base_key_column} IS NOT DISTINCT FROM c.{compare_key_column} "
+            "ORDER BY __smart_key NULLS LAST"
+        )
+
+        total_rows_base = diff_conn.execute("SELECT COUNT(*) FROM smart_base_data").fetchone()[0]
+        total_rows_compare = diff_conn.execute("SELECT COUNT(*) FROM smart_compare_data").fetchone()[0]
+        diff_cursor = diff_conn.execute(diff_query)
+
+        mismatches = []
+        mismatch_count = 0
+        changed_rows = 0
+        inserted_rows = 0
+        deleted_rows = 0
+        unchanged_rows = 0
+        row_index = 0
+
+        while True:
+            rows = diff_cursor.fetchmany(1000)
+            if not rows:
+                break
+
+            for row in rows:
+                base_missing = bool(row[0])
+                compare_missing = bool(row[1])
+                key_value = serialize_compare_value(row[2])
+                values = row[3:]
+                base_values = values[0::2]
+                compare_values = values[1::2]
+                mismatch_type = None
+                mismatched_columns = []
+
+                if base_missing:
+                    mismatch_type = "missing_in_base"
+                    inserted_rows += 1
+                    mismatched_columns = display_columns
+                elif compare_missing:
+                    mismatch_type = "missing_in_compare"
+                    deleted_rows += 1
+                    mismatched_columns = display_columns
+                else:
+                    for column, base_value, compare_value in zip(display_columns, base_values, compare_values):
+                        if base_value != compare_value:
+                            mismatched_columns.append(column)
+
+                    if mismatched_columns:
+                        mismatch_type = "value_mismatch"
+                        changed_rows += 1
+                    else:
+                        unchanged_rows += 1
+
+                if mismatch_type:
+                    mismatch_count += 1
+                    if len(mismatches) < MAX_COMPARE_MISMATCHES:
+                        mismatches.append({
+                            "rowIndex": row_index,
+                            "keyValue": key_value,
+                            "type": mismatch_type,
+                            "base": row_to_dict(display_columns, base_values),
+                            "compare": row_to_dict(display_columns, compare_values),
+                            "mismatchedColumns": mismatched_columns
+                        })
+
+                row_index += 1
+
+        diff_conn.close()
+        diff_conn = None
+
+        exact_matches = len([
+            mapping for mapping in normalized_mappings
+            if mapping.get("matchType") in ("exact", "case-insensitive")
+        ])
+        fuzzy_matches = len(normalized_mappings) - exact_matches
+
+        return {
+            "success": True,
+            "basePath": base_path,
+            "comparePath": compare_path,
+            "columns": display_columns,
+            "totalRowsBase": total_rows_base,
+            "totalRowsCompare": total_rows_compare,
+            "rowsCompared": row_index,
+            "mismatchCount": mismatch_count,
+            "mismatches": mismatches,
+            "mappings": normalized_mappings,
+            "orderMapping": {
+                "baseColumn": key_mapping["baseColumn"],
+                "compareColumn": key_mapping["compareColumn"]
+            },
+            "mismatchLimit": MAX_COMPARE_MISMATCHES,
+            "truncated": mismatch_count > len(mismatches),
+            "diffMode": "smart",
+            "smartDiff": {
+                "keyMapping": key_mapping,
+                "mappedColumns": len(normalized_mappings),
+                "exactMatches": exact_matches,
+                "fuzzyMatches": fuzzy_matches,
+                "skippedBaseColumns": mapping_result["skippedBaseColumns"],
+                "skippedCompareColumns": mapping_result["skippedCompareColumns"],
+                "insertedRows": inserted_rows,
+                "deletedRows": deleted_rows,
+                "changedRows": changed_rows,
+                "unchangedRows": unchanged_rows
+            }
+        }
+
+    except Exception as e:
+        if base_metadata_conn is not None:
+            base_metadata_conn.close()
+        if compare_metadata_conn is not None:
+            compare_metadata_conn.close()
+        if diff_conn is not None:
+            diff_conn.close()
+
+        import traceback
+        print(f"DEBUG: Error running smart parquet diff: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+
+        return {
+            "success": False,
+            "basePath": base_path,
+            "comparePath": compare_path,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 def compare_parquet_files(base_path, compare_path, mappings=None, order_mapping=None):
     print(f"DEBUG: Starting parquet compare: {base_path} vs {compare_path}", file=sys.stderr)
@@ -1828,18 +2743,163 @@ def compare_parquet_files(base_path, compare_path, mappings=None, order_mapping=
             "traceback": traceback.format_exc()
         }
 
+def _worker_payload_text(payload, key):
+    value = payload.get(key)
+    return value if isinstance(value, str) else None
+
+def handle_worker_request(session_manager, request):
+    request_id = request.get("requestId")
+    command = request.get("command")
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+
+    try:
+        if not isinstance(command, str) or not command:
+            raise ValueError("Worker request missing command.")
+
+        if command == "read":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            query = payload.get("query") if isinstance(payload.get("query"), str) else None
+            conn = session_manager.get_session_connection(session_id, file_path)
+            result = read_parquet_file_from_connection(conn, file_path, query)
+        elif command == "doctor":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            conn = session_manager.get_session_connection(session_id, file_path)
+            result = run_parquet_doctor_from_connection(conn, file_path)
+        elif command == "export":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            output_path = _worker_payload_text(payload, "outputPath")
+            export_format = _worker_payload_text(payload, "format")
+            query = payload.get("query") if isinstance(payload.get("query"), str) else None
+            if export_format not in ("csv", "json", "sqlite"):
+                raise ValueError(f"Unsupported export format: {export_format}")
+            if not output_path:
+                raise ValueError("Worker export request missing outputPath.")
+            conn = session_manager.get_session_connection(session_id, file_path)
+            result = export_parquet_file_from_connection(conn, output_path, export_format, query)
+        elif command == "save_edits":
+            file_path = _worker_payload_text(payload, "filePath")
+            output_path = _worker_payload_text(payload, "outputPath")
+            edits_path = _worker_payload_text(payload, "editsPath")
+            result = save_edited_parquet_file(file_path, output_path, edits_path)
+        elif command == "create_parquet":
+            output_path = _worker_payload_text(payload, "outputPath")
+            payload_path = _worker_payload_text(payload, "payloadPath")
+            result = create_parquet_file(output_path, payload_path)
+        elif command == "compare_metadata":
+            file_path = _worker_payload_text(payload, "filePath")
+            compare_path = _worker_payload_text(payload, "comparePath")
+            result = get_compare_metadata(file_path, compare_path)
+        elif command == "compare":
+            file_path = _worker_payload_text(payload, "filePath")
+            compare_path = _worker_payload_text(payload, "comparePath")
+            mappings = payload.get("mappings") if isinstance(payload.get("mappings"), list) else None
+            order_mapping = payload.get("orderMapping") if isinstance(payload.get("orderMapping"), dict) else None
+            result = compare_parquet_files(file_path, compare_path, mappings, order_mapping)
+        elif command == "smart_diff":
+            file_path = _worker_payload_text(payload, "filePath")
+            compare_path = _worker_payload_text(payload, "comparePath")
+            result = smart_diff_parquet_files(file_path, compare_path)
+        elif command == "join_metadata":
+            file_path = _worker_payload_text(payload, "filePath")
+            join_path = _worker_payload_text(payload, "joinPath")
+            result = get_join_metadata(file_path, join_path)
+        elif command == "join":
+            file_path = _worker_payload_text(payload, "filePath")
+            join_path = _worker_payload_text(payload, "joinPath")
+            options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+            result = join_data_files(file_path, join_path, options)
+        elif command == "schema_drift":
+            file_path = _worker_payload_text(payload, "filePath")
+            reference_path = _worker_payload_text(payload, "referencePath")
+            result = detect_schema_drift(file_path, reference_path)
+        elif command == "dataset_scan":
+            folder_path = _worker_payload_text(payload, "folderPath")
+            result = analyze_dataset_partitions(folder_path)
+        elif command == "release_session":
+            session_id = _worker_payload_text(payload, "sessionId")
+            session_manager.release_session(session_id)
+            result = {"success": True}
+        else:
+            raise ValueError(f"Unsupported worker command: {command}")
+
+        return {"requestId": request_id, "result": result}
+    except Exception as error:
+        print(f"DEBUG: Worker command failed ({command}): {error}", file=sys.stderr)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+        return {
+            "requestId": request_id,
+            "result": {
+                "success": False,
+                "error": str(error),
+                "traceback": traceback.format_exc()
+            }
+        }
+
+def run_worker():
+    session_manager = WorkerSessionManager()
+    try:
+        for raw_line in sys.stdin:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            try:
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ValueError("Worker request must be a JSON object.")
+            except Exception as error:
+                print(f"DEBUG: Invalid worker request: {error}", file=sys.stderr)
+                continue
+
+            response = handle_worker_request(session_manager, request)
+            print(json.dumps(response), flush=True)
+    finally:
+        session_manager.close_all()
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--worker":
+        run_worker()
+        sys.exit(0)
+
     if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query] [--export csv|json|sqlite <output_path>] [--compare compare_path [mappings_json] [order_mapping_json]] [--compare-metadata compare_path] [--schema-drift reference_path] [--dataset-scan folder_path]'
+            'error': 'Usage: python read_parquet.py <file_path> [query] [--doctor] [--export csv|json|sqlite <output_path>] [--save-edits output_path edits_json_path] [--create-parquet output_path payload_json_path] [--compare compare_path [mappings_json] [order_mapping_json]] [--smart-diff compare_path] [--compare-metadata compare_path] [--join-metadata join_path] [--join join_path options_json] [--schema-drift reference_path] [--dataset-scan folder_path]'
         }))
         sys.exit(1)
     
     file_path = sys.argv[1]
     args = sys.argv[2:]
 
-    if "--compare-metadata" in args:
+    if "--doctor" in args:
+        result = run_parquet_doctor(file_path)
+    elif "--join-metadata" in args:
+        join_metadata_index = args.index("--join-metadata")
+
+        if len(args) < join_metadata_index + 2:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --join-metadata <join_path>'
+            }
+        else:
+            join_path = args[join_metadata_index + 1]
+            result = get_join_metadata(file_path, join_path)
+    elif "--join" in args:
+        join_index = args.index("--join")
+
+        if len(args) < join_index + 3:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --join <join_path> <options_json>'
+            }
+        else:
+            join_path = args[join_index + 1]
+            options = json.loads(args[join_index + 2])
+            result = join_data_files(file_path, join_path, options)
+    elif "--compare-metadata" in args:
         metadata_index = args.index("--compare-metadata")
 
         if len(args) < metadata_index + 2:
@@ -1872,6 +2932,18 @@ if __name__ == "__main__":
         else:
             folder_path = args[dataset_index + 1]
             result = analyze_dataset_partitions(folder_path)
+    elif "--smart-diff" in args:
+        smart_diff_index = args.index("--smart-diff")
+
+        if len(args) < smart_diff_index + 2:
+            print(json.dumps({
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --smart-diff <compare_path>'
+            }))
+            sys.exit(1)
+
+        compare_path = args[smart_diff_index + 1]
+        result = smart_diff_parquet_files(file_path, compare_path)
     elif "--compare" in args:
         compare_index = args.index("--compare")
 
@@ -1902,6 +2974,30 @@ if __name__ == "__main__":
             export_format = args[export_index + 1]
             output_path = args[export_index + 2]
             result = export_parquet_file(file_path, output_path, export_format, user_query)
+    elif "--save-edits" in args:
+        save_edits_index = args.index("--save-edits")
+
+        if len(args) < save_edits_index + 3:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --save-edits <output_path> <edits_json_path>'
+            }
+        else:
+            output_path = args[save_edits_index + 1]
+            edits_path = args[save_edits_index + 2]
+            result = save_edited_parquet_file(file_path, output_path, edits_path)
+    elif "--create-parquet" in args:
+        create_index = args.index("--create-parquet")
+
+        if len(args) < create_index + 3:
+            result = {
+                'success': False,
+                'error': 'Usage: python read_parquet.py <file_path> --create-parquet <output_path> <payload_json_path>'
+            }
+        else:
+            output_path = args[create_index + 1]
+            payload_path = args[create_index + 2]
+            result = create_parquet_file(output_path, payload_path)
     else:
         user_query = args[0] if len(args) == 1 else None
         result = read_parquet_file(file_path, user_query)

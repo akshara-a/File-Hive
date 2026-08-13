@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
-  "displayName": "parquetx",
-  "description": "View Parquet Files",
-  "version": "1.0.7",
+  "displayName": "Parquet-X",
+  "description": "View, query, create, compare, diagnose, and export Apache Parquet files in VS Code.",
+  "version": "1.1.1",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",
@@ -33,6 +33,7 @@
     "Parquet"
   ],
   "activationEvents": [
+    "onCommand:parquetViewer.setupEnvironment",
     "onCustomEditor:parquetViewer.parquetViewer"
   ],
   "main": "./out/extension.js",
@@ -53,6 +54,11 @@
         "command": "parquetViewer.refresh",
         "title": "Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "parquetViewer.setupEnvironment",
+        "title": "Setup Python Environment",
+        "category": "Parquet Viewer"
       },
       {
         "command": "parquetViewer.showLogs",
@@ -86,5 +92,8 @@
     "copyfiles": "^2.4.1",
     "eslint": "^9.36.0",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "loglevel": "^1.9.2"
   }
 }

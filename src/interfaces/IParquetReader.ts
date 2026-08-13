@@ -2,12 +2,25 @@ import * as vscode from 'vscode';
 
 export interface IParquetReader {
     readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult>;
+    runParquetDoctor(uri: vscode.Uri): Promise<ParquetDoctorRunResult>;
+    releaseFileSession(uri: vscode.Uri): Promise<void>;
     exportParquetFile(
         uri: vscode.Uri,
         format: ParquetExportFormat,
         outputUri: vscode.Uri,
         query?: string
     ): Promise<ParquetExportResult>;
+    saveEditedParquetFile(
+        uri: vscode.Uri,
+        outputUri: vscode.Uri,
+        columns: string[],
+        rows: Record<string, any>[]
+    ): Promise<ParquetEditSaveResult>;
+    createParquetFile(
+        uri: vscode.Uri,
+        outputUri: vscode.Uri,
+        options: ParquetWriteOptions
+    ): Promise<ParquetWriteResult>;
     getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult>;
     compareParquetFile(
         uri: vscode.Uri,
@@ -15,11 +28,14 @@ export interface IParquetReader {
         mappings?: ParquetCompareMapping[],
         orderMapping?: ParquetCompareOrderMapping
     ): Promise<ParquetCompareResult>;
+    smartDiffParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult>;
+    getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<ParquetJoinResult>;
+    joinParquetFile(uri: vscode.Uri, joinUri: vscode.Uri, options: ParquetJoinOptions): Promise<ParquetJoinResult>;
     detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult>;
     scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult>;
 }
 
-export type ParquetExportFormat = 'csv' | 'json' | 'sqlite';
+export type ParquetExportFormat = 'csv' | 'json' | 'sqlite' | 'parquet';
 
 export interface ParquetDataResult {
     success: boolean;
@@ -30,6 +46,13 @@ export interface ParquetDataResult {
     query?: string;
     resultLimited?: boolean;
     schema?: ParquetSchemaResult;
+    doctor?: ParquetDoctorResult;
+    error?: string;
+    traceback?: string;
+}
+
+export interface ParquetDoctorRunResult {
+    success: boolean;
     doctor?: ParquetDoctorResult;
     error?: string;
     traceback?: string;
@@ -91,6 +114,7 @@ export interface ParquetDoctorSchemaColumn {
 export interface ParquetDoctorRowGroup {
     id: number | string;
     rowCount: number;
+    compression?: string;
     compressedSize?: number;
     uncompressedSize?: number;
     compressionRatio?: number;
@@ -120,6 +144,42 @@ export interface ParquetExportResult {
     traceback?: string;
 }
 
+export interface ParquetEditSaveResult {
+    success: boolean;
+    format?: 'parquet';
+    outputPath?: string;
+    rowsExported?: number;
+    columnsExported?: number;
+    error?: string;
+    traceback?: string;
+}
+
+export type ParquetCompressionCodec = 'uncompressed' | 'snappy' | 'gzip' | 'brotli' | 'zstd';
+
+export interface ParquetWriteColumn {
+    name: string;
+    type: string;
+}
+
+export interface ParquetWriteOptions {
+    columns: ParquetWriteColumn[];
+    rows: Record<string, any>[];
+    compression: ParquetCompressionCodec;
+    rowGroupSize?: number;
+}
+
+export interface ParquetWriteResult {
+    success: boolean;
+    format?: 'parquet';
+    outputPath?: string;
+    rowsExported?: number;
+    columnsExported?: number;
+    compression?: ParquetCompressionCodec;
+    rowGroupSize?: number;
+    error?: string;
+    traceback?: string;
+}
+
 export interface ParquetCompareResult {
     success: boolean;
     basePath?: string;
@@ -134,8 +194,28 @@ export interface ParquetCompareResult {
     orderMapping?: ParquetCompareOrderMapping;
     mismatchLimit?: number;
     truncated?: boolean;
+    diffMode?: 'smart';
+    smartDiff?: ParquetSmartDiffSummary;
     error?: string;
     traceback?: string;
+}
+
+export interface ParquetSmartDiffSummary {
+    keyMapping?: ParquetCompareOrderMapping & {
+        displayColumn?: string;
+        score?: number;
+        baseStats?: Record<string, number>;
+        compareStats?: Record<string, number>;
+    };
+    mappedColumns?: number;
+    exactMatches?: number;
+    fuzzyMatches?: number;
+    skippedBaseColumns?: string[];
+    skippedCompareColumns?: string[];
+    insertedRows?: number;
+    deletedRows?: number;
+    changedRows?: number;
+    unchangedRows?: number;
 }
 
 export interface ParquetCompareMetadataResult {
@@ -170,6 +250,31 @@ export interface ParquetCompareMapping {
 export interface ParquetCompareOrderMapping {
     baseColumn: string;
     compareColumn: string;
+}
+
+export type ParquetJoinType = 'inner' | 'left' | 'right' | 'full';
+
+export interface ParquetJoinOptions {
+    baseColumn: string;
+    joinColumn: string;
+    joinType: ParquetJoinType;
+    limit?: number;
+}
+
+export interface ParquetJoinResult {
+    success: boolean;
+    basePath?: string;
+    joinPath?: string;
+    joinType?: ParquetJoinType;
+    baseColumns?: ParquetCompareColumn[];
+    joinColumns?: ParquetCompareColumn[];
+    columns?: string[];
+    data?: Record<string, any>[];
+    rowCount?: number;
+    totalRows?: number;
+    resultLimited?: boolean;
+    error?: string;
+    traceback?: string;
 }
 
 export interface ParquetSchemaDriftResult {
@@ -207,6 +312,7 @@ export interface ParquetDatasetAnalysisResult {
 
 export interface ParquetRowMismatch {
     rowIndex: number;
+    keyValue?: string | number | boolean | null;
     type: 'value_mismatch' | 'missing_in_base' | 'missing_in_compare';
     base?: Record<string, any>;
     compare?: Record<string, any>;

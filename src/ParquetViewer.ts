@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { IParquetReader, ParquetCompareMapping, ParquetCompareOrderMapping } from './interfaces/IParquetReader';
+import * as fs from 'fs';
+import { IParquetReader, ParquetCompareMapping, ParquetCompareOrderMapping, ParquetJoinOptions, ParquetWriteOptions } from './interfaces/IParquetReader';
 import { IWebviewRenderer } from './interfaces/IWebviewRenderer';
 
 export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'parquetViewer.parquetViewer';
     private readonly compareFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
+    private readonly joinFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
 
     /**
      * Constructs a ParquetViewer object.
@@ -50,7 +52,12 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
      * @returns {Promise<vscode.CustomDocument>} A promise that resolves to a custom document.
      */
     async openCustomDocument(uri: vscode.Uri): Promise<vscode.CustomDocument> {
-        return { uri, dispose: () => {} };
+        return {
+            uri,
+            dispose: () => {
+                void this.parquetReader.releaseFileSession(uri).catch(() => undefined);
+            }
+        };
     }
 
     /**
@@ -70,6 +77,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         _token: vscode.CancellationToken
     ): Promise<void> {
         this.setupWebview(webviewPanel, document);
+        webviewPanel.webview.html = this.getLoadingWebviewContent();
         await this.initializeWebviewContent(webviewPanel, document.uri);
     }
 
@@ -113,8 +121,23 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                 case 'export':
                     await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query);
                     break;
+                case 'saveEditedParquet':
+                    await this.saveEditedParquet(webviewPanel, document.uri, message.columns, message.rows);
+                    break;
+                case 'createParquet':
+                    await this.createParquet(webviewPanel, document.uri, message.options);
+                    break;
                 case 'selectCompareFile':
                     await this.selectCompareFile(webviewPanel, document.uri, message.customMappingEnabled);
+                    break;
+                case 'selectJoinFile':
+                    await this.selectJoinFile(webviewPanel, document.uri);
+                    break;
+                case 'runJoin':
+                    await this.runJoin(webviewPanel, document.uri, message.options);
+                    break;
+                case 'exportJoinPreview':
+                    await this.exportJoinPreview(webviewPanel, document.uri, message.columns, message.rows);
                     break;
                 case 'runStrictCompare':
                     await this.runCompare(webviewPanel, document.uri, undefined, message.orderMapping);
@@ -122,11 +145,17 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
                 case 'runCustomCompare':
                     await this.runCompare(webviewPanel, document.uri, message.mappings, message.orderMapping);
                     break;
+                case 'runSmartDiff':
+                    await this.runSmartDiff(webviewPanel, document.uri);
+                    break;
                 case 'selectDoctorReferenceFile':
                     await this.selectDoctorReferenceFile(webviewPanel, document.uri);
                     break;
                 case 'selectDoctorDatasetFolder':
                     await this.selectDoctorDatasetFolder(webviewPanel, document.uri);
+                    break;
+                case 'runDoctor':
+                    await this.runDoctorChecks(webviewPanel, document.uri);
                     break;
             }
         });
@@ -243,6 +272,187 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         return { 'SQLite Databases': ['sqlite', 'db'] };
     }
 
+    private async saveEditedParquet(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        columns?: unknown,
+        rows?: unknown
+    ): Promise<void> {
+        const parsedColumns = this.parseEditColumns(columns);
+        const parsedRows = this.parseEditRows(rows);
+
+        if (parsedColumns.length === 0 || !parsedRows) {
+            await webviewPanel.webview.postMessage({
+                type: 'editSaveResult',
+                result: { success: false, error: 'No editable rows are available to save.' }
+            });
+            return;
+        }
+
+        const defaultUri = this.getDefaultEditedParquetUri(uri);
+        const outputUri = await vscode.window.showSaveDialog({
+            defaultUri,
+            filters: { 'Parquet Files': ['parquet'] },
+            saveLabel: 'Save New Parquet'
+        });
+
+        if (!outputUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'editSaveResult',
+                result: { success: false, error: 'Save cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.saveEditedParquetFile(uri, outputUri, parsedColumns, parsedRows);
+
+        if (result.success) {
+            const openAction = 'Open New Parquet';
+            const message = `Saved edited data as a new Parquet file: ${outputUri.fsPath}. To view the changes, open the new Parquet file.`;
+            const action = await vscode.window.showInformationMessage(message, openAction);
+
+            if (action === openAction) {
+                await vscode.commands.executeCommand('vscode.openWith', outputUri, ParquetViewer.viewType);
+            }
+        } else {
+            vscode.window.showErrorMessage(result.error || 'Could not save edited Parquet file.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'editSaveResult', result });
+    }
+
+    private getDefaultEditedParquetUri(uri: vscode.Uri): vscode.Uri {
+        const parsedPath = path.parse(uri.fsPath);
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_edited.parquet`));
+    }
+
+    private async createParquet(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        options?: unknown
+    ): Promise<void> {
+        const writeOptions = this.parseWriteOptions(options);
+
+        if (!writeOptions) {
+            await webviewPanel.webview.postMessage({
+                type: 'writeResult',
+                result: { success: false, error: 'Provide rows, columns, compression, and a valid row group size.' }
+            });
+            return;
+        }
+
+        const defaultUri = this.getDefaultCreatedParquetUri(uri);
+        const outputUri = await vscode.window.showSaveDialog({
+            defaultUri,
+            filters: { 'Parquet Files': ['parquet'] },
+            saveLabel: 'Create Parquet'
+        });
+
+        if (!outputUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'writeResult',
+                result: { success: false, error: 'Create cancelled.' }
+            });
+            return;
+        }
+
+        if (path.resolve(outputUri.fsPath) === path.resolve(uri.fsPath)) {
+            await webviewPanel.webview.postMessage({
+                type: 'writeResult',
+                result: { success: false, error: 'Choose a new file path instead of overwriting the currently open file.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.createParquetFile(uri, outputUri, writeOptions);
+
+        if (result.success) {
+            const openAction = 'Open Created Parquet';
+            const message = `Created Parquet file: ${outputUri.fsPath}`;
+            const action = await vscode.window.showInformationMessage(message, openAction);
+
+            if (action === openAction) {
+                await vscode.commands.executeCommand('vscode.openWith', outputUri, ParquetViewer.viewType);
+            }
+        } else {
+            vscode.window.showErrorMessage(result.error || 'Could not create Parquet file.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'writeResult', result });
+    }
+
+    private getDefaultCreatedParquetUri(uri: vscode.Uri): vscode.Uri {
+        const parsedPath = path.parse(uri.fsPath);
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_created.parquet`));
+    }
+
+    private parseWriteOptions(options?: unknown): ParquetWriteOptions | undefined {
+        if (typeof options !== 'object' || options === null ||
+            !('columns' in options) || !('rows' in options) || !('compression' in options)) {
+            return undefined;
+        }
+
+        const rawColumns = (options as { columns?: unknown }).columns;
+        const rawRows = (options as { rows?: unknown }).rows;
+        const rawCompression = String((options as { compression?: unknown }).compression || '').toLowerCase();
+        const rawRowGroupSize = (options as { rowGroupSize?: unknown }).rowGroupSize;
+        const allowedCompressions = ['uncompressed', 'snappy', 'gzip', 'brotli', 'zstd'];
+
+        if (!Array.isArray(rawColumns) || !Array.isArray(rawRows) || !allowedCompressions.includes(rawCompression)) {
+            return undefined;
+        }
+
+        const columns = rawColumns
+            .filter((column): column is { name: unknown; type: unknown } => {
+                return typeof column === 'object' && column !== null && 'name' in column && 'type' in column;
+            })
+            .map((column) => ({
+                name: String(column.name).trim(),
+                type: String(column.type).trim().toUpperCase()
+            }))
+            .filter((column) => column.name.length > 0 && column.type.length > 0);
+
+        const rows = rawRows.filter((row): row is Record<string, any> => {
+            return typeof row === 'object' && row !== null && !Array.isArray(row);
+        });
+
+        const rowGroupSize = Number(rawRowGroupSize);
+        const normalizedRowGroupSize = Number.isFinite(rowGroupSize)
+            ? Math.min(10_000_000, Math.max(1, Math.trunc(rowGroupSize)))
+            : undefined;
+
+        if (!columns.length || !rows.length) {
+            return undefined;
+        }
+
+        return {
+            columns,
+            rows,
+            compression: rawCompression as ParquetWriteOptions['compression'],
+            rowGroupSize: normalizedRowGroupSize
+        };
+    }
+
+    private parseEditColumns(columns?: unknown): string[] {
+        if (!Array.isArray(columns)) {
+            return [];
+        }
+
+        return columns
+            .map((column) => String(column))
+            .filter((column) => column.length > 0);
+    }
+
+    private parseEditRows(rows?: unknown): Record<string, any>[] | undefined {
+        if (!Array.isArray(rows)) {
+            return undefined;
+        }
+
+        return rows.filter((row): row is Record<string, any> => {
+            return typeof row === 'object' && row !== null && !Array.isArray(row);
+        });
+    }
+
     private async selectCompareFile(
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
@@ -275,6 +485,156 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             vscode.window.showErrorMessage(metadataResult.error || 'Could not read compare columns.');
             return;
         }
+    }
+
+    private async selectJoinFile(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const selectedFiles = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: {
+                'Data Files': ['parquet', 'csv'],
+                'Parquet Files': ['parquet'],
+                'CSV Files': ['csv']
+            },
+            openLabel: 'Join With'
+        });
+
+        if (!selectedFiles || selectedFiles.length === 0) {
+            this.joinFiles.delete(webviewPanel);
+            await webviewPanel.webview.postMessage({
+                type: 'joinMetadata',
+                result: { success: false, error: 'Join cancelled.' }
+            });
+            return;
+        }
+
+        const joinUri = selectedFiles[0];
+        this.joinFiles.set(webviewPanel, joinUri);
+
+        const metadataResult = await this.parquetReader.getJoinMetadata(uri, joinUri);
+        await webviewPanel.webview.postMessage({ type: 'joinMetadata', result: metadataResult });
+
+        if (!metadataResult.success) {
+            vscode.window.showErrorMessage(metadataResult.error || 'Could not read join columns.');
+        }
+    }
+
+    private async runJoin(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, options?: unknown): Promise<void> {
+        const joinUri = this.joinFiles.get(webviewPanel);
+
+        if (!joinUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'joinResult',
+                result: { success: false, error: 'Choose a join file first.' }
+            });
+            return;
+        }
+
+        const joinOptions = this.parseJoinOptions(options);
+        if (!joinOptions) {
+            await webviewPanel.webview.postMessage({
+                type: 'joinResult',
+                result: { success: false, error: 'Choose join keys and a valid join type.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.joinParquetFile(uri, joinUri, joinOptions);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Join failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'joinResult', result });
+    }
+
+    private parseJoinOptions(options?: unknown): ParquetJoinOptions | undefined {
+        if (typeof options !== 'object' || options === null ||
+            !('baseColumn' in options) || !('joinColumn' in options) || !('joinType' in options)) {
+            return undefined;
+        }
+
+        const joinType = String(options.joinType);
+        if (joinType !== 'inner' && joinType !== 'left' && joinType !== 'right' && joinType !== 'full') {
+            return undefined;
+        }
+
+        const limit = 'limit' in options ? Number(options.limit) : 100;
+        return {
+            baseColumn: String(options.baseColumn),
+            joinColumn: String(options.joinColumn),
+            joinType,
+            limit: Number.isFinite(limit) ? Math.min(1000, Math.max(1, Math.trunc(limit))) : 100
+        };
+    }
+
+    private async exportJoinPreview(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        columns?: unknown,
+        rows?: unknown
+    ): Promise<void> {
+        const parsedColumns = this.parseEditColumns(columns);
+        const parsedRows = this.parseEditRows(rows);
+
+        if (parsedColumns.length === 0 || !parsedRows) {
+            await webviewPanel.webview.postMessage({
+                type: 'joinPreviewExportResult',
+                result: { success: false, error: 'No join preview rows are available to export.' }
+            });
+            return;
+        }
+
+        const parsedPath = path.parse(uri.fsPath);
+        const outputUri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_join_preview.csv`)),
+            filters: { 'CSV Files': ['csv'] },
+            saveLabel: 'Export Join Preview'
+        });
+
+        if (!outputUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'joinPreviewExportResult',
+                result: { success: false, error: 'Export cancelled.' }
+            });
+            return;
+        }
+
+        try {
+            const csv = this.toCsv(parsedColumns, parsedRows);
+            await fs.promises.writeFile(outputUri.fsPath, csv, 'utf8');
+            vscode.window.showInformationMessage(`Exported join preview to ${outputUri.fsPath}`);
+            await webviewPanel.webview.postMessage({
+                type: 'joinPreviewExportResult',
+                result: { success: true, outputPath: outputUri.fsPath, rowsExported: parsedRows.length }
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Could not export join preview: ${message}`);
+            await webviewPanel.webview.postMessage({
+                type: 'joinPreviewExportResult',
+                result: { success: false, error: message }
+            });
+        }
+    }
+
+    private toCsv(columns: string[], rows: Record<string, any>[]): string {
+        const lines = [columns.map((column) => this.escapeCsvValue(column)).join(',')];
+        rows.forEach((row) => {
+            lines.push(columns.map((column) => this.escapeCsvValue(row[column])).join(','));
+        });
+
+        return `${lines.join('\n')}\n`;
+    }
+
+    private escapeCsvValue(value: unknown): string {
+        if (value === null || value === undefined) {
+            return '';
+        }
+
+        const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     }
 
     private async runCompare(
@@ -313,6 +673,26 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Parquet compare failed.');
+        }
+
+        await webviewPanel.webview.postMessage({ type: 'compareResult', result });
+    }
+
+    private async runSmartDiff(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const compareUri = this.compareFiles.get(webviewPanel);
+
+        if (!compareUri) {
+            await webviewPanel.webview.postMessage({
+                type: 'compareResult',
+                result: { success: false, error: 'Choose a compare file first.' }
+            });
+            return;
+        }
+
+        const result = await this.parquetReader.smartDiffParquetFile(uri, compareUri);
+
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || 'Smart Parquet Diff failed.');
         }
 
         await webviewPanel.webview.postMessage({ type: 'compareResult', result });
@@ -404,6 +784,11 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         await webviewPanel.webview.postMessage({ type: 'doctorDatasetResult', result });
     }
 
+    private async runDoctorChecks(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+        const result = await this.parquetReader.runParquetDoctor(uri);
+        await webviewPanel.webview.postMessage({ type: 'doctorResult', result });
+    }
+
         /**
          * Updates the webview content for the given webview panel and uri.
          * 
@@ -418,5 +803,66 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
     private async updateWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: string): Promise<void> {
         const parquetData = await this.parquetReader.readParquetFile(uri, query);
         webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, parquetData);
+    }
+
+    private getLoadingWebviewContent(): string {
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            font-family: var(--vscode-font-family);
+            color: var(--vscode-foreground);
+            background: var(--vscode-editor-background);
+        }
+
+        .status {
+            display: grid;
+            gap: 10px;
+            justify-items: center;
+            max-width: 420px;
+            padding: 24px;
+            text-align: center;
+        }
+
+        .spinner {
+            width: 28px;
+            height: 28px;
+            border: 3px solid var(--vscode-progressBar-background);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+
+        .title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .detail {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground);
+            line-height: 1.5;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <main class="status">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="title">Preparing Parquet viewer</div>
+        <div class="detail">Setting up local Python and DuckDB support. This only happens when needed.</div>
+    </main>
+</body>
+</html>`;
     }
 }

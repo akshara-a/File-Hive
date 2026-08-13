@@ -1,6 +1,7 @@
 export const EXTENSION_NAME = 'Parquet Viewer';
 export const MESSAGES = {
     ENVIRONMENT_INITIALIZING: "Setting up environment for Parquet Viewer...",
+    ENVIRONMENT_SETUP_SUCCESS: "Parquet Viewer: Python environment is ready.",
     ENVIRONMENT_SETUP_FAILED: "Parquet Viewer: Failed to setup environment for Parquet Viewer.",
     ENVIRONMENT_RESETTING: "Resetting environment for Parquet Viewer...",
     ENVIRONMENT_RESET_SUCCESS: "Parquet Viewer: Environment reset successfully.",
@@ -10,9 +11,10 @@ export const MESSAGES = {
 };
 export const REGISTER_COMMANDS = {
     REFRESH: "parquetViewer.refresh",
+    SETUP_ENVIRONMENT: "parquetViewer.setupEnvironment",
     SHOW_LOGS: "parquetViewer.showLogs",
     RESET_ENVIRONMENT: "parquetViewer.resetEnvironment"
-}
+};
 export const SHOW_LOGS = "Show Logs";
 export const RESET_ENVIRONMENT = "Reset Environment";
 export const CANCEL = "Cancel";
