@@ -2,7 +2,7 @@
 
 Parquet-X is an open-source Visual Studio Code extension for inspecting Apache Parquet files without leaving your editor. It provides a local viewer for browsing data, running read-only SQL queries, creating Parquet files, performing exploratory data analysis, exporting results, comparing and joining files, visualizing query results, reviewing schema metadata, and diagnosing common Parquet issues.
 
-All file processing runs locally through DuckDB in an isolated Python environment created by the extension.
+All file processing runs locally through DuckDB in an isolated Python environment created by the extension. When `uv` is available, Parquet-X uses it to create the environment and install DuckDB faster, with Python/pip as a fallback.
 
 ## Features
 
@@ -26,7 +26,7 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 
 Install Parquet-X from the Visual Studio Code Marketplace, then open any `.parquet` file from your workspace.
 
-Parquet-X activates when you open a `.parquet` file (or run setup) and prepares its local Python/DuckDB environment only when needed. The prepared environment is stored in VS Code global storage and reused afterward.
+Parquet-X activates when you open a `.parquet` file (or run setup) and prepares its local Python/DuckDB environment only when needed. Setup reports progress while it checks Python, creates the isolated environment, installs DuckDB, and verifies everything is ready. The prepared environment is stored in VS Code global storage and reused afterward.
 
 ## Usage
 
@@ -150,6 +150,7 @@ The following commands are available from the Command Palette:
 
 - Visual Studio Code `1.104.0` or newer.
 - A working Python installation. The extension manages its own isolated Python environment for DuckDB and stores it in VS Code global storage for reuse.
+- Optional: `uv` on your `PATH` for faster first-time environment creation and DuckDB installation. If `uv` is not available, Parquet-X falls back to Python's built-in `venv` and pip.
 
 ## Known Limitations
 

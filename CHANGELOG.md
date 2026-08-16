@@ -4,6 +4,12 @@ All notable changes to Parquet-X are documented here.
 
 ## 1.1.x
 
+### [1.1.2] - 2026-08-17
+
+#### Changed
+- Added user-facing progress updates during Python/DuckDB environment setup and reset.
+- Environment setup now uses `uv` for faster virtual environment creation and DuckDB installation when available, with Python `venv` and pip as a fallback.
+
 ### [1.1.1] - 2026-08-11
 
 #### Added
