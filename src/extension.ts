@@ -73,7 +73,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (choice === RESET_ENVIRONMENT) {
                     const success = await vscode.window.withProgress(progressOptions, async (progress) => {
                         progress.report({ message: MESSAGES.ENVIRONMENT_RESETTING });
-                        return await pythonManager.resetEnvironment();
+                        return await pythonManager.resetEnvironment({ progress });
                     });
                     
                     if (success) {
