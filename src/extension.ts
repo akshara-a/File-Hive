@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ParquetViewerFactory } from './factories/ParquetViewerFactory';
 import { PythonEnvironmentManager } from './PythonEnvironmentManager';
-import { CANCEL, EXTENSION_NAME, MESSAGES, REGISTER_COMMANDS, RESET_ENVIRONMENT, SHOW_LOGS } from './common/constant';
+import { CANCEL, ENVIRONMENT_DOCTOR, EXTENSION_NAME, MESSAGES, REGISTER_COMMANDS, RESET_ENVIRONMENT, RETRY_SETUP, SHOW_LOGS } from './common/constant';
 import { LoggingService } from './services/LoggingService';
 
 let pythonManager: PythonEnvironmentManager;
@@ -27,34 +27,83 @@ export async function activate(context: vscode.ExtensionContext) {
         cancellable: false
     };
 
-    try {
-        // Register our custom editor provider using the factory
-        const parquetViewer = ParquetViewerFactory.create(context, pythonManager, logger);
-        context.subscriptions.push(parquetViewer);
-        
-        // Add commands
-        context.subscriptions.push(
-            vscode.commands.registerCommand(REGISTER_COMMANDS.SETUP_ENVIRONMENT, async () => {
-                const success = await pythonManager.initializeEnvironment();
+    const showEnvironmentDoctor = async () => {
+        pythonManager.showOutputChannel();
+        await pythonManager.getEnvironmentDiagnostics();
 
-                if (success) {
-                    vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_SETUP_SUCCESS);
-                } else {
-                    const choice = await vscode.window.showErrorMessage(
-                        MESSAGES.ENVIRONMENT_SETUP_FAILED,
-                        SHOW_LOGS,
-                        RESET_ENVIRONMENT
-                    );
-
-                    if (choice === SHOW_LOGS) {
-                        pythonManager.showOutputChannel();
-                    } else if (choice === RESET_ENVIRONMENT) {
-                        await vscode.commands.executeCommand(REGISTER_COMMANDS.RESET_ENVIRONMENT);
-                    }
-                }
-            })
+        const choice = await vscode.window.showInformationMessage(
+            MESSAGES.ENVIRONMENT_DOCTOR_READY,
+            RETRY_SETUP,
+            RESET_ENVIRONMENT
         );
 
+        if (choice === RETRY_SETUP) {
+            await setupEnvironment();
+        } else if (choice === RESET_ENVIRONMENT) {
+            await resetEnvironment();
+        }
+    };
+
+    const resetEnvironment = async () => {
+        const choice = await vscode.window.showWarningMessage(
+            MESSAGES.ENVIRONMENT_RESET_WARNING,
+            { modal: true },
+            RESET_ENVIRONMENT,
+            CANCEL
+        );
+        
+        if (choice === RESET_ENVIRONMENT) {
+            pythonManager.showOutputChannel();
+            void vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_RESETTING);
+            const success = await vscode.window.withProgress(progressOptions, async (progress) => {
+                progress.report({ message: MESSAGES.ENVIRONMENT_RESETTING });
+                return await pythonManager.resetEnvironment({ progress });
+            });
+            
+            if (success) {
+                vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_RESET_SUCCESS);
+            } else {
+                vscode.window.showErrorMessage(MESSAGES.ENVIRONMENT_RESET_FAILED);
+                pythonManager.showOutputChannel();
+            }
+        }
+    };
+
+    const setupEnvironment = async () => {
+        pythonManager.showOutputChannel();
+        void vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_INITIALIZING);
+        const success = await pythonManager.initializeEnvironment();
+
+        if (success) {
+            vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_SETUP_SUCCESS);
+            return;
+        }
+
+        const choice = await vscode.window.showErrorMessage(
+            MESSAGES.ENVIRONMENT_SETUP_FAILED,
+            RETRY_SETUP,
+            SHOW_LOGS,
+            ENVIRONMENT_DOCTOR,
+            RESET_ENVIRONMENT
+        );
+
+        if (choice === RETRY_SETUP) {
+            await setupEnvironment();
+        } else if (choice === SHOW_LOGS) {
+            pythonManager.showOutputChannel();
+        } else if (choice === ENVIRONMENT_DOCTOR) {
+            await showEnvironmentDoctor();
+        } else if (choice === RESET_ENVIRONMENT) {
+            await resetEnvironment();
+        }
+    };
+
+    try {
+        // Register commands before editor setup so recovery commands are always available.
+        context.subscriptions.push(
+            vscode.commands.registerCommand(REGISTER_COMMANDS.SETUP_ENVIRONMENT, setupEnvironment)
+        );
+        
         context.subscriptions.push(
             vscode.commands.registerCommand(REGISTER_COMMANDS.SHOW_LOGS, () => {
                 pythonManager.showOutputChannel();
@@ -62,29 +111,16 @@ export async function activate(context: vscode.ExtensionContext) {
         );
 
         context.subscriptions.push(
-            vscode.commands.registerCommand(REGISTER_COMMANDS.RESET_ENVIRONMENT, async () => {
-                const choice = await vscode.window.showWarningMessage(
-                    MESSAGES.ENVIRONMENT_RESET_WARNING,
-                    { modal: true },
-                    RESET_ENVIRONMENT,
-                    CANCEL
-                );
-                
-                if (choice === RESET_ENVIRONMENT) {
-                    const success = await vscode.window.withProgress(progressOptions, async (progress) => {
-                        progress.report({ message: MESSAGES.ENVIRONMENT_RESETTING });
-                        return await pythonManager.resetEnvironment({ progress });
-                    });
-                    
-                    if (success) {
-                        vscode.window.showInformationMessage(MESSAGES.ENVIRONMENT_RESET_SUCCESS);
-                    } else {
-                        vscode.window.showErrorMessage(MESSAGES.ENVIRONMENT_RESET_FAILED);
-                        pythonManager.showOutputChannel();
-                    }
-                }
-            })
+            vscode.commands.registerCommand(REGISTER_COMMANDS.RESET_ENVIRONMENT, resetEnvironment)
         );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand(REGISTER_COMMANDS.ENVIRONMENT_DOCTOR, showEnvironmentDoctor)
+        );
+
+        // Register our custom editor provider using the factory
+        const parquetViewer = ParquetViewerFactory.create(context, pythonManager, logger);
+        context.subscriptions.push(parquetViewer);
 
         logger.info('Parquet Viewer extension activated successfully');
         

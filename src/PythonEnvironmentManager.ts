@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { MESSAGES, VS_CODE_PYTHON_EXTENSION, WINDOWS_PLATFORM } from './common/constant';
+import { MESSAGES, REGISTER_COMMANDS, VS_CODE_PYTHON_EXTENSION, WINDOWS_PLATFORM } from './common/constant';
 import { LoggingService } from './services/LoggingService';
 
 interface PythonExtension {
@@ -64,6 +64,9 @@ export class PythonEnvironmentManager {
     private initializationPromise: Promise<boolean> | null = null;
     private initializationAllowsPrompts: boolean = true;
     private uvCommand: string | null | undefined;
+    private readonly setupStatusBarItem: vscode.StatusBarItem;
+    private setupStatusDepth: number = 0;
+    private setupStatusHideTimer: NodeJS.Timeout | null = null;
     private readonly stateValidationPromise: Promise<void>;
 
     constructor(
@@ -80,6 +83,12 @@ export class PythonEnvironmentManager {
         this.venvPythonPath = this.isWindows
             ? path.join(this.venvPath, 'Scripts', 'python.exe')
             : path.join(this.venvPath, 'bin', 'python');
+
+        this.setupStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+        this.setupStatusBarItem.name = 'Parquet-X Setup';
+        this.setupStatusBarItem.command = REGISTER_COMMANDS.SHOW_LOGS;
+        this.setupStatusBarItem.hide();
+        this.context.subscriptions.push(this.setupStatusBarItem);
         
         this.stateValidationPromise = this.validateState();
     }
@@ -259,11 +268,16 @@ export class PythonEnvironmentManager {
         }
 
         return this.withSetupProgress(options, async (progress) => {
+            const progressOptions = {
+                ...options,
+                progress
+            };
+
             try {
-                progress.report({ message: 'Creating isolated Python environment...', increment: 20 });
+                this.reportSetupProgress(progressOptions, 'Creating isolated Python environment...', 20);
                 
                 if (await exists(this.venvPath)) {
-                    progress.report({ message: 'Removing stale environment...' });
+                    this.reportSetupProgress(progressOptions, 'Removing stale environment...');
                     await fs.promises.rm(this.venvPath, { recursive: true, force: true });
                 }
 
@@ -272,7 +286,7 @@ export class PythonEnvironmentManager {
                 const uvCommand = await this.getUvCommand(options);
                 if (uvCommand) {
                     try {
-                        progress.report({ message: 'Creating environment with uv...' });
+                        this.reportSetupProgress(progressOptions, 'Creating environment with uv...');
                         await this.runCommand(uvCommand, [
                             'venv',
                             this.venvPath,
@@ -282,7 +296,7 @@ export class PythonEnvironmentManager {
                         ], 120000);
                     } catch (error) {
                         this.log(`uv environment creation failed, falling back to python venv: ${error}`);
-                        progress.report({ message: 'uv setup failed. Falling back to Python venv...' });
+                        this.reportSetupProgress(progressOptions, 'uv setup failed. Falling back to Python venv...');
                         await this.removeVenvIfPresent();
                         await this.createVirtualEnvironmentWithPython(systemPythonPath);
                     }
@@ -297,7 +311,7 @@ export class PythonEnvironmentManager {
                 ], 10000);
 
                 this.log('Virtual environment created');
-                progress.report({ message: 'Python environment created.', increment: 10 });
+                this.reportSetupProgress(progressOptions, 'Python environment created.', 10);
                 return true;
 
             } catch (error) {
@@ -310,13 +324,18 @@ export class PythonEnvironmentManager {
 
     private async installDuckDB(options: ResolvedInitializeEnvironmentOptions): Promise<boolean> {
         return this.withSetupProgress(options, async (progress) => {
+            const progressOptions = {
+                ...options,
+                progress
+            };
+
             try {
-                progress.report({ message: 'Installing DuckDB. This only runs the first time...', increment: 20 });
+                this.reportSetupProgress(progressOptions, 'Installing DuckDB. This only runs the first time...', 20);
 
                 const uvCommand = await this.getUvCommand(options);
                 if (uvCommand) {
                     try {
-                        progress.report({ message: 'Installing DuckDB with uv...', increment: 5 });
+                        this.reportSetupProgress(progressOptions, 'Installing DuckDB with uv...', 5);
                         await this.runCommand(uvCommand, [
                             'pip',
                             'install',
@@ -328,7 +347,7 @@ export class PythonEnvironmentManager {
                         ], 120000);
                     } catch (error) {
                         this.log(`uv DuckDB install failed, falling back to pip: ${error}`);
-                        progress.report({ message: 'uv install failed. Falling back to pip...' });
+                        this.reportSetupProgress(progressOptions, 'uv install failed. Falling back to pip...');
                         await this.installDuckDBWithPip();
                     }
                 } else {
@@ -336,7 +355,7 @@ export class PythonEnvironmentManager {
                 }
 
                 this.log('DuckDB installed');
-                progress.report({ message: 'DuckDB installed.', increment: 10 });
+                this.reportSetupProgress(progressOptions, 'DuckDB installed.', 10);
                 return true;
             } catch (error) {
                 this.log(`Failed to install DuckDB: ${error}`);
@@ -350,19 +369,46 @@ export class PythonEnvironmentManager {
         options: ResolvedInitializeEnvironmentOptions,
         task: (progress: vscode.Progress<SetupProgress>) => Thenable<T>
     ): Promise<T> {
-        if (options.progress) {
-            return task(options.progress);
+        const shouldShowStatus = options.showProgress || Boolean(options.progress);
+        const isRootStatus = shouldShowStatus && this.setupStatusDepth === 0;
+
+        if (shouldShowStatus) {
+            this.setupStatusDepth += 1;
+            if (isRootStatus) {
+                this.showSetupStatus('Setting up Python environment...');
+            }
         }
 
-        if (options.showProgress) {
-            return vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Parquet Viewer - Setting Up Python Environment",
-                cancellable: false
-            }, task);
-        }
+        try {
+            let result: T;
 
-        return task({ report: () => undefined });
+            if (options.progress) {
+                result = await task(options.progress);
+            } else if (options.showProgress) {
+                result = await vscode.window.withProgress({
+                    location: vscode.ProgressLocation.Notification,
+                    title: "Parquet Viewer - Setting Up Python Environment",
+                    cancellable: false
+                }, task);
+            } else {
+                result = await task({ report: () => undefined });
+            }
+
+            if (isRootStatus) {
+                this.finishSetupStatus(result !== false);
+            }
+
+            return result;
+        } catch (error) {
+            if (isRootStatus) {
+                this.finishSetupStatus(false);
+            }
+            throw error;
+        } finally {
+            if (shouldShowStatus) {
+                this.setupStatusDepth = Math.max(0, this.setupStatusDepth - 1);
+            }
+        }
     }
 
     private reportSetupProgress(
@@ -370,7 +416,44 @@ export class PythonEnvironmentManager {
         message: string,
         increment?: number
     ): void {
+        this.log(`Setup progress: ${message}`);
+        this.updateSetupStatus(message);
         options.progress?.report({ message, increment });
+    }
+
+    private showSetupStatus(message: string): void {
+        if (this.setupStatusHideTimer) {
+            clearTimeout(this.setupStatusHideTimer);
+            this.setupStatusHideTimer = null;
+        }
+
+        this.setupStatusBarItem.text = '$(sync~spin) Parquet-X: Setting up';
+        this.setupStatusBarItem.tooltip = message;
+        this.setupStatusBarItem.command = REGISTER_COMMANDS.SHOW_LOGS;
+        this.setupStatusBarItem.show();
+    }
+
+    private updateSetupStatus(message: string): void {
+        if (this.setupStatusDepth === 0) {
+            return;
+        }
+
+        this.setupStatusBarItem.tooltip = message;
+        this.setupStatusBarItem.show();
+    }
+
+    private finishSetupStatus(success: boolean): void {
+        this.setupStatusBarItem.text = success ? '$(check) Parquet-X: Ready' : '$(error) Parquet-X: Setup failed';
+        this.setupStatusBarItem.tooltip = success
+            ? 'Parquet-X Python environment is ready.'
+            : 'Parquet-X Python environment setup failed. Click to show logs.';
+        this.setupStatusBarItem.command = REGISTER_COMMANDS.SHOW_LOGS;
+        this.setupStatusBarItem.show();
+
+        this.setupStatusHideTimer = setTimeout(() => {
+            this.setupStatusBarItem.hide();
+            this.setupStatusHideTimer = null;
+        }, 7000);
     }
 
     private async getUvCommand(options?: ResolvedInitializeEnvironmentOptions): Promise<string | null> {
@@ -1027,6 +1110,75 @@ export class PythonEnvironmentManager {
         } catch {
             return 'Environment info unavailable';
         }
+    }
+
+    public async getEnvironmentDiagnostics(): Promise<string> {
+        await this.stateValidationPromise;
+
+        const storedState = this.context.globalState.get<boolean>(INITIALIZED_STATE_KEY) === true;
+        const prewarmAttemptedVersion = this.context.globalState.get<string>(PREWARM_ATTEMPTED_VERSION_STATE_KEY);
+        const venvExists = await exists(this.venvPath);
+        const venvPythonExists = await exists(this.venvPythonPath);
+        const pythonExtension = vscode.extensions.getExtension(VS_CODE_PYTHON_EXTENSION);
+        const uvCommand = await this.getUvCommand();
+        const uvInfo = uvCommand
+            ? (await this.runCommand(uvCommand, ['--version'], 5000)).trim()
+            : 'Not found on PATH';
+
+        let runtimeInfo = 'Not available';
+        if (venvPythonExists) {
+            try {
+                const info = await this.runCommand(this.venvPythonPath, [
+                    '-c',
+                    `import json, sys
+try:
+    import duckdb
+    duckdb_info = duckdb.__version__
+except Exception:
+    duckdb_info = None
+print(json.dumps({
+    "python": sys.version.split()[0],
+    "executable": sys.executable,
+    "prefix": sys.prefix,
+    "duckdb": duckdb_info
+}))`
+                ], 10000);
+                const parsed = JSON.parse(info);
+                runtimeInfo = [
+                    `Python ${parsed.python}`,
+                    `DuckDB ${parsed.duckdb || 'not installed'}`,
+                    `Executable: ${parsed.executable}`,
+                    `Prefix: ${parsed.prefix}`
+                ].join('\n');
+            } catch (error) {
+                runtimeInfo = `Could not inspect venv runtime: ${error}`;
+            }
+        }
+
+        const report = [
+            'Parquet Viewer Environment Doctor',
+            `Extension version: ${this.getExtensionVersion()}`,
+            `Platform: ${process.platform} ${process.arch}`,
+            `Environment ready in this session: ${this.isInitialized ? 'Yes' : 'No'}`,
+            `Stored ready state: ${storedState ? 'Yes' : 'No'}`,
+            `Prewarm attempted for version: ${prewarmAttemptedVersion || 'Not recorded'}`,
+            `Python extension installed: ${pythonExtension ? 'Yes' : 'No'}`,
+            `System Python selected this session: ${this.systemPythonPath || 'Not selected'}`,
+            `uv: ${uvInfo}`,
+            `Global storage: ${this.context.globalStorageUri.fsPath}`,
+            `Virtual environment path: ${this.venvPath}`,
+            `Virtual environment folder exists: ${venvExists ? 'Yes' : 'No'}`,
+            `Virtual environment Python exists: ${venvPythonExists ? 'Yes' : 'No'}`,
+            'Runtime:',
+            runtimeInfo
+        ].join('\n');
+
+        this.log('Environment doctor report:');
+        for (const line of report.split('\n')) {
+            this.log(line);
+        }
+
+        return report;
     }
 
     public getSystemPythonPath(): string | null {

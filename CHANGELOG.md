@@ -4,6 +4,21 @@ All notable changes to Parquet-X are documented here.
 
 ## 1.1.x
 
+### [1.1.3] - 2026-08-17
+
+#### Added
+- Added `Parquet Viewer: Show Environment Doctor` to write Python, `uv`, virtual environment, DuckDB, and setup state diagnostics to the Parquet Viewer output channel.
+- Added a setup status bar indicator that links to the Parquet Viewer output channel.
+- Added a **Retry Setup** action when environment setup fails.
+- Added command-registration smoke coverage for environment setup, reset, logs, and Doctor commands.
+
+#### Changed
+- Setup and reset now open the Parquet Viewer output channel and show a VS Code notification when they start.
+- Setup progress messages are now written to the Parquet Viewer output channel as well as VS Code progress notifications.
+
+#### Fixed
+- Ensured the reset-environment command is registered before editor setup and can be launched from setup failure recovery.
+
 ### [1.1.2] - 2026-08-17
 
 #### Changed

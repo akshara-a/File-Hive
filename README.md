@@ -26,7 +26,7 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 
 Install Parquet-X from the Visual Studio Code Marketplace, then open any `.parquet` file from your workspace.
 
-Parquet-X activates when you open a `.parquet` file (or run setup) and prepares its local Python/DuckDB environment only when needed. Setup reports progress while it checks Python, creates the isolated environment, installs DuckDB, and verifies everything is ready. The prepared environment is stored in VS Code global storage and reused afterward.
+Parquet-X activates when you open a `.parquet` file (or run setup) and prepares its local Python/DuckDB environment only when needed. Setup reports progress in VS Code notifications, the status bar, and the Parquet Viewer output channel while it checks Python, creates the isolated environment, installs DuckDB, and verifies everything is ready. The prepared environment is stored in VS Code global storage and reused afterward.
 
 ## Usage
 
@@ -137,6 +137,7 @@ The following commands are available from the Command Palette:
 - `Parquet Viewer: Show Parquet Viewer Logs`
 - `Parquet Viewer: Setup Python Environment`
 - `Parquet Viewer: Reset Python Environment`
+- `Parquet Viewer: Show Environment Doctor`
 - `Refresh`
 
 ## Privacy
