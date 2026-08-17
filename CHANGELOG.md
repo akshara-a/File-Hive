@@ -4,6 +4,11 @@ All notable changes to Parquet-X are documented here.
 
 ## 1.1.x
 
+### [1.1.4] - 2026-08-17
+
+#### Fixed
+- Fixed extension activation by removing the runtime `loglevel` dependency from the logging service.
+
 ### [1.1.3] - 2026-08-17
 
 #### Added
