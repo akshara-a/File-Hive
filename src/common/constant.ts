@@ -1,21 +1,21 @@
-export const EXTENSION_NAME = 'Parquet Viewer';
+export const EXTENSION_NAME = 'File Hive';
 export const MESSAGES = {
-    ENVIRONMENT_INITIALIZING: "Setting up environment for Parquet Viewer...",
-    ENVIRONMENT_SETUP_SUCCESS: "Parquet Viewer: Python environment is ready.",
-    ENVIRONMENT_SETUP_FAILED: "Parquet Viewer: Failed to setup environment for Parquet Viewer.",
-    ENVIRONMENT_RESETTING: "Resetting environment for Parquet Viewer...",
-    ENVIRONMENT_RESET_SUCCESS: "Parquet Viewer: Environment reset successfully.",
-    ENVIRONMENT_RESET_FAILED: "Parquet Viewer: Failed to reset environment for Parquet Viewer.",
-    ENVIRONMENT_RESET_WARNING: "Reset Parquet Viewer environment and reinstall dependencies?",
-    ENVIRONMENT_DOCTOR_READY: "Parquet Viewer: Environment diagnostics written to the Output panel.",
+    ENVIRONMENT_INITIALIZING: "Setting up environment for File Hive...",
+    ENVIRONMENT_SETUP_SUCCESS: "File Hive: Python environment is ready.",
+    ENVIRONMENT_SETUP_FAILED: "File Hive: Failed to setup environment for File Hive.",
+    ENVIRONMENT_RESETTING: "Resetting environment for File Hive...",
+    ENVIRONMENT_RESET_SUCCESS: "File Hive: Environment reset successfully.",
+    ENVIRONMENT_RESET_FAILED: "File Hive: Failed to reset environment for File Hive.",
+    ENVIRONMENT_RESET_WARNING: "Reset File Hive environment and reinstall dependencies?",
+    ENVIRONMENT_DOCTOR_READY: "File Hive: Environment diagnostics written to the Output panel.",
     SYSTEM_PYTHON_PATH_NOT_AVAILABLE: "Python not available. Please select a Python interpreter in VS Code."
 };
 export const REGISTER_COMMANDS = {
-    REFRESH: "parquetViewer.refresh",
-    SETUP_ENVIRONMENT: "parquetViewer.setupEnvironment",
-    SHOW_LOGS: "parquetViewer.showLogs",
-    RESET_ENVIRONMENT: "parquetViewer.resetEnvironment",
-    ENVIRONMENT_DOCTOR: "parquetViewer.environmentDoctor"
+    REFRESH: "fileHive.refresh",
+    SETUP_ENVIRONMENT: "fileHive.setupEnvironment",
+    SHOW_LOGS: "fileHive.showLogs",
+    RESET_ENVIRONMENT: "fileHive.resetEnvironment",
+    ENVIRONMENT_DOCTOR: "fileHive.environmentDoctor"
 };
 export const SHOW_LOGS = "Show Logs";
 export const RESET_ENVIRONMENT = "Reset Environment";

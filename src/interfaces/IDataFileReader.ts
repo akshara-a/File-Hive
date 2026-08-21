@@ -1,15 +1,15 @@
 import * as vscode from 'vscode';
 
-export interface IParquetReader {
-    readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult>;
-    runParquetDoctor(uri: vscode.Uri): Promise<ParquetDoctorRunResult>;
+export interface IDataFileReader {
+    readDataFile(uri: vscode.Uri, query?: string): Promise<DataFileReadResult>;
+    runFileDoctor(uri: vscode.Uri): Promise<DataFileDoctorRunResult>;
     releaseFileSession(uri: vscode.Uri): Promise<void>;
-    exportParquetFile(
+    exportDataFile(
         uri: vscode.Uri,
-        format: ParquetExportFormat,
+        format: DataFileExportFormat,
         outputUri: vscode.Uri,
         query?: string
-    ): Promise<ParquetExportResult>;
+    ): Promise<DataFileExportResult>;
     saveEditedParquetFile(
         uri: vscode.Uri,
         outputUri: vscode.Uri,
@@ -21,54 +21,86 @@ export interface IParquetReader {
         outputUri: vscode.Uri,
         options: ParquetWriteOptions
     ): Promise<ParquetWriteResult>;
-    getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult>;
-    compareParquetFile(
+    getCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareMetadataResult>;
+    compareDataFile(
         uri: vscode.Uri,
         compareUri: vscode.Uri,
-        mappings?: ParquetCompareMapping[],
-        orderMapping?: ParquetCompareOrderMapping
-    ): Promise<ParquetCompareResult>;
-    smartDiffParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult>;
-    getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<ParquetJoinResult>;
-    joinParquetFile(uri: vscode.Uri, joinUri: vscode.Uri, options: ParquetJoinOptions): Promise<ParquetJoinResult>;
-    detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult>;
-    scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult>;
+        mappings?: DataFileCompareMapping[],
+        orderMapping?: DataFileCompareOrderMapping
+    ): Promise<DataFileCompareResult>;
+    smartDiffDataFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareResult>;
+    getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<DataFileJoinResult>;
+    joinDataFile(uri: vscode.Uri, joinUri: vscode.Uri, options: DataFileJoinOptions): Promise<DataFileJoinResult>;
+    detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<DataFileSchemaDriftResult>;
+    scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<DataFileDatasetAnalysisResult>;
 }
 
-export type ParquetExportFormat = 'csv' | 'json' | 'sqlite' | 'parquet';
+export type DataFileExportFormat =
+    | 'csv'
+    | 'tsv'
+    | 'psv'
+    | 'json'
+    | 'jsonl'
+    | 'ndjson'
+    | 'sqlite'
+    | 'parquet'
+    | 'duckdb'
+    | 'avro'
+    | 'orc'
+    | 'arrow'
+    | 'feather'
+    | 'ipc';
 
-export interface ParquetDataResult {
+export interface DataFileReadResult {
     success: boolean;
+    fileType?: DataFileType;
+    sourceFormat?: DataFileExportFormat;
     data?: any[];
     columns?: string[];
     rowCount?: number;
     totalRows?: number;
     query?: string;
     resultLimited?: boolean;
-    schema?: ParquetSchemaResult;
-    doctor?: ParquetDoctorResult;
+    schema?: DataFileSchemaResult;
+    doctor?: DataFileDoctorResult;
     error?: string;
     traceback?: string;
 }
 
-export interface ParquetDoctorRunResult {
+export interface DataFileDoctorRunResult {
     success: boolean;
-    doctor?: ParquetDoctorResult;
+    fileType?: DataFileType;
+    sourceFormat?: DataFileExportFormat;
+    doctor?: DataFileDoctorResult;
     error?: string;
     traceback?: string;
 }
 
-export interface ParquetDoctorResult {
-    healthReport: ParquetDoctorHealthReport;
+export type DataFileType =
+    | 'parquet'
+    | 'duckdb'
+    | 'sqlite'
+    | 'csv'
+    | 'tsv'
+    | 'psv'
+    | 'json'
+    | 'avro'
+    | 'orc'
+    | 'arrow'
+    | 'feather'
+    | 'ipc';
+
+export interface DataFileDoctorResult {
+    healthReport: DataFileDoctorHealthReport;
     integrity: Record<string, any>;
     schemaValidation: {
-        columns: ParquetDoctorSchemaColumn[];
+        columns: DataFileDoctorSchemaColumn[];
     };
     rowGroupAnalysis: {
-        rowGroups: ParquetDoctorRowGroup[];
+        rowGroups: DataFileDoctorRowGroup[];
     };
     columnStatistics: {
-        columns: ParquetDoctorColumnStatistics[];
+        columns: DataFileDoctorColumnStatistics[];
     };
     dataQuality?: {
         totalRows: number;
@@ -84,21 +116,21 @@ export interface ParquetDoctorResult {
     };
 }
 
-export interface ParquetDoctorHealthReport {
+export interface DataFileDoctorHealthReport {
     healthScore: number;
-    errors: ParquetDoctorIssue[];
-    warnings: ParquetDoctorIssue[];
-    passedChecks: ParquetDoctorIssue[];
+    errors: DataFileDoctorIssue[];
+    warnings: DataFileDoctorIssue[];
+    passedChecks: DataFileDoctorIssue[];
     recommendations: string[];
 }
 
-export interface ParquetDoctorIssue {
+export interface DataFileDoctorIssue {
     category: string;
     message: string;
     recommendation?: string;
 }
 
-export interface ParquetDoctorSchemaColumn {
+export interface DataFileDoctorSchemaColumn {
     name?: string;
     path?: string;
     physicalType?: string;
@@ -111,7 +143,7 @@ export interface ParquetDoctorSchemaColumn {
     issues: string[];
 }
 
-export interface ParquetDoctorRowGroup {
+export interface DataFileDoctorRowGroup {
     id: number | string;
     rowCount: number;
     compression?: string;
@@ -122,7 +154,7 @@ export interface ParquetDoctorRowGroup {
     issues: string[];
 }
 
-export interface ParquetDoctorColumnStatistics {
+export interface DataFileDoctorColumnStatistics {
     column: string;
     hasMinMax: boolean;
     hasNullCount: boolean;
@@ -134,9 +166,9 @@ export interface ParquetDoctorColumnStatistics {
     issues: string[];
 }
 
-export interface ParquetExportResult {
+export interface DataFileExportResult {
     success: boolean;
-    format?: ParquetExportFormat;
+    format?: DataFileExportFormat;
     outputPath?: string;
     rowsExported?: number;
     query?: string;
@@ -180,7 +212,7 @@ export interface ParquetWriteResult {
     traceback?: string;
 }
 
-export interface ParquetCompareResult {
+export interface DataFileCompareResult {
     success: boolean;
     basePath?: string;
     comparePath?: string;
@@ -190,8 +222,8 @@ export interface ParquetCompareResult {
     rowsCompared?: number;
     mismatchCount?: number;
     mismatches?: ParquetRowMismatch[];
-    mappings?: ParquetCompareMapping[];
-    orderMapping?: ParquetCompareOrderMapping;
+    mappings?: DataFileCompareMapping[];
+    orderMapping?: DataFileCompareOrderMapping;
     mismatchLimit?: number;
     truncated?: boolean;
     diffMode?: 'smart';
@@ -201,7 +233,7 @@ export interface ParquetCompareResult {
 }
 
 export interface ParquetSmartDiffSummary {
-    keyMapping?: ParquetCompareOrderMapping & {
+    keyMapping?: DataFileCompareOrderMapping & {
         displayColumn?: string;
         score?: number;
         baseStats?: Record<string, number>;
@@ -218,17 +250,17 @@ export interface ParquetSmartDiffSummary {
     unchangedRows?: number;
 }
 
-export interface ParquetCompareMetadataResult {
+export interface DataFileCompareMetadataResult {
     success: boolean;
     basePath?: string;
     comparePath?: string;
-    baseColumns?: ParquetCompareColumn[];
-    compareColumns?: ParquetCompareColumn[];
+    baseColumns?: DataFileCompareColumn[];
+    compareColumns?: DataFileCompareColumn[];
     error?: string;
     traceback?: string;
 }
 
-export interface ParquetCompareColumn {
+export interface DataFileCompareColumn {
     name: string;
     path: string;
     duckdbType?: string;
@@ -241,33 +273,33 @@ export interface ParquetCompareColumn {
     typeSignature: string;
 }
 
-export interface ParquetCompareMapping {
+export interface DataFileCompareMapping {
     baseColumn: string;
     compareColumn: string;
     displayColumn?: string;
 }
 
-export interface ParquetCompareOrderMapping {
+export interface DataFileCompareOrderMapping {
     baseColumn: string;
     compareColumn: string;
 }
 
-export type ParquetJoinType = 'inner' | 'left' | 'right' | 'full';
+export type DataFileJoinType = 'inner' | 'left' | 'right' | 'full';
 
-export interface ParquetJoinOptions {
+export interface DataFileJoinOptions {
     baseColumn: string;
     joinColumn: string;
-    joinType: ParquetJoinType;
+    joinType: DataFileJoinType;
     limit?: number;
 }
 
-export interface ParquetJoinResult {
+export interface DataFileJoinResult {
     success: boolean;
     basePath?: string;
     joinPath?: string;
-    joinType?: ParquetJoinType;
-    baseColumns?: ParquetCompareColumn[];
-    joinColumns?: ParquetCompareColumn[];
+    joinType?: DataFileJoinType;
+    baseColumns?: DataFileCompareColumn[];
+    joinColumns?: DataFileCompareColumn[];
     columns?: string[];
     data?: Record<string, any>[];
     rowCount?: number;
@@ -277,12 +309,12 @@ export interface ParquetJoinResult {
     traceback?: string;
 }
 
-export interface ParquetSchemaDriftResult {
+export interface DataFileSchemaDriftResult {
     success: boolean;
     currentPath?: string;
     referencePath?: string;
-    addedColumns?: ParquetCompareColumn[];
-    removedColumns?: ParquetCompareColumn[];
+    addedColumns?: DataFileCompareColumn[];
+    removedColumns?: DataFileCompareColumn[];
     typeChangedColumns?: any[];
     renameCandidates?: any[];
     summary?: Record<string, number>;
@@ -290,7 +322,7 @@ export interface ParquetSchemaDriftResult {
     traceback?: string;
 }
 
-export interface ParquetDatasetAnalysisResult {
+export interface DataFileDatasetAnalysisResult {
     success: boolean;
     folderPath?: string;
     fileCount?: number;
@@ -319,14 +351,14 @@ export interface ParquetRowMismatch {
     mismatchedColumns: string[];
 }
 
-export interface ParquetSchemaResult {
-    columns: ParquetSchemaColumn[];
-    tree: ParquetSchemaColumn[];
+export interface DataFileSchemaResult {
+    columns: DataFileSchemaColumn[];
+    tree: DataFileSchemaColumn[];
     raw: any[];
     columnCount: number;
 }
 
-export interface ParquetSchemaColumn {
+export interface DataFileSchemaColumn {
     name: string;
     path: string;
     parentPath?: string;
@@ -344,5 +376,5 @@ export interface ParquetSchemaColumn {
     timestampTimezoneInterpretation?: string;
     timestampIsAdjustedToUTC?: boolean;
     numChildren: number;
-    children: ParquetSchemaColumn[];
+    children: DataFileSchemaColumn[];
 }

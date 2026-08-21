@@ -40,8 +40,7 @@ type ResolvedInitializeEnvironmentOptions = {
     progress?: vscode.Progress<SetupProgress>;
 };
 
-const INITIALIZED_STATE_KEY = 'parquetViewerInitialized';
-const PREWARM_ATTEMPTED_VERSION_STATE_KEY = 'parquetViewerPrewarmAttemptedVersion';
+const INITIALIZED_STATE_KEY = 'fileHiveInitialized';
 
 /**
  * Checks if a file or directory exists at the given path.
@@ -85,7 +84,7 @@ export class PythonEnvironmentManager {
             : path.join(this.venvPath, 'bin', 'python');
 
         this.setupStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-        this.setupStatusBarItem.name = 'Parquet-X Setup';
+        this.setupStatusBarItem.name = 'File Hive Setup';
         this.setupStatusBarItem.command = REGISTER_COMMANDS.SHOW_LOGS;
         this.setupStatusBarItem.hide();
         this.context.subscriptions.push(this.setupStatusBarItem);
@@ -141,38 +140,6 @@ export class PythonEnvironmentManager {
         }
     }
 
-    public prewarmEnvironmentInBackground(): void {
-        void this.doPrewarmEnvironmentInBackground();
-    }
-
-    private async doPrewarmEnvironmentInBackground(): Promise<void> {
-        try {
-            await this.stateValidationPromise;
-
-            const extensionVersion = this.getExtensionVersion();
-            const attemptedVersion = this.context.globalState.get<string>(PREWARM_ATTEMPTED_VERSION_STATE_KEY);
-            if (attemptedVersion === extensionVersion) {
-                this.log(`Environment prewarm already attempted for ${extensionVersion}`);
-                return;
-            }
-
-            this.log(`Prewarming Python environment for ${extensionVersion}`);
-            const ready = await this.initializeEnvironment({
-                allowPrompts: false,
-                showProgress: false
-            });
-
-            await this.context.globalState.update(PREWARM_ATTEMPTED_VERSION_STATE_KEY, extensionVersion);
-            if (ready) {
-                this.log('Background environment prewarm complete');
-            } else {
-                this.log('Background environment prewarm skipped or failed; setup will retry on first Parquet action');
-            }
-        } catch (error) {
-            this.log(`Background environment prewarm failed: ${error}`);
-        }
-    }
-
     private async doInitialize(options: ResolvedInitializeEnvironmentOptions): Promise<boolean> {
         if (this.isInitialized) {
             this.log('Environment ready');
@@ -198,7 +165,7 @@ export class PythonEnvironmentManager {
         if (!this.systemPythonPath) {
             const pythonExt = vscode.extensions.getExtension(VS_CODE_PYTHON_EXTENSION);
             if (!options.allowPrompts) {
-                this.log('Python path not found during background prewarm; prompts are disabled');
+                this.log('Python path not found; prompts are disabled');
                 return false;
             }
 
@@ -229,13 +196,13 @@ export class PythonEnvironmentManager {
             return false;
         }
 
-        const installed = await this.installDuckDB(options);
+        const installed = await this.installDataPackages(options);
         if (!installed) {
             return false;
         }
 
-        this.reportSetupProgress(options, 'Verifying DuckDB installation...', 10);
-        const verified = await this.verifyDuckDB();
+        this.reportSetupProgress(options, 'Verifying data dependencies...', 10);
+        const verified = await this.verifyDataPackages();
         if (verified) {
             this.isInitialized = true;
             this.log('Environment ready');
@@ -253,7 +220,7 @@ export class PythonEnvironmentManager {
         try {
             await this.runCommand(this.venvPythonPath, [
                 '-c',
-                'import duckdb; print(duckdb.__version__)'
+                'import duckdb, pyarrow; print(duckdb.__version__); print(pyarrow.__version__)'
             ], 10000);
             return true;
         } catch {
@@ -278,7 +245,7 @@ export class PythonEnvironmentManager {
                 
                 if (await exists(this.venvPath)) {
                     this.reportSetupProgress(progressOptions, 'Removing stale environment...');
-                    await fs.promises.rm(this.venvPath, { recursive: true, force: true });
+                    await this.removeVenvIfPresent();
                 }
 
                 await fs.promises.mkdir(path.dirname(this.venvPath), { recursive: true });
@@ -316,13 +283,13 @@ export class PythonEnvironmentManager {
 
             } catch (error) {
                 this.log(`Failed to create venv: ${error}`);
-                vscode.window.showErrorMessage(`Failed to create environment: ${error}`);
+                vscode.window.showErrorMessage(`File Hive failed to create its Python environment: ${error}`);
                 return false;
             }
         });
     }
 
-    private async installDuckDB(options: ResolvedInitializeEnvironmentOptions): Promise<boolean> {
+    private async installDataPackages(options: ResolvedInitializeEnvironmentOptions): Promise<boolean> {
         return this.withSetupProgress(options, async (progress) => {
             const progressOptions = {
                 ...options,
@@ -330,12 +297,12 @@ export class PythonEnvironmentManager {
             };
 
             try {
-                this.reportSetupProgress(progressOptions, 'Installing DuckDB. This only runs the first time...', 20);
+                this.reportSetupProgress(progressOptions, 'Installing DuckDB and PyArrow. This only runs the first time...', 20);
 
                 const uvCommand = await this.getUvCommand(options);
                 if (uvCommand) {
                     try {
-                        this.reportSetupProgress(progressOptions, 'Installing DuckDB with uv...', 5);
+                        this.reportSetupProgress(progressOptions, 'Installing DuckDB and PyArrow with uv...', 5);
                         await this.runCommand(uvCommand, [
                             'pip',
                             'install',
@@ -343,23 +310,24 @@ export class PythonEnvironmentManager {
                             this.venvPythonPath,
                             '--only-binary',
                             ':all:',
-                            'duckdb'
+                            'duckdb',
+                            'pyarrow'
                         ], 120000);
                     } catch (error) {
-                        this.log(`uv DuckDB install failed, falling back to pip: ${error}`);
+                        this.log(`uv data package install failed, falling back to pip: ${error}`);
                         this.reportSetupProgress(progressOptions, 'uv install failed. Falling back to pip...');
-                        await this.installDuckDBWithPip();
+                        await this.installDataPackagesWithPip();
                     }
                 } else {
-                    await this.installDuckDBWithPip();
+                    await this.installDataPackagesWithPip();
                 }
 
-                this.log('DuckDB installed');
-                this.reportSetupProgress(progressOptions, 'DuckDB installed.', 10);
+                this.log('DuckDB and PyArrow installed');
+                this.reportSetupProgress(progressOptions, 'DuckDB and PyArrow installed.', 10);
                 return true;
             } catch (error) {
-                this.log(`Failed to install DuckDB: ${error}`);
-                vscode.window.showErrorMessage(`Failed to install DuckDB: ${error}`);
+                this.log(`Failed to install data dependencies: ${error}`);
+                vscode.window.showErrorMessage(`File Hive failed to install data dependencies: ${error}`);
                 return false;
             }
         });
@@ -387,7 +355,7 @@ export class PythonEnvironmentManager {
             } else if (options.showProgress) {
                 result = await vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
-                    title: "Parquet Viewer - Setting Up Python Environment",
+                    title: "File Hive - Setting Up Python Environment",
                     cancellable: false
                 }, task);
             } else {
@@ -427,7 +395,7 @@ export class PythonEnvironmentManager {
             this.setupStatusHideTimer = null;
         }
 
-        this.setupStatusBarItem.text = '$(sync~spin) Parquet-X: Setting up';
+        this.setupStatusBarItem.text = '$(sync~spin) File Hive: Setting up';
         this.setupStatusBarItem.tooltip = message;
         this.setupStatusBarItem.command = REGISTER_COMMANDS.SHOW_LOGS;
         this.setupStatusBarItem.show();
@@ -443,10 +411,10 @@ export class PythonEnvironmentManager {
     }
 
     private finishSetupStatus(success: boolean): void {
-        this.setupStatusBarItem.text = success ? '$(check) Parquet-X: Ready' : '$(error) Parquet-X: Setup failed';
+        this.setupStatusBarItem.text = success ? '$(check) File Hive: Ready' : '$(error) File Hive: Setup failed';
         this.setupStatusBarItem.tooltip = success
-            ? 'Parquet-X Python environment is ready.'
-            : 'Parquet-X Python environment setup failed. Click to show logs.';
+            ? 'File Hive Python environment is ready.'
+            : 'File Hive Python environment setup failed. Click to show logs.';
         this.setupStatusBarItem.command = REGISTER_COMMANDS.SHOW_LOGS;
         this.setupStatusBarItem.show();
 
@@ -488,8 +456,41 @@ export class PythonEnvironmentManager {
     }
 
     private async removeVenvIfPresent(): Promise<void> {
-        if (await exists(this.venvPath)) {
-            await fs.promises.rm(this.venvPath, { recursive: true, force: true });
+        if (!(await exists(this.venvPath))) {
+            return;
+        }
+
+        try {
+            await fs.promises.rm(this.venvPath, {
+                recursive: true,
+                force: true,
+                maxRetries: this.isWindows ? 5 : 2,
+                retryDelay: 250
+            });
+            return;
+        } catch (error) {
+            this.log(`Could not remove virtual environment directly: ${error}`);
+        }
+
+        const stalePath = `${this.venvPath}.stale-${Date.now()}`;
+        try {
+            await fs.promises.rename(this.venvPath, stalePath);
+            this.log(`Moved locked virtual environment aside: ${stalePath}`);
+        } catch (renameError) {
+            throw new Error(
+                `Could not remove or rename the existing Python environment. Close any running File Hive viewers and retry. ${renameError}`
+            );
+        }
+
+        try {
+            await fs.promises.rm(stalePath, {
+                recursive: true,
+                force: true,
+                maxRetries: this.isWindows ? 5 : 2,
+                retryDelay: 250
+            });
+        } catch (cleanupError) {
+            this.log(`Deferred cleanup needed for stale virtual environment ${stalePath}: ${cleanupError}`);
         }
     }
 
@@ -517,28 +518,29 @@ export class PythonEnvironmentManager {
         throw new Error('No Python in venv');
     }
 
-    private async installDuckDBWithPip(): Promise<void> {
+    private async installDataPackagesWithPip(): Promise<void> {
         await this.runCommand(this.venvPythonPath, [
             '-m', 'pip', 'install',
             '--disable-pip-version-check',
             '--only-binary=:all:',
             'duckdb',
+            'pyarrow',
             '--quiet'
         ], 120000);
     }
 
-    private async verifyDuckDB(): Promise<boolean> {
+    private async verifyDataPackages(): Promise<boolean> {
         try {
-            const version = await this.runCommand(this.venvPythonPath, [
+            const versionInfo = await this.runCommand(this.venvPythonPath, [
                 '-c',
-                'import duckdb; print(duckdb.__version__)'
+                'import duckdb, pyarrow; print(f"duckdb {duckdb.__version__} | pyarrow {pyarrow.__version__}")'
             ], 10000);
 
-            this.log(`DuckDB ${version.trim()} ready`);
+            this.log(`${versionInfo.trim()} ready`);
             return true;
         } catch (error) {
-            this.log(`DuckDB verification failed: ${error}`);
-            vscode.window.showErrorMessage(`DuckDB verification failed: ${error}`);
+            this.log(`Data dependency verification failed: ${error}`);
+            vscode.window.showErrorMessage(`Data dependency verification failed: ${error}`);
             return false;
         }
     }
@@ -925,7 +927,7 @@ export class PythonEnvironmentManager {
 
     private async promptForPythonExtension(): Promise<boolean> {
         const choice = await vscode.window.showWarningMessage(
-            'Parquet Viewer requires Python to create an isolated environment. Install Python extension?',
+            'File Hive requires Python to create an isolated environment. Install Python extension?',
             'Install Python Extension',
             'Cancel'
         );
@@ -958,7 +960,7 @@ export class PythonEnvironmentManager {
 
     private async promptForPythonSelection(): Promise<boolean> {
         const choice = await vscode.window.showWarningMessage(
-            'Please select a Python 3.x interpreter (version 3.13 or earlier) in VS Code for Parquet Viewer.',
+            'Please select a Python 3.x interpreter (version 3.13 or earlier) in VS Code for File Hive.',
             'Select Python Interpreter',
             'Cancel'
         );
@@ -1067,11 +1069,10 @@ export class PythonEnvironmentManager {
 
             try {
                 if (await exists(this.venvPath)) {
-                    await fs.promises.rm(this.venvPath, { recursive: true, force: true });
+                    await this.removeVenvIfPresent();
                 }
                 
                 await this.context.globalState.update(INITIALIZED_STATE_KEY, false);
-                await this.context.globalState.update(PREWARM_ATTEMPTED_VERSION_STATE_KEY, undefined);
                 this.reportSetupProgress(progressOptions, 'Environment reset. Rebuilding dependencies...', 10);
             } catch (error) {
                 this.log(`Cleanup warning: ${error}`);
@@ -1095,18 +1096,24 @@ export class PythonEnvironmentManager {
                     duckdb_info = f"duckdb {duckdb.__version__}"
                 except:
                     duckdb_info = "duckdb NOT AVAILABLE"
+                try:
+                    import pyarrow
+                    pyarrow_info = f"pyarrow {pyarrow.__version__}"
+                except:
+                    pyarrow_info = "pyarrow NOT AVAILABLE"
                     
                 import json
                 print(json.dumps({
                     "python": sys.version.split()[0],
                     "platform": platform.platform(),
                     "duckdb": duckdb_info,
+                    "pyarrow": pyarrow_info,
                     "venv": sys.prefix
                 }))`
             ], 10000);
 
             const parsed = JSON.parse(info);
-            return `Python ${parsed.python} | ${parsed.duckdb}`;
+            return `Python ${parsed.python} | ${parsed.duckdb} | ${parsed.pyarrow}`;
         } catch {
             return 'Environment info unavailable';
         }
@@ -1116,7 +1123,6 @@ export class PythonEnvironmentManager {
         await this.stateValidationPromise;
 
         const storedState = this.context.globalState.get<boolean>(INITIALIZED_STATE_KEY) === true;
-        const prewarmAttemptedVersion = this.context.globalState.get<string>(PREWARM_ATTEMPTED_VERSION_STATE_KEY);
         const venvExists = await exists(this.venvPath);
         const venvPythonExists = await exists(this.venvPythonPath);
         const pythonExtension = vscode.extensions.getExtension(VS_CODE_PYTHON_EXTENSION);
@@ -1136,17 +1142,24 @@ try:
     duckdb_info = duckdb.__version__
 except Exception:
     duckdb_info = None
+try:
+    import pyarrow
+    pyarrow_info = pyarrow.__version__
+except Exception:
+    pyarrow_info = None
 print(json.dumps({
     "python": sys.version.split()[0],
     "executable": sys.executable,
     "prefix": sys.prefix,
-    "duckdb": duckdb_info
+    "duckdb": duckdb_info,
+    "pyarrow": pyarrow_info
 }))`
                 ], 10000);
                 const parsed = JSON.parse(info);
                 runtimeInfo = [
                     `Python ${parsed.python}`,
                     `DuckDB ${parsed.duckdb || 'not installed'}`,
+                    `PyArrow ${parsed.pyarrow || 'not installed'}`,
                     `Executable: ${parsed.executable}`,
                     `Prefix: ${parsed.prefix}`
                 ].join('\n');
@@ -1156,12 +1169,11 @@ print(json.dumps({
         }
 
         const report = [
-            'Parquet Viewer Environment Doctor',
+            'File Hive Environment Doctor',
             `Extension version: ${this.getExtensionVersion()}`,
             `Platform: ${process.platform} ${process.arch}`,
             `Environment ready in this session: ${this.isInitialized ? 'Yes' : 'No'}`,
             `Stored ready state: ${storedState ? 'Yes' : 'No'}`,
-            `Prewarm attempted for version: ${prewarmAttemptedVersion || 'Not recorded'}`,
             `Python extension installed: ${pythonExtension ? 'Yes' : 'No'}`,
             `System Python selected this session: ${this.systemPythonPath || 'Not selected'}`,
             `uv: ${uvInfo}`,

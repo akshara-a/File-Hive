@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
-  "displayName": "Parquet-X",
-  "description": "View, query, create, compare, diagnose, and export Apache Parquet files in VS Code.",
-  "version": "1.1.4",
+  "displayName": "File Hive",
+  "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, CSV, TSV, PSV, JSON, Avro, ORC, Arrow, Feather, and IPC files in VS Code.",
+  "version": "1.1.5",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",
@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/akshara-a/Parquet-X.git"
+    "url": "https://github.com/akshara-a/File-Hive.git"
   },
   "bugs": {
-    "url": "https://github.com/akshara-a/Parquet-X/issues"
+    "url": "https://github.com/akshara-a/File-Hive/issues"
   },
-  "homepage": "https://github.com/akshara-a/Parquet-X#readme",
+  "homepage": "https://github.com/akshara-a/File-Hive#readme",
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -28,57 +28,99 @@
   "keywords": [
     "Apache Parquet",
     "Data",
-    "Parquet Viewer",
+    "File Hive",
     "Data Visualization",
     "DuckDB",
     "uv",
     "Parquet"
   ],
   "activationEvents": [
-    "onCommand:parquetViewer.setupEnvironment",
-    "onCommand:parquetViewer.showLogs",
-    "onCommand:parquetViewer.resetEnvironment",
-    "onCommand:parquetViewer.environmentDoctor",
-    "onCustomEditor:parquetViewer.parquetViewer"
+    "onCommand:fileHive.setupEnvironment",
+    "onCommand:fileHive.showLogs",
+    "onCommand:fileHive.resetEnvironment",
+    "onCommand:fileHive.environmentDoctor",
+    "onCustomEditor:fileHive.fileViewer"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "customEditors": [
       {
-        "viewType": "parquetViewer.parquetViewer",
-        "displayName": "Parquet Viewer",
+        "viewType": "fileHive.fileViewer",
+        "displayName": "File Hive",
         "selector": [
           {
             "filenamePattern": "*.parquet"
+          },
+          {
+            "filenamePattern": "*.duckdb"
+          },
+          {
+            "filenamePattern": "*.sqlite"
+          },
+          {
+            "filenamePattern": "*.db"
+          },
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          },
+          {
+            "filenamePattern": "*.psv"
+          },
+          {
+            "filenamePattern": "*.json"
+          },
+          {
+            "filenamePattern": "*.jsonl"
+          },
+          {
+            "filenamePattern": "*.ndjson"
+          },
+          {
+            "filenamePattern": "*.avro"
+          },
+          {
+            "filenamePattern": "*.orc"
+          },
+          {
+            "filenamePattern": "*.arrow"
+          },
+          {
+            "filenamePattern": "*.feather"
+          },
+          {
+            "filenamePattern": "*.ipc"
           }
         ]
       }
     ],
     "commands": [
       {
-        "command": "parquetViewer.refresh",
+        "command": "fileHive.refresh",
         "title": "Refresh",
         "icon": "$(refresh)"
       },
       {
-        "command": "parquetViewer.setupEnvironment",
+        "command": "fileHive.setupEnvironment",
         "title": "Setup Python Environment",
-        "category": "Parquet Viewer"
+        "category": "File Hive"
       },
       {
-        "command": "parquetViewer.showLogs",
-        "title": "Show Parquet Viewer Logs",
-        "category": "Parquet Viewer"
+        "command": "fileHive.showLogs",
+        "title": "Show File Hive Logs",
+        "category": "File Hive"
       },
       {
-        "command": "parquetViewer.resetEnvironment",
+        "command": "fileHive.resetEnvironment",
         "title": "Reset Python Environment",
-        "category": "Parquet Viewer"
+        "category": "File Hive"
       },
       {
-        "command": "parquetViewer.environmentDoctor",
+        "command": "fileHive.environmentDoctor",
         "title": "Show Environment Doctor",
-        "category": "Parquet Viewer"
+        "category": "File Hive"
       }
     ]
   },

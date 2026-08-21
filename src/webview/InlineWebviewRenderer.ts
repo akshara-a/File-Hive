@@ -21,11 +21,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
             <style>${cssContent}</style>
-            <title>Parquet Viewer</title>
+            <title>Data File Viewer</title>
         </head>
         <body>
             <div class="container">
-                ${this.generateHeader()}
+                ${this.generateHeader(data)}
                 ${this.generateViewTabs()}
                 ${this.generateErrorContainer()}
                 ${this.generateLoadingContainer()}
@@ -35,6 +35,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 </div>
                 ${this.generateEdaContainer()}
                 ${this.generateWriteContainer()}
+                ${this.generateExportContainer()}
                 ${this.generateEditContainer()}
                 ${this.generateSchemaContainer()}
                 ${this.generateDoctorContainer()}
@@ -54,10 +55,15 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </html>`;
     }
 
-    private generateHeader(): string {
+    private generateHeader(data: any): string {
+        const fileType = this.formatFileTypeLabel(data?.fileType);
+
         return `
         <header class="header">
-            <h1>Parquet File Viewer</h1>
+            <div class="header-title">
+                <h1>Data File Viewer</h1>
+                <span id="source-type" class="source-pill">${fileType}</span>
+            </div>
             <div class="controls">
                 <button id="refresh-btn" class="btn">
                     <span class="icon">↻</span> Refresh
@@ -67,12 +73,50 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </header>`;
     }
 
+    private formatFileTypeLabel(fileType: unknown): string {
+        if (fileType === 'duckdb') {
+            return 'DuckDB';
+        }
+        if (fileType === 'sqlite') {
+            return 'SQLite';
+        }
+        if (fileType === 'csv') {
+            return 'CSV';
+        }
+        if (fileType === 'tsv') {
+            return 'TSV';
+        }
+        if (fileType === 'psv') {
+            return 'PSV';
+        }
+        if (fileType === 'json') {
+            return 'JSON';
+        }
+        if (fileType === 'avro') {
+            return 'Avro';
+        }
+        if (fileType === 'orc') {
+            return 'ORC';
+        }
+        if (fileType === 'arrow') {
+            return 'Arrow';
+        }
+        if (fileType === 'feather') {
+            return 'Feather';
+        }
+        if (fileType === 'ipc') {
+            return 'IPC';
+        }
+        return 'Parquet';
+    }
+
     private generateViewTabs(): string {
         return `
-        <nav class="view-navigation" aria-label="Parquet viewer sections">
+        <nav class="view-navigation" aria-label="File Hive sections">
             <div class="view-tabs primary-tabs" role="tablist" aria-label="Feature groups">
                 <button id="explore-tab" class="tab-btn primary-tab active" data-view-group="explore" role="tab" aria-selected="true">Explore</button>
                 <button id="transform-tab" class="tab-btn primary-tab" data-view-group="transform" role="tab" aria-selected="false">Transform</button>
+                <button id="export-tab" class="tab-btn primary-tab" data-view-group="export" role="tab" aria-selected="false">Export</button>
                 <button id="combine-tab" class="tab-btn primary-tab" data-view-group="combine" role="tab" aria-selected="false">Compare &amp; Join</button>
                 <button id="quality-tab" class="tab-btn primary-tab" data-view-group="quality" role="tab" aria-selected="false">Quality</button>
             </div>
@@ -161,6 +205,49 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         </section>`;
     }
 
+    private generateExportContainer(): string {
+        const exportFormats = [
+            { format: 'csv', label: 'CSV', detail: '.csv' },
+            { format: 'tsv', label: 'TSV', detail: '.tsv' },
+            { format: 'psv', label: 'PSV', detail: '.psv' },
+            { format: 'json', label: 'JSON', detail: '.json' },
+            { format: 'jsonl', label: 'JSONL', detail: '.jsonl' },
+            { format: 'ndjson', label: 'NDJSON', detail: '.ndjson' },
+            { format: 'parquet', label: 'Parquet', detail: '.parquet' },
+            { format: 'duckdb', label: 'DuckDB', detail: '.duckdb' },
+            { format: 'avro', label: 'Avro', detail: '.avro' },
+            { format: 'orc', label: 'ORC', detail: '.orc' },
+            { format: 'arrow', label: 'Arrow', detail: '.arrow' },
+            { format: 'feather', label: 'Feather', detail: '.feather' },
+            { format: 'ipc', label: 'IPC', detail: '.ipc' },
+            { format: 'sqlite', label: 'SQLite', detail: '.sqlite' }
+        ];
+
+        return `
+        <section id="export-container" class="export-container view-panel hidden">
+            <div class="export-toolbar">
+                <div>
+                    <h2>Export</h2>
+                    <p>Convert the current SQL result into another file format.</p>
+                </div>
+            </div>
+            <div class="export-summary">
+                <div class="summary-item">Source: <span id="export-source-type">-</span></div>
+                <div class="summary-item">Rows: <span id="export-row-count">0</span></div>
+                <div class="summary-item export-query-summary">Query: <code id="export-query-summary">SELECT * FROM file_data</code></div>
+            </div>
+            <div class="export-grid">
+                ${exportFormats.map((item) => `
+                    <button class="export-option" data-export-format="${item.format}" type="button">
+                        <span class="export-option-label">${item.label}</span>
+                        <span class="export-option-detail">${item.detail}</span>
+                    </button>
+                `).join('')}
+            </div>
+            <div id="export-message" class="export-message hidden"></div>
+        </section>`;
+    }
+
     private generateEdaContainer(): string {
         return `
         <section id="eda-container" class="eda-container view-panel hidden">
@@ -229,7 +316,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         <section id="doctor-container" class="doctor-container view-panel hidden">
             <div class="doctor-hero">
                 <div>
-                    <h2>Parquet Doctor</h2>
+                    <h2>File Doctor</h2>
                     <p>Integrity, schema, row group, statistics, data quality, compression, and dataset diagnostics.</p>
                 </div>
                 <div class="doctor-actions">
@@ -354,14 +441,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="query-actions">
                     <button id="run-query-btn" class="btn">Run Query</button>
                     <button id="reset-query-btn" class="btn btn-secondary">Reset</button>
-                    <button id="export-csv-btn" class="btn btn-secondary">Export CSV</button>
-                    <button id="export-json-btn" class="btn btn-secondary">Export JSON</button>
-                    <button id="export-sqlite-btn" class="btn btn-secondary">Export SQLite</button>
                 </div>
             </div>
-            <textarea id="query-input" spellcheck="false">SELECT * FROM parquet_data</textarea>
+            <textarea id="query-input" spellcheck="false">SELECT * FROM file_data</textarea>
             <div class="query-meta">
-                Table: <code>parquet_data</code>
+                Table: <code>file_data</code>
                 <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
             </div>
             <div class="quick-aggregation">
@@ -400,7 +484,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         <section id="compare-container" class="compare-container view-panel hidden">
             <div class="compare-toolbar">
                 <div>
-                    <h2>Compare Parquet Files</h2>
+                    <h2>Compare Data Files</h2>
                     <p>Smart Diff auto-maps renamed columns and matches reordered rows by an inferred key. Strict and custom modes remain available for exact checks.</p>
                 </div>
                 <div class="compare-actions">
@@ -466,7 +550,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="summary-item">Rows Checked: <span id="compare-rows-checked">0</span></div>
                 <div class="summary-item">Mismatched Rows: <span id="compare-mismatch-count">0</span></div>
             </div>
-            <div id="compare-empty" class="empty-value">Choose another Parquet file to compare.</div>
+            <div id="compare-empty" class="empty-value">Choose another data file to compare.</div>
             <div id="compare-results" class="compare-results hidden">
                 <div class="compare-pane">
                     <h3>Current File</h3>
@@ -496,7 +580,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <div class="join-toolbar">
                 <div>
                     <h2>Join Data Files</h2>
-                    <p>Join the current Parquet file with another Parquet or CSV file.</p>
+                    <p>Join the current data file with another supported data file.</p>
                 </div>
                 <div class="join-actions">
                     <button id="select-join-file-btn" class="btn">Choose Join File</button>
@@ -534,7 +618,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="summary-item">Total: <span id="join-total-rows">0</span></div>
                 <div class="summary-item">Columns: <span id="join-column-count">0</span></div>
             </div>
-            <div id="join-empty" class="empty-value">Choose a Parquet or CSV file to join.</div>
+            <div id="join-empty" class="empty-value">Choose another supported data file to join.</div>
             <div id="join-results" class="join-results hidden">
                 <table>
                     <thead id="join-table-header"></thead>
@@ -548,7 +632,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         return `
         <div id="error-container" class="error-container hidden">
             <div class="error-message">
-                <h3>Error Reading Parquet File</h3>
+                <h3>Error Reading Data File</h3>
                 <p id="error-text"></p>
             </div>
         </div>`;
@@ -558,7 +642,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         return `
         <div id="loading-container" class="loading-container">
             <div class="loading-spinner"></div>
-            <div>Loading parquet file...</div>
+            <div>Loading data file...</div>
         </div>`;
     }
 
@@ -684,8 +768,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
     private getJavaScriptContent(): string {
         return `
         const vscode = acquireVsCodeApi();
-        const DEFAULT_QUERY = 'SELECT * FROM parquet_data';
+        const DEFAULT_QUERY = 'SELECT * FROM file_data';
+        const EXPORT_FORMATS = ['csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'sqlite', 'parquet', 'duckdb', 'avro', 'orc', 'arrow', 'feather', 'ipc'];
         let currentQuery = DEFAULT_QUERY;
+        let currentFileType = 'parquet';
+        let currentSourceFormat = 'parquet';
         let currentSchema = null;
         let currentSchemaDocs = '';
         let currentCompareResult = null;
@@ -713,11 +800,96 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
         function initialize(data) {
             const queryInput = document.getElementById('query-input');
+            currentFileType = normalizeFileType(data && data.fileType);
+            currentSourceFormat = normalizeExportFormat(data && (data.sourceFormat || data.fileType));
+            updateSourceTypeBadge();
             currentQuery = data.query || DEFAULT_QUERY;
             if (queryInput) {
                 queryInput.value = currentQuery;
             }
             updateView(data);
+        }
+
+        function normalizeFileType(fileType) {
+            const supportedFileTypes = ['duckdb', 'sqlite', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'];
+            if (supportedFileTypes.includes(fileType)) {
+                return fileType;
+            }
+            return 'parquet';
+        }
+
+        function normalizeExportFormat(format) {
+            if (EXPORT_FORMATS.includes(format)) {
+                return format;
+            }
+            return 'parquet';
+        }
+
+        function formatFileTypeLabel(fileType) {
+            if (fileType === 'csv') {
+                return 'CSV';
+            }
+            if (fileType === 'sqlite') {
+                return 'SQLite';
+            }
+            if (fileType === 'tsv') {
+                return 'TSV';
+            }
+            if (fileType === 'psv') {
+                return 'PSV';
+            }
+            if (fileType === 'json') {
+                return 'JSON';
+            }
+            if (fileType === 'jsonl') {
+                return 'JSONL';
+            }
+            if (fileType === 'ndjson') {
+                return 'NDJSON';
+            }
+            if (fileType === 'avro') {
+                return 'Avro';
+            }
+            if (fileType === 'orc') {
+                return 'ORC';
+            }
+            if (fileType === 'arrow') {
+                return 'Arrow';
+            }
+            if (fileType === 'feather') {
+                return 'Feather';
+            }
+            if (fileType === 'ipc') {
+                return 'IPC';
+            }
+            return fileType === 'duckdb' ? 'DuckDB' : 'Parquet';
+        }
+
+        function formatExportLabel(format) {
+            const labels = {
+                csv: 'CSV',
+                tsv: 'TSV',
+                psv: 'PSV',
+                json: 'JSON',
+                jsonl: 'JSONL',
+                ndjson: 'NDJSON',
+                sqlite: 'SQLite',
+                parquet: 'Parquet',
+                duckdb: 'DuckDB',
+                avro: 'Avro',
+                orc: 'ORC',
+                arrow: 'Arrow',
+                feather: 'Feather',
+                ipc: 'IPC'
+            };
+            return labels[format] || String(format || '').toUpperCase();
+        }
+
+        function updateSourceTypeBadge() {
+            const badge = document.getElementById('source-type');
+            if (badge) {
+                badge.textContent = formatFileTypeLabel(currentSourceFormat || currentFileType);
+            }
         }
 
         function formatCount(value) {
@@ -740,6 +912,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const dataView = document.getElementById('data-view');
             const edaContainer = document.getElementById('eda-container');
             const writeContainer = document.getElementById('write-container');
+            const exportContainer = document.getElementById('export-container');
             const visualizerContainer = document.getElementById('visualizer-container');
             const editContainer = document.getElementById('edit-container');
             const doctorContainer = document.getElementById('doctor-container');
@@ -753,6 +926,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 schema: 'explore',
                 edit: 'transform',
                 write: 'transform',
+                export: 'export',
                 compare: 'combine',
                 join: 'combine',
                 doctor: 'quality'
@@ -761,13 +935,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             const showEda = viewName === 'eda';
             const showWrite = viewName === 'write';
+            const showExport = viewName === 'export';
             const showVisualizer = viewName === 'visualizer';
             const showEdit = viewName === 'edit';
             const showDoctor = viewName === 'doctor';
             const showSchema = viewName === 'schema';
             const showCompare = viewName === 'compare';
             const showJoin = viewName === 'join';
-            const showData = !showEda && !showWrite && !showVisualizer && !showEdit && !showDoctor && !showSchema && !showCompare && !showJoin;
+            const showData = !showEda && !showWrite && !showExport && !showVisualizer && !showEdit && !showDoctor && !showSchema && !showCompare && !showJoin;
 
             document.querySelectorAll('[data-view-group]').forEach((tab) => {
                 const isActiveGroup = tab.dataset.viewGroup === activeGroup;
@@ -788,6 +963,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             dataView.classList.toggle('hidden', !showData);
             edaContainer.classList.toggle('hidden', !showEda);
             writeContainer.classList.toggle('hidden', !showWrite);
+            exportContainer.classList.toggle('hidden', !showExport);
             visualizerContainer.classList.toggle('hidden', !showVisualizer);
             editContainer.classList.toggle('hidden', !showEdit);
             doctorContainer.classList.toggle('hidden', !showDoctor);
@@ -803,6 +979,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             if (showWrite) {
                 refreshWritePreview();
+            }
+            if (showExport) {
+                refreshExportPanel();
             }
             if (showDoctor && !currentDoctor && !doctorRequestInFlight) {
                 requestDoctorChecks(false);
@@ -2137,8 +2316,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 : aggregate.toUpperCase() + '(' + sqlIdentifier(metric) + ') AS ' + sqlIdentifier(aggregate + '_' + metric);
             const orderAlias = aggregate === 'count' ? 'row_count' : aggregate + '_' + metric;
             const query = group
-                ? 'SELECT ' + sqlIdentifier(group) + ', ' + metricExpression + ' FROM parquet_data GROUP BY ' + sqlIdentifier(group) + ' ORDER BY ' + sqlIdentifier(orderAlias) + ' DESC LIMIT ' + limit
-                : 'SELECT ' + metricExpression + ' FROM parquet_data';
+                ? 'SELECT ' + sqlIdentifier(group) + ', ' + metricExpression + ' FROM file_data GROUP BY ' + sqlIdentifier(group) + ' ORDER BY ' + sqlIdentifier(orderAlias) + ' DESC LIMIT ' + limit
+                : 'SELECT ' + metricExpression + ' FROM file_data';
 
             currentQuery = query;
             if (queryInput) {
@@ -2177,7 +2356,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             document.getElementById('join-summary').classList.add('hidden');
             document.getElementById('join-results').classList.add('hidden');
             document.getElementById('join-error').classList.add('hidden');
-            document.getElementById('join-empty').textContent = 'Choose a Parquet or CSV file to join.';
+            document.getElementById('join-empty').textContent = 'Choose another supported data file to join.';
             document.getElementById('join-empty').classList.remove('hidden');
             document.getElementById('join-table-header').innerHTML = '';
             document.getElementById('join-table-body').innerHTML = '';
@@ -2337,27 +2516,72 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             statusElement.className = 'status ' + statusClass;
         }
 
+        function setExportMessage(message, isError) {
+            const exportMessage = document.getElementById('export-message');
+            if (!exportMessage) {
+                return;
+            }
+
+            if (!message) {
+                exportMessage.classList.add('hidden');
+                exportMessage.textContent = '';
+                return;
+            }
+
+            exportMessage.textContent = message;
+            exportMessage.classList.toggle('export-message-error', Boolean(isError));
+            exportMessage.classList.remove('hidden');
+        }
+
+        function refreshExportPanel() {
+            const queryInput = document.getElementById('query-input');
+            const sourceType = document.getElementById('export-source-type');
+            const rowCount = document.getElementById('export-row-count');
+            const querySummary = document.getElementById('export-query-summary');
+            const exportButtons = document.querySelectorAll('[data-export-format]');
+
+            if (sourceType) {
+                sourceType.textContent = formatFileTypeLabel(currentSourceFormat || currentFileType);
+            }
+            if (rowCount) {
+                rowCount.textContent = formatCount(currentTotalRows);
+            }
+            if (querySummary) {
+                const queryText = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : currentQuery || DEFAULT_QUERY;
+                querySummary.textContent = queryText;
+            }
+            exportButtons.forEach((button) => {
+                const format = button.dataset.exportFormat;
+                const isCurrentFormat = format === currentSourceFormat;
+                button.hidden = isCurrentFormat;
+                button.disabled = isCurrentFormat;
+            });
+        }
+
         function exportCurrentQuery(format) {
             const queryInput = document.getElementById('query-input');
             currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : DEFAULT_QUERY;
-            setStatus('Exporting ' + format.toUpperCase() + '...', 'status-loading');
+            refreshExportPanel();
+            setExportMessage('Exporting ' + formatExportLabel(format) + '...', false);
+            setStatus('Exporting ' + formatExportLabel(format) + '...', 'status-loading');
             vscode.postMessage({ type: 'export', format, query: currentQuery });
         }
 
         function handleExportResult(result) {
             if (!result || !result.success) {
                 if (result && result.error === 'Export cancelled.') {
+                    setExportMessage('Export cancelled', false);
                     setStatus('Export cancelled', 'status-success');
                 } else {
+                    setExportMessage(result && result.error ? result.error : 'Export failed', true);
                     setStatus(result && result.error ? result.error : 'Export failed', 'status-error');
                 }
                 return;
             }
 
-            setStatus(
-                'Exported ' + formatCount(result.rowsExported) + ' rows to ' + result.format.toUpperCase(),
-                'status-success'
-            );
+            const message = 'Exported ' + formatCount(result.rowsExported) + ' rows to ' + formatExportLabel(result.format);
+            setExportMessage(message, false);
+            setStatus(message, 'status-success');
         }
 
         function cloneRows(rows) {
@@ -2717,7 +2941,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             document.getElementById('compare-results').classList.add('hidden');
             document.getElementById('compare-order-panel').classList.add('hidden');
             document.getElementById('compare-mapping-panel').classList.add('hidden');
-            document.getElementById('compare-empty').textContent = 'Choose another Parquet file to compare.';
+            document.getElementById('compare-empty').textContent = 'Choose another data file to compare.';
             document.getElementById('compare-empty').classList.remove('hidden');
             document.getElementById('compare-selected-file').textContent = 'No compare file selected';
             document.getElementById('compare-base-order-select').innerHTML = '';
@@ -2997,7 +3221,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             emptyElement.classList.remove('hidden');
 
             if (!result) {
-                emptyElement.textContent = 'Choose another Parquet file to compare.';
+                emptyElement.textContent = 'Choose another data file to compare.';
                 return;
             }
 
@@ -3038,7 +3262,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             doctorRequestInFlight = true;
             setActiveView('doctor');
-            setStatus('Running Parquet Doctor checks...', 'status-loading');
+            setStatus('Running data file doctor checks...', 'status-loading');
             vscode.postMessage({ type: 'runDoctor' });
         }
 
@@ -3100,12 +3324,21 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 ['Footer present', integrity.footerPresent],
                 ['DuckDB readable', integrity.duckdbReadable],
                 ['Row groups readable', integrity.rowGroupsReadable]
-            ];
+            ].filter((check) => check[1] !== null && check[1] !== undefined);
             container.innerHTML = '';
             checks.forEach(([label, passed]) => {
                 container.appendChild(createDoctorCheckRow(label, passed));
             });
             container.appendChild(createDoctorMetricRow('File size', formatBytes(integrity.fileSize || 0)));
+            if (integrity.selectedTable) {
+                container.appendChild(createDoctorMetricRow('Default table', integrity.selectedTable));
+            }
+            if (typeof integrity.tableCount === 'number') {
+                container.appendChild(createDoctorMetricRow('Tables', formatCount(integrity.tableCount)));
+            }
+            if (typeof integrity.viewCount === 'number') {
+                container.appendChild(createDoctorMetricRow('Views', formatCount(integrity.viewCount)));
+            }
         }
 
         function renderDoctorHealthReport(report) {
@@ -3244,7 +3477,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const container = document.getElementById('doctor-schema-drift');
             container.innerHTML = '';
             if (!result) {
-                container.appendChild(createDoctorEmpty('Choose a reference Parquet file to detect added, removed, renamed, or type-changed columns.'));
+                container.appendChild(createDoctorEmpty('Choose a reference data file to detect added, removed, renamed, or type-changed columns.'));
                 return;
             }
             if (!result.success) {
@@ -3568,6 +3801,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const loadingContainer = document.getElementById('loading-container');
             const queryLimitMessage = document.getElementById('query-limit-message');
 
+            currentFileType = normalizeFileType(data && data.fileType);
+            currentSourceFormat = normalizeExportFormat(data && (data.sourceFormat || data.fileType));
+            updateSourceTypeBadge();
+
             // Hide loading container
             loadingContainer.classList.add('hidden');
 
@@ -3635,6 +3872,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             populateQuickAggregationControls();
             renderEdaPanel();
             refreshWritePreview();
+            refreshExportPanel();
             populateVisualizerControls();
             renderVisualizer();
              
@@ -3807,7 +4045,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function generateSchemaDocumentation(schema) {
-            const lines = ['# Parquet Schema', ''];
+            const lines = ['# ' + formatFileTypeLabel(currentFileType) + ' Schema', ''];
             lines.push('Columns: ' + formatCount(schema.columnCount || 0));
             lines.push('');
             lines.push('| Path | Physical Type | Logical Type | Nullable | Repetition Level | Definition Level | Decimal | Timestamp |');
@@ -3839,6 +4077,33 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             return String(value).replace(/\\|/g, '\\\\|').replace(/\\r?\\n/g, ' ');
         }
 
+        function getCsvColumnColor(columnIndex) {
+            const colors = [
+                '#d73a49',
+                '#0366d6',
+                '#22863a',
+                '#b08800',
+                '#6f42c1',
+                '#e36209',
+                '#005cc5',
+                '#b31d28',
+                '#3192aa',
+                '#735c0f',
+                '#5a32a3',
+                '#116329'
+            ];
+            return colors[columnIndex % colors.length];
+        }
+
+        function applyCsvColumnColor(element, columnIndex) {
+            if (!['sqlite', 'csv', 'tsv', 'psv', 'json', 'avro', 'orc', 'arrow', 'feather', 'ipc'].includes(currentFileType)) {
+                return;
+            }
+
+            element.classList.add('csv-column-color');
+            element.style.setProperty('--csv-column-color', getCsvColumnColor(columnIndex));
+        }
+
         function createTable(columns, data) {
             const tableHeader = document.getElementById('table-header');
             const tableBody = document.getElementById('table-body');
@@ -3854,10 +4119,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             // Create header row
             const headerRow = document.createElement('tr');
             
-            columns.forEach((column) => {
+            columns.forEach((column, columnIndex) => {
                 const th = document.createElement('th');
                 th.textContent = column;
                 th.title = column;
+                applyCsvColumnColor(th, columnIndex);
                 headerRow.appendChild(th);
             });
             tableHeader.appendChild(headerRow);
@@ -3876,17 +4142,18 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             // Create data rows
             data.forEach((row, rowIndex) => {
                 const tr = document.createElement('tr');
-                columns.forEach((column) => {
+                columns.forEach((column, columnIndex) => {
                     const td = document.createElement('td');
                     const value = row[column];
+                    applyCsvColumnColor(td, columnIndex);
                     
                     // Format the value for display
                     if (value === null || value === undefined) {
                         td.textContent = 'NULL';
-                        td.className = 'null-value';
+                        td.classList.add('null-value');
                     } else if (typeof value === 'object') {
                         td.textContent = JSON.stringify(value);
-                        td.className = 'object-value';
+                        td.classList.add('object-value');
                     } else {
                         td.textContent = String(value);
                         td.title = String(value);
@@ -3911,6 +4178,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const dataTab = document.getElementById('data-tab');
             const edaTab = document.getElementById('eda-tab');
             const writeTab = document.getElementById('write-tab');
+            const exportTab = document.getElementById('export-tab');
             const visualizerTab = document.getElementById('visualizer-tab');
             const editTab = document.getElementById('edit-tab');
             const doctorTab = document.getElementById('doctor-tab');
@@ -3922,9 +4190,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const runAggregationBtn = document.getElementById('run-aggregation-btn');
             const resetAggregationBtn = document.getElementById('reset-aggregation-btn');
             const aggregationFunction = document.getElementById('aggregation-function');
-            const exportCsvBtn = document.getElementById('export-csv-btn');
-            const exportJsonBtn = document.getElementById('export-json-btn');
-            const exportSqliteBtn = document.getElementById('export-sqlite-btn');
+            const exportButtons = document.querySelectorAll('[data-export-format]');
             const tableSortColumn = document.getElementById('table-sort-column');
             const tableSortDirection = document.getElementById('table-sort-direction');
             const columnPickerToggle = document.getElementById('column-picker-toggle');
@@ -4011,6 +4277,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 });
             }
 
+            if (exportTab) {
+                exportTab.addEventListener('click', () => {
+                    setActiveView('export');
+                });
+            }
+
             if (visualizerTab) {
                 visualizerTab.addEventListener('click', () => {
                     setActiveView('visualizer');
@@ -4081,6 +4353,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
 
             if (queryInput) {
+                queryInput.addEventListener('input', refreshExportPanel);
                 queryInput.addEventListener('keydown', (event) => {
                     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                         event.preventDefault();
@@ -4159,23 +4432,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 writeCreateBtn.addEventListener('click', createParquetFromWrite);
             }
 
-            if (exportCsvBtn) {
-                exportCsvBtn.addEventListener('click', () => {
-                    exportCurrentQuery('csv');
+            exportButtons.forEach((button) => {
+                button.addEventListener('click', () => {
+                    exportCurrentQuery(button.dataset.exportFormat);
                 });
-            }
-
-            if (exportJsonBtn) {
-                exportJsonBtn.addEventListener('click', () => {
-                    exportCurrentQuery('json');
-                });
-            }
-
-            if (exportSqliteBtn) {
-                exportSqliteBtn.addEventListener('click', () => {
-                    exportCurrentQuery('sqlite');
-                });
-            }
+            });
 
             if (addEditRowBtn) {
                 addEditRowBtn.addEventListener('click', () => {
@@ -4286,7 +4547,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     }
 
                     setActiveView('compare');
-                    setStatus('Running Smart Parquet Diff...', 'status-loading');
+                    setStatus('Running Smart Diff...', 'status-loading');
                     vscode.postMessage({ type: 'runSmartDiff' });
                 });
             }
@@ -4489,8 +4750,21 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             margin-bottom: 20px; padding-bottom: 10px; 
             border-bottom: 1px solid var(--vscode-panel-border); 
         }
+        .header-title {
+            display: flex; align-items: center; gap: 10px; min-width: 0;
+        }
         .header h1 { 
             color: var(--vscode-titleBar-activeForeground); font-size: 18px; 
+        }
+        .source-pill {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 999px;
+            padding: 3px 8px;
+            color: var(--vscode-descriptionForeground);
+            background-color: var(--vscode-panelSectionHeader-background);
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
         }
         .controls { display: flex; align-items: center; gap: 10px; }
         .btn { 
@@ -4770,6 +5044,61 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             background-color: var(--vscode-input-background);
             color: var(--vscode-input-foreground);
         }
+        .export-container { display: flex; flex-direction: column; gap: 14px; }
+        .export-toolbar {
+            display: flex; justify-content: space-between; align-items: center; gap: 12px;
+            padding: 12px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .export-toolbar h2 { font-size: 15px; margin-bottom: 4px; }
+        .export-toolbar p { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .export-summary {
+            display: flex; gap: 20px; padding: 12px;
+            background-color: var(--vscode-panelSectionHeader-background);
+            border-radius: 3px; flex-wrap: wrap;
+        }
+        .export-query-summary {
+            flex: 1 1 360px; min-width: 220px;
+        }
+        .export-query-summary code {
+            font-family: var(--vscode-editor-font-family);
+            color: var(--vscode-textPreformat-foreground);
+            word-break: break-word;
+        }
+        .export-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+            gap: 10px;
+        }
+        .export-option {
+            min-height: 58px; padding: 10px 12px; border-radius: 3px;
+            border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            cursor: pointer; text-align: left;
+            display: flex; flex-direction: column; justify-content: center; gap: 4px;
+        }
+        .export-option:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+        .export-option-label {
+            font-weight: 700; color: var(--vscode-foreground);
+            overflow-wrap: anywhere;
+        }
+        .export-option-detail {
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+            font-family: var(--vscode-editor-font-family);
+        }
+        .export-message {
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border-radius: 3px; padding: 10px 12px;
+        }
+        .export-message-error {
+            border-color: var(--vscode-inputValidation-errorBorder);
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+        }
         .eda-container { display: flex; flex-direction: column; gap: 14px; }
         .eda-toolbar {
             display: flex; justify-content: space-between; align-items: center; gap: 12px;
@@ -4935,6 +5264,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             padding: 10px; border-bottom: 1px solid var(--vscode-panel-border);
             word-break: break-word; max-width: 300px; overflow: hidden;
             text-overflow: ellipsis; white-space: nowrap; vertical-align: top;
+        }
+        th.csv-column-color {
+            border-top: 3px solid var(--csv-column-color);
+            box-shadow: inset 4px 0 0 var(--csv-column-color);
+        }
+        td.csv-column-color {
+            box-shadow: inset 4px 0 0 var(--csv-column-color);
+            background-image: linear-gradient(90deg, color-mix(in srgb, var(--csv-column-color) 12%, transparent), transparent 46px);
         }
         tr:hover { background-color: var(--vscode-list-hoverBackground); }
         .null-value {

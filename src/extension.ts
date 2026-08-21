@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ParquetViewerFactory } from './factories/ParquetViewerFactory';
+import { FileHiveViewerFactory } from './factories/FileHiveViewerFactory';
 import { PythonEnvironmentManager } from './PythonEnvironmentManager';
 import { CANCEL, ENVIRONMENT_DOCTOR, EXTENSION_NAME, MESSAGES, REGISTER_COMMANDS, RESET_ENVIRONMENT, RETRY_SETUP, SHOW_LOGS } from './common/constant';
 import { LoggingService } from './services/LoggingService';
@@ -8,15 +8,15 @@ let pythonManager: PythonEnvironmentManager;
 let logger: LoggingService;
 
 /**
- * Activates the Parquet Viewer extension.
+ * Activates the File Hive extension.
  * Registers the custom editor provider and supporting commands.
- * The isolated Python environment is initialized lazily when a Parquet action needs it.
+ * The isolated Python environment is initialized lazily when a File Hive action needs it.
  * @param {vscode.ExtensionContext} context - The VS Code extension context.
  */
 export async function activate(context: vscode.ExtensionContext) {
     logger = new LoggingService();
     context.subscriptions.push(logger);
-    logger.info('Parquet Viewer extension is activating...');
+    logger.info('File Hive extension is activating...');
     
     // Create the manager now; it prepares Python lazily on first use.
     pythonManager = new PythonEnvironmentManager(context, logger);
@@ -119,14 +119,14 @@ export async function activate(context: vscode.ExtensionContext) {
         );
 
         // Register our custom editor provider using the factory
-        const parquetViewer = ParquetViewerFactory.create(context, pythonManager, logger);
-        context.subscriptions.push(parquetViewer);
+        const fileHiveViewer = FileHiveViewerFactory.create(context, pythonManager, logger);
+        context.subscriptions.push(fileHiveViewer);
 
-        logger.info('Parquet Viewer extension activated successfully');
+        logger.info('File Hive extension activated successfully');
         
     } catch (error) {
-        logger.error('Failed to register Parquet Viewer:', error);
-        vscode.window.showErrorMessage(`Parquet Viewer registration failed: ${error}`);
+        logger.error('Failed to register File Hive:', error);
+        vscode.window.showErrorMessage(`File Hive registration failed: ${error}`);
         pythonManager.showOutputChannel();
     }
 }
@@ -136,5 +136,5 @@ export async function activate(context: vscode.ExtensionContext) {
  * This is typically done when the extension is uninstalled or disabled.
  */
 export function deactivate() {
-    logger?.info('Parquet Viewer extension deactivated');
+    logger?.info('File Hive extension deactivated');
 }

@@ -1,8 +1,30 @@
 # Changelog
 
-All notable changes to Parquet-X are documented here.
+All notable changes to File Hive, formerly Parquet-X, are documented here.
 
 ## 1.1.x
+
+### [1.1.5] - 2026-08-21
+
+#### Added
+- Rebranded the extension UI and documentation to File Hive while keeping the Marketplace package identity as `CosmicTechnoid.parquet-x` for in-place upgrades.
+- Added first-class open/query support for DuckDB, SQLite, CSV, TSV, PSV, JSON, JSONL, NDJSON, Avro, ORC, Arrow, Feather, and IPC files alongside Parquet.
+- Added source format badges so the viewer shows whether the open file is Parquet, DuckDB, SQLite, CSV, TSV, PSV, JSON, JSONL, NDJSON, Avro, ORC, Arrow, Feather, or IPC.
+- Added export targets for CSV, TSV, PSV, JSON, JSONL, NDJSON, SQLite, Parquet, DuckDB, Avro, ORC, Arrow, Feather, and IPC.
+- Added exact source-format tracking so `.json`, `.jsonl`, and `.ndjson` can share JSON reading while keeping distinct export behavior.
+- Added rainbow-style column color accents for CSV-like table views.
+
+#### Changed
+- Moved Export to its own top-level tab so conversion tools stay visible for every supported source format.
+- Export now hides only the current file's own format and keeps every other supported target available.
+- Renamed core implementation files and types from Parquet-specific names to File Hive/data-file names.
+- Changed the default SQL table alias to `file_data`; the old `parquet_data` alias remains available for saved queries.
+- Updated README, package metadata, release guide, command titles, logs, and tests for File Hive branding.
+
+#### Fixed
+- Fixed non-Parquet formats falling into the Parquet reader path by routing each supported extension through the correct reader.
+- Fixed PSV loading so pipe-separated files use pipe-delimited ingestion.
+- Fixed stale virtual-environment cleanup on Windows by retrying locked cleanup paths more carefully.
 
 ### [1.1.4] - 2026-08-17
 
@@ -36,8 +58,8 @@ All notable changes to Parquet-X are documented here.
 - Added an explicit **Run Doctor Checks** action in the Doctor tab for on-demand diagnostics.
 
 #### Changed
-- Improved startup performance by activating Parquet-X only when a Parquet file is opened or setup is requested.
-- Parquet environment setup now runs only when needed and then reuses the prepared environment.
+- Improved startup performance by activating Parquet-X only when a supported data file is opened or setup is requested.
+- Python/DuckDB environment setup now runs only when needed and then reuses the prepared environment.
 - Improved load and query responsiveness by reusing a long-lived local Python worker and Parquet file sessions.
 
 #### Fixed

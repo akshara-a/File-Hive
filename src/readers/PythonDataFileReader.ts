@@ -4,35 +4,35 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import {
-    IParquetReader,
-    ParquetCompareMapping,
-    ParquetCompareOrderMapping,
-    ParquetCompareMetadataResult,
-    ParquetCompareResult,
-    ParquetDataResult,
-    ParquetDoctorRunResult,
-    ParquetDatasetAnalysisResult,
+    IDataFileReader,
+    DataFileCompareMapping,
+    DataFileCompareOrderMapping,
+    DataFileCompareMetadataResult,
+    DataFileCompareResult,
+    DataFileReadResult,
+    DataFileDoctorRunResult,
+    DataFileDatasetAnalysisResult,
     ParquetEditSaveResult,
-    ParquetExportFormat,
-    ParquetExportResult,
-    ParquetJoinOptions,
-    ParquetJoinResult,
-    ParquetSchemaDriftResult,
+    DataFileExportFormat,
+    DataFileExportResult,
+    DataFileJoinOptions,
+    DataFileJoinResult,
+    DataFileSchemaDriftResult,
     ParquetWriteOptions,
     ParquetWriteResult
-} from '../interfaces/IParquetReader';
+} from '../interfaces/IDataFileReader';
 import { LoggingService } from '../services/LoggingService';
 
 type PythonScriptResult =
-    | ParquetDataResult
-    | ParquetDoctorRunResult
-    | ParquetExportResult
+    | DataFileReadResult
+    | DataFileDoctorRunResult
+    | DataFileExportResult
     | ParquetEditSaveResult
-    | ParquetCompareResult
-    | ParquetCompareMetadataResult
-    | ParquetJoinResult
-    | ParquetSchemaDriftResult
-    | ParquetDatasetAnalysisResult
+    | DataFileCompareResult
+    | DataFileCompareMetadataResult
+    | DataFileJoinResult
+    | DataFileSchemaDriftResult
+    | DataFileDatasetAnalysisResult
     | ParquetWriteResult;
 
 interface WorkerRequest {
@@ -52,7 +52,7 @@ interface PendingRequest {
     timeoutHandle: NodeJS.Timeout;
 }
 
-export class PythonParquetReader implements IParquetReader, vscode.Disposable {
+export class PythonDataFileReader implements IDataFileReader, vscode.Disposable {
     private workerProcess: ChildProcessWithoutNullStreams | null = null;
     private workerReadyPromise: Promise<void> | null = null;
     private workerStdoutBuffer = '';
@@ -67,21 +67,21 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
     ) {}
 
     /**
-     * Reads a parquet file from the given URI.
+     * Reads a data file from the given URI.
      * 
      * This function executes a Python script in the background
-     * to read the parquet file. The Python script is bundled with
+     * to read the data file. The Python script is bundled with
      * the extension and can be found in the out directory.
      * 
      * If the Python environment is not configured, this function
      * will return an error. To configure the Python environment,
      * call the initializeEnvironment method on the PythonEnvironmentManager.
      * 
-     * @param uri The URI of the parquet file to read.
-     * @returns A promise that resolves to a ParquetDataResult.
+     * @param uri The URI of the data file to read.
+     * @returns A promise that resolves to a DataFileReadResult.
      */
-    async readParquetFile(uri: vscode.Uri, query?: string): Promise<ParquetDataResult> {
-        this.logger.info('Reading parquet file', uri.fsPath);
+    async readDataFile(uri: vscode.Uri, query?: string): Promise<DataFileReadResult> {
+        this.logger.info('Reading data file', uri.fsPath);
 
         const result = await this.sendWorkerRequest(
             'read',
@@ -92,10 +92,10 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetDataResult;
+        return result as DataFileReadResult;
     }
 
-    async runParquetDoctor(uri: vscode.Uri): Promise<ParquetDoctorRunResult> {
+    async runFileDoctor(uri: vscode.Uri): Promise<DataFileDoctorRunResult> {
         const result = await this.sendWorkerRequest(
             'doctor',
             {
@@ -104,7 +104,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             180000
         );
-        return result as ParquetDoctorRunResult;
+        return result as DataFileDoctorRunResult;
     }
 
     async releaseFileSession(uri: vscode.Uri): Promise<void> {
@@ -126,16 +126,16 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
         );
 
         if (!result.success) {
-            this.logger.warn('Failed to release Parquet worker session', { sessionId, error: result.error });
+        this.logger.warn('Failed to release File Hive worker session', { sessionId, error: result.error });
         }
     }
 
-    async exportParquetFile(
+    async exportDataFile(
         uri: vscode.Uri,
-        format: ParquetExportFormat,
+        format: DataFileExportFormat,
         outputUri: vscode.Uri,
         query?: string
-    ): Promise<ParquetExportResult> {
+    ): Promise<DataFileExportResult> {
         const result = await this.sendWorkerRequest(
             'export',
             {
@@ -147,7 +147,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetExportResult;
+        return result as DataFileExportResult;
     }
 
     async saveEditedParquetFile(
@@ -159,7 +159,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
         let tempDir: string | undefined;
 
         try {
-            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-edit-'));
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-hive-edit-'));
             const payloadPath = path.join(tempDir, 'edited-rows.json');
             fs.writeFileSync(payloadPath, JSON.stringify({ columns, rows }), 'utf8');
 
@@ -193,7 +193,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
         let tempDir: string | undefined;
 
         try {
-            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parquet-x-write-'));
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-hive-write-'));
             const payloadPath = path.join(tempDir, 'write-payload.json');
             fs.writeFileSync(payloadPath, JSON.stringify(options), 'utf8');
 
@@ -218,7 +218,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
         }
     }
 
-    async getParquetCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareMetadataResult> {
+    async getCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareMetadataResult> {
         const result = await this.sendWorkerRequest(
             'compare_metadata',
             {
@@ -227,15 +227,15 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetCompareMetadataResult;
+        return result as DataFileCompareMetadataResult;
     }
 
-    async compareParquetFile(
+    async compareDataFile(
         uri: vscode.Uri,
         compareUri: vscode.Uri,
-        mappings?: ParquetCompareMapping[],
-        orderMapping?: ParquetCompareOrderMapping
-    ): Promise<ParquetCompareResult> {
+        mappings?: DataFileCompareMapping[],
+        orderMapping?: DataFileCompareOrderMapping
+    ): Promise<DataFileCompareResult> {
         const result = await this.sendWorkerRequest(
             'compare',
             {
@@ -246,10 +246,10 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetCompareResult;
+        return result as DataFileCompareResult;
     }
 
-    async smartDiffParquetFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<ParquetCompareResult> {
+    async smartDiffDataFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareResult> {
         const result = await this.sendWorkerRequest(
             'smart_diff',
             {
@@ -258,10 +258,10 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetCompareResult;
+        return result as DataFileCompareResult;
     }
 
-    async joinParquetFile(uri: vscode.Uri, joinUri: vscode.Uri, options: ParquetJoinOptions): Promise<ParquetJoinResult> {
+    async joinDataFile(uri: vscode.Uri, joinUri: vscode.Uri, options: DataFileJoinOptions): Promise<DataFileJoinResult> {
         const result = await this.sendWorkerRequest(
             'join',
             {
@@ -271,10 +271,10 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetJoinResult;
+        return result as DataFileJoinResult;
     }
 
-    async getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<ParquetJoinResult> {
+    async getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<DataFileJoinResult> {
         const result = await this.sendWorkerRequest(
             'join_metadata',
             {
@@ -283,10 +283,10 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetJoinResult;
+        return result as DataFileJoinResult;
     }
 
-    async detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<ParquetSchemaDriftResult> {
+    async detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<DataFileSchemaDriftResult> {
         const result = await this.sendWorkerRequest(
             'schema_drift',
             {
@@ -295,10 +295,10 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             120000
         );
-        return result as ParquetSchemaDriftResult;
+        return result as DataFileSchemaDriftResult;
     }
 
-    async scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<ParquetDatasetAnalysisResult> {
+    async scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<DataFileDatasetAnalysisResult> {
         void uri;
         const result = await this.sendWorkerRequest(
             'dataset_scan',
@@ -307,7 +307,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             },
             180000
         );
-        return result as ParquetDatasetAnalysisResult;
+        return result as DataFileDatasetAnalysisResult;
     }
 
     public dispose(): void {
@@ -319,7 +319,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             clearTimeout(pending.timeoutHandle);
             pending.resolve({
                 success: false,
-                error: 'Parquet Python worker stopped before completing the request.'
+                error: 'File Hive Python worker stopped before completing the request.'
             });
             this.pendingRequests.delete(requestId);
         }
@@ -372,7 +372,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
 
         const process = this.workerProcess;
         if (!process || process.killed) {
-            return { success: false, error: 'Parquet Python worker is not available.' };
+            return { success: false, error: 'File Hive Python worker is not available.' };
         }
 
         const requestId = this.buildRequestId();
@@ -437,7 +437,7 @@ export class PythonParquetReader implements IParquetReader, vscode.Disposable {
             throw new Error(readyPython.error || 'Python environment is not configured yet.');
         }
 
-        const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_parquet.py');
+        const pythonScriptPath = path.join(this.context.extensionPath, 'out', 'read_data_file.py');
         if (!this.ensurePythonScriptExists(pythonScriptPath)) {
             throw new Error(`Python script not found: ${pythonScriptPath}`);
         }

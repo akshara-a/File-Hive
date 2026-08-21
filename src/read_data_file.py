@@ -5,17 +5,92 @@ import sqlite3
 import sys
 import os
 import difflib
+import hashlib
 import re
 import traceback
 
 MAX_RESULT_ROWS = 1000
 MAX_COMPARE_MISMATCHES = 1000
-TABLE_NAME = "parquet_data"
+TABLE_NAME = "file_data"
+LEGACY_TABLE_NAME = "parquet_data"
 COMPARE_TABLE_NAME = "compare_data"
+SOURCE_INFO_TABLE_NAME = "__file_hive_source_info"
 SCHEMA_ROOT_NAMES = ("schema", "root")
+DUCKDB_FILE_EXTENSIONS = (".duckdb",)
+SQLITE_FILE_EXTENSIONS = (".sqlite", ".db")
+AVRO_FILE_EXTENSIONS = (".avro",)
+ORC_FILE_EXTENSIONS = (".orc",)
+ARROW_FILE_EXTENSIONS = (".arrow",)
+FEATHER_FILE_EXTENSIONS = (".feather",)
+IPC_FILE_EXTENSIONS = (".ipc",)
+JSON_FILE_EXTENSIONS = (".json", ".jsonl", ".ndjson")
+SUPPORTED_EXPORT_FORMATS = (
+    "csv",
+    "tsv",
+    "psv",
+    "json",
+    "jsonl",
+    "ndjson",
+    "sqlite",
+    "parquet",
+    "duckdb",
+    "avro",
+    "orc",
+    "arrow",
+    "feather",
+    "ipc",
+)
 
 def sql_string(value):
     return "'" + value.replace("'", "''") + "'"
+
+def get_file_type(file_path):
+    lower_path = str(file_path or "").lower()
+    if lower_path.endswith(".parquet"):
+        return "parquet"
+    if lower_path.endswith(DUCKDB_FILE_EXTENSIONS):
+        return "duckdb"
+    if lower_path.endswith(SQLITE_FILE_EXTENSIONS):
+        return "sqlite"
+    if lower_path.endswith(".csv"):
+        return "csv"
+    if lower_path.endswith(AVRO_FILE_EXTENSIONS):
+        return "avro"
+    if lower_path.endswith(ORC_FILE_EXTENSIONS):
+        return "orc"
+    if lower_path.endswith(ARROW_FILE_EXTENSIONS):
+        return "arrow"
+    if lower_path.endswith(FEATHER_FILE_EXTENSIONS):
+        return "feather"
+    if lower_path.endswith(IPC_FILE_EXTENSIONS):
+        return "ipc"
+    if lower_path.endswith(".tsv"):
+        return "tsv"
+    if lower_path.endswith(".psv"):
+        return "psv"
+    if lower_path.endswith(JSON_FILE_EXTENSIONS):
+        return "json"
+
+    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported.")
+
+def get_source_format(file_path):
+    lower_path = str(file_path or "").lower()
+    if lower_path.endswith(".db"):
+        return "sqlite"
+    if lower_path.endswith(".jsonl"):
+        return "jsonl"
+    if lower_path.endswith(".ndjson"):
+        return "ndjson"
+    if lower_path.endswith(".duckdb"):
+        return "duckdb"
+    if lower_path.endswith(".sqlite"):
+        return "sqlite"
+
+    extension = os.path.splitext(lower_path)[1].lstrip(".")
+    if extension in SUPPORTED_EXPORT_FORMATS:
+        return extension
+
+    return get_file_type(file_path)
 
 def normalize_query(query):
     if query is None or not query.strip():
@@ -50,21 +125,332 @@ def create_named_parquet_view(conn, table_name, file_path):
         f"SELECT * FROM read_parquet({parquet_path})"
     )
 
-def create_named_data_view(conn, table_name, file_path):
-    data_path = sql_string(file_path)
-    lower_path = file_path.lower()
-    if lower_path.endswith(".csv"):
-        conn.execute(
-            f"CREATE OR REPLACE TEMP VIEW {table_name} AS "
-            f"SELECT * FROM read_csv_auto({data_path}, HEADER = TRUE)"
-        )
+def create_legacy_table_alias(conn):
+    if LEGACY_TABLE_NAME == TABLE_NAME:
         return
 
-    if lower_path.endswith(".parquet"):
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(LEGACY_TABLE_NAME)} AS "
+        f"SELECT * FROM {duckdb_identifier(TABLE_NAME)}"
+    )
+
+def create_csv_view(conn, table_name, file_path):
+    csv_path = sql_string(file_path)
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM read_csv_auto({csv_path}, HEADER = TRUE)"
+    )
+
+def create_delimited_view(conn, table_name, file_path, delimiter):
+    data_path = sql_string(file_path)
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM read_csv_auto({data_path}, HEADER = TRUE, DELIM = {sql_string(delimiter)})"
+    )
+
+def create_json_view(conn, table_name, file_path):
+    json_path = sql_string(file_path)
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM read_json_auto({json_path})"
+    )
+
+def ensure_avro_extension(conn):
+    try:
+        conn.execute("LOAD avro")
+        return
+    except Exception:
+        pass
+
+    try:
+        conn.execute("INSTALL avro")
+        conn.execute("LOAD avro")
+    except Exception as error:
+        raise RuntimeError(
+            "DuckDB Avro extension is not available. Run the environment setup with network access so DuckDB can install the avro extension."
+        ) from error
+
+def create_avro_view(conn, table_name, file_path):
+    ensure_avro_extension(conn)
+    avro_path = sql_string(file_path)
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM read_avro({avro_path})"
+    )
+
+def create_orc_view(conn, table_name, file_path):
+    try:
+        import pyarrow.orc as pyarrow_orc
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for ORC files. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    arrow_table = pyarrow_orc.read_table(file_path)
+    try:
+        conn.unregister(table_name)
+    except Exception:
+        pass
+    conn.register(table_name, arrow_table)
+
+def read_arrow_ipc_table(file_path):
+    try:
+        import pyarrow as pyarrow
+        import pyarrow.ipc as pyarrow_ipc
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for Arrow IPC files. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    with open(file_path, "rb") as arrow_file:
+        arrow_buffer = pyarrow.py_buffer(arrow_file.read())
+
+    try:
+        with pyarrow_ipc.open_file(arrow_buffer) as reader:
+            return reader.read_all()
+    except Exception:
+        with pyarrow_ipc.open_stream(arrow_buffer) as reader:
+            return reader.read_all()
+
+def create_arrow_table_view(conn, table_name, arrow_table):
+    try:
+        conn.unregister(table_name)
+    except Exception:
+        pass
+    conn.register(table_name, arrow_table)
+
+def create_arrow_ipc_view(conn, table_name, file_path):
+    create_arrow_table_view(conn, table_name, read_arrow_ipc_table(file_path))
+
+def create_feather_view(conn, table_name, file_path):
+    try:
+        import pyarrow.feather as pyarrow_feather
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for Feather files. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    create_arrow_table_view(conn, table_name, pyarrow_feather.read_table(file_path))
+
+def duckdb_qualified_name(*parts):
+    return ".".join(duckdb_identifier(part) for part in parts if part)
+
+def duckdb_attach_alias(file_path, table_name):
+    digest = hashlib.sha1(os.path.abspath(file_path).encode("utf-8")).hexdigest()[:12]
+    normalized_name = re.sub(r"[^A-Za-z0-9_]+", "_", str(table_name or "data")).strip("_")
+    return f"px_{normalized_name[:18] or 'data'}_{digest}"
+
+def list_duckdb_relations(conn, database_name=None):
+    where_parts = ["table_type IN ('BASE TABLE', 'VIEW')"]
+    parameters = []
+
+    if database_name:
+        where_parts.append("database_name = ?")
+        parameters.append(database_name)
+
+    try:
+        rows = conn.execute(
+            "SELECT database_name, schema_name, table_name, table_type "
+            "FROM duckdb_tables() "
+            f"WHERE {' AND '.join(where_parts)} "
+            "ORDER BY CASE WHEN schema_name = 'main' THEN 0 ELSE 1 END, schema_name, table_name",
+            parameters
+        ).fetchall()
+    except Exception:
+        if database_name:
+            rows = conn.execute(
+                "SELECT table_catalog, table_schema, table_name, table_type "
+                "FROM information_schema.tables "
+                "WHERE table_catalog = ? AND table_type IN ('BASE TABLE', 'VIEW') "
+                "ORDER BY CASE WHEN table_schema = 'main' THEN 0 ELSE 1 END, table_schema, table_name",
+                [database_name]
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT table_catalog, table_schema, table_name, table_type "
+                "FROM information_schema.tables "
+                "WHERE table_type IN ('BASE TABLE', 'VIEW') "
+                "ORDER BY CASE WHEN table_schema = 'main' THEN 0 ELSE 1 END, table_schema, table_name"
+            ).fetchall()
+
+    return [
+        {
+            "database": row[0],
+            "schema": row[1],
+            "name": row[2],
+            "type": row[3]
+        }
+        for row in rows
+        if row[1] not in ("information_schema", "pg_catalog", "temp") and not str(row[2]).startswith("sqlite_")
+    ]
+
+def get_primary_duckdb_relation(conn, database_name=None):
+    relations = list_duckdb_relations(conn, database_name)
+    if not relations:
+        raise ValueError("DuckDB database does not contain any user tables or views.")
+
+    return relations[0], relations
+
+def remember_duckdb_source_info(conn, relation, relations):
+    conn.execute(f"DROP TABLE IF EXISTS {duckdb_identifier(SOURCE_INFO_TABLE_NAME)}")
+    conn.execute(
+        f"CREATE TEMP TABLE {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} ("
+        "selected_schema VARCHAR, selected_name VARCHAR, table_count BIGINT, view_count BIGINT)"
+    )
+    conn.execute(
+        f"INSERT INTO {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} VALUES (?, ?, ?, ?)",
+        [
+            relation["schema"],
+            relation["name"],
+            len([item for item in relations if item.get("type") == "BASE TABLE"]),
+            len([item for item in relations if item.get("type") == "VIEW"])
+        ]
+    )
+
+def read_duckdb_source_info(conn):
+    try:
+        row = conn.execute(
+            f"SELECT selected_schema, selected_name, table_count, view_count "
+            f"FROM {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} LIMIT 1"
+        ).fetchone()
+    except Exception:
+        return None
+
+    if not row:
+        return None
+
+    return {
+        "selectedSchema": row[0],
+        "selectedName": row[1],
+        "tableCount": row[2],
+        "viewCount": row[3]
+    }
+
+def create_duckdb_alias_view(conn, table_name, relation, database_name=None):
+    if database_name:
+        relation_name = duckdb_qualified_name(database_name, relation["schema"], relation["name"])
+    else:
+        relation_name = duckdb_qualified_name(relation["schema"], relation["name"])
+
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM {relation_name}"
+    )
+
+def create_duckdb_view(conn, file_path):
+    relation, relations = get_primary_duckdb_relation(conn)
+    remember_duckdb_source_info(conn, relation, relations)
+    if relation["schema"] == "main" and relation["name"] == TABLE_NAME:
+        return
+
+    create_duckdb_alias_view(conn, TABLE_NAME, relation)
+
+def create_named_duckdb_view(conn, table_name, file_path):
+    alias = duckdb_attach_alias(file_path, table_name)
+    try:
+        conn.execute(f"DETACH {duckdb_identifier(alias)}")
+    except Exception:
+        pass
+
+    conn.execute(f"ATTACH {sql_string(file_path)} AS {duckdb_identifier(alias)} (READ_ONLY)")
+    relation, _ = get_primary_duckdb_relation(conn, alias)
+    create_duckdb_alias_view(conn, table_name, relation, alias)
+
+def create_data_view(conn, file_path):
+    file_type = get_file_type(file_path)
+    if file_type == "parquet":
+        create_parquet_view(conn, file_path)
+        return
+    if file_type == "duckdb":
+        create_duckdb_view(conn, file_path)
+        return
+    if file_type == "sqlite":
+        create_sqlite_view(conn, TABLE_NAME, file_path)
+        return
+    if file_type == "csv":
+        create_csv_view(conn, TABLE_NAME, file_path)
+        return
+    if file_type == "tsv":
+        create_delimited_view(conn, TABLE_NAME, file_path, "\t")
+        return
+    if file_type == "psv":
+        create_delimited_view(conn, TABLE_NAME, file_path, "|")
+        return
+    if file_type == "json":
+        create_json_view(conn, TABLE_NAME, file_path)
+        return
+    if file_type == "avro":
+        create_avro_view(conn, TABLE_NAME, file_path)
+        return
+    if file_type == "orc":
+        create_orc_view(conn, TABLE_NAME, file_path)
+        return
+    if file_type in ("arrow", "ipc"):
+        create_arrow_ipc_view(conn, TABLE_NAME, file_path)
+        return
+    if file_type == "feather":
+        create_feather_view(conn, TABLE_NAME, file_path)
+        return
+
+    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files can be opened directly.")
+
+def create_named_data_view(conn, table_name, file_path):
+    file_type = get_file_type(file_path)
+    if file_type == "csv":
+        create_csv_view(conn, table_name, file_path)
+        return
+
+    if file_type == "tsv":
+        create_delimited_view(conn, table_name, file_path, "\t")
+        return
+
+    if file_type == "psv":
+        create_delimited_view(conn, table_name, file_path, "|")
+        return
+
+    if file_type == "json":
+        create_json_view(conn, table_name, file_path)
+        return
+
+    if file_type == "avro":
+        create_avro_view(conn, table_name, file_path)
+        return
+
+    if file_type == "orc":
+        create_orc_view(conn, table_name, file_path)
+        return
+
+    if file_type in ("arrow", "ipc"):
+        create_arrow_ipc_view(conn, table_name, file_path)
+        return
+
+    if file_type == "feather":
+        create_feather_view(conn, table_name, file_path)
+        return
+
+    if file_type == "parquet":
         create_named_parquet_view(conn, table_name, file_path)
         return
 
-    raise ValueError("Only .parquet and .csv files are supported for joins.")
+    if file_type == "duckdb":
+        create_named_duckdb_view(conn, table_name, file_path)
+        return
+
+    if file_type == "sqlite":
+        create_sqlite_view(conn, table_name, file_path)
+        return
+
+    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported for joins.")
+
+def connect_data_file(file_path):
+    if get_file_type(file_path) == "duckdb":
+        conn = duckdb.connect(file_path, read_only=True)
+    else:
+        conn = duckdb.connect()
+
+    create_data_view(conn, file_path)
+    create_legacy_table_alias(conn)
+    return conn
 
 class WorkerSessionManager:
     def __init__(self):
@@ -86,8 +472,7 @@ class WorkerSessionManager:
         session = self._sessions.get(session_id)
 
         if session is None:
-            conn = duckdb.connect()
-            create_parquet_view(conn, file_path)
+            conn = connect_data_file(file_path)
             self._sessions[session_id] = {
                 "conn": conn,
                 "fingerprint": fingerprint
@@ -96,7 +481,12 @@ class WorkerSessionManager:
 
         conn = session["conn"]
         if session["fingerprint"] != fingerprint:
-            create_parquet_view(conn, file_path)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = connect_data_file(file_path)
+            session["conn"] = conn
             session["fingerprint"] = fingerprint
 
         return conn
@@ -172,10 +562,80 @@ def sqlite_identifier(value):
 def duckdb_identifier(value):
     return '"' + str(value).replace('"', '""') + '"'
 
-def export_csv(cursor, columns, output_path):
+def list_sqlite_relations(file_path):
+    sqlite_conn = sqlite3.connect(f"file:{file_path}?mode=ro", uri=True)
+    try:
+        rows = sqlite_conn.execute(
+            "SELECT name, type FROM sqlite_schema "
+            "WHERE type IN ('table', 'view') "
+            "AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY CASE WHEN type = 'table' THEN 0 ELSE 1 END, name"
+        ).fetchall()
+    finally:
+        sqlite_conn.close()
+
+    return [
+        {
+            "schema": "main",
+            "name": row[0],
+            "type": "BASE TABLE" if row[1] == "table" else "VIEW"
+        }
+        for row in rows
+    ]
+
+def get_primary_sqlite_relation(file_path):
+    relations = list_sqlite_relations(file_path)
+    if not relations:
+        raise ValueError("SQLite database does not contain any user tables or views.")
+
+    return relations[0], relations
+
+def read_sqlite_relation_table(file_path, relation_name):
+    try:
+        import pyarrow as pyarrow
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for SQLite files. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    sqlite_conn = sqlite3.connect(f"file:{file_path}?mode=ro", uri=True)
+    sqlite_conn.row_factory = sqlite3.Row
+
+    try:
+        cursor = sqlite_conn.execute(f"SELECT * FROM {sqlite_identifier(relation_name)}")
+        rows = []
+        columns = [description[0] for description in cursor.description or []]
+        unique_columns = make_unique_column_names(columns)
+
+        while True:
+            batch = cursor.fetchmany(1000)
+            if not batch:
+                break
+
+            for row in batch:
+                rows.append({
+                    column: serialize_export_value(row[index])
+                    for index, column in enumerate(unique_columns)
+                })
+    finally:
+        sqlite_conn.close()
+
+    if rows:
+        return pyarrow.Table.from_pylist(rows)
+
+    return pyarrow.Table.from_pylist([], schema=pyarrow.schema([
+        pyarrow.field(column, pyarrow.string())
+        for column in unique_columns
+    ]))
+
+def create_sqlite_view(conn, table_name, file_path):
+    relation, _ = get_primary_sqlite_relation(file_path)
+    create_arrow_table_view(conn, table_name, read_sqlite_relation_table(file_path, relation["name"]))
+
+def export_delimited(cursor, columns, output_path, delimiter=","):
     row_count = 0
     with open(output_path, "w", newline="", encoding="utf-8") as output_file:
-        writer = csv.writer(output_file)
+        writer = csv.writer(output_file, delimiter=delimiter)
         writer.writerow(columns)
 
         while True:
@@ -188,6 +648,9 @@ def export_csv(cursor, columns, output_path):
                 row_count += 1
 
     return row_count
+
+def export_csv(cursor, columns, output_path):
+    return export_delimited(cursor, columns, output_path, ",")
 
 def export_json(cursor, columns, output_path):
     row_count = 0
@@ -214,6 +677,25 @@ def export_json(cursor, columns, output_path):
                 row_count += 1
 
         output_file.write("\n]\n")
+
+    return row_count
+
+def export_json_lines(cursor, columns, output_path):
+    row_count = 0
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+
+            for row in rows:
+                row_dict = {
+                    column: serialize_export_value(value)
+                    for column, value in zip(columns, row)
+                }
+                output_file.write(json.dumps(row_dict, ensure_ascii=False))
+                output_file.write("\n")
+                row_count += 1
 
     return row_count
 
@@ -250,6 +732,108 @@ def export_sqlite(cursor, columns, output_path):
         sqlite_conn.close()
 
     return row_count
+
+def remove_database_files(output_path):
+    for candidate in (output_path, f"{output_path}.wal"):
+        if os.path.exists(candidate):
+            os.remove(candidate)
+
+def export_parquet_query(conn, query, output_path):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    conn.execute(
+        f"COPY ({query}) TO {sql_string(output_path)} (FORMAT PARQUET)"
+    )
+    return rows_exported
+
+def export_duckdb_query(conn, query, output_path):
+    remove_database_files(output_path)
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    alias = duckdb_attach_alias(output_path, "export")
+    try:
+        conn.execute(f"ATTACH {sql_string(output_path)} AS {duckdb_identifier(alias)}")
+        conn.execute(
+            f"CREATE TABLE {duckdb_qualified_name(alias, 'main', TABLE_NAME)} AS "
+            f"SELECT * FROM ({query}) AS export_source"
+        )
+    except Exception:
+        raise
+    finally:
+        try:
+            conn.execute(f"DETACH {duckdb_identifier(alias)}")
+        except Exception:
+            pass
+
+    return rows_exported
+
+def export_avro_query(conn, query, output_path):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    ensure_avro_extension(conn)
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    conn.execute(
+        f"COPY ({query}) TO {sql_string(output_path)} (FORMAT AVRO)"
+    )
+    return rows_exported
+
+def fetch_query_arrow_table(conn, query):
+    try:
+        import pyarrow  # noqa: F401
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for this export. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    return conn.execute(query).fetch_arrow_table()
+
+def export_orc_query(conn, query, output_path):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    try:
+        import pyarrow.orc as pyarrow_orc
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for ORC exports. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    arrow_table = fetch_query_arrow_table(conn, query)
+    pyarrow_orc.write_table(arrow_table, output_path)
+    return arrow_table.num_rows
+
+def export_arrow_ipc_query(conn, query, output_path):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    try:
+        import pyarrow.ipc as pyarrow_ipc
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for Arrow IPC exports. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    arrow_table = fetch_query_arrow_table(conn, query)
+    with pyarrow_ipc.new_file(output_path, arrow_table.schema) as writer:
+        writer.write_table(arrow_table)
+    return arrow_table.num_rows
+
+def export_feather_query(conn, query, output_path):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    try:
+        import pyarrow.feather as pyarrow_feather
+    except Exception as error:
+        raise RuntimeError(
+            "PyArrow is required for Feather exports. Reset or rerun setup so the extension can install pyarrow."
+        ) from error
+
+    arrow_table = fetch_query_arrow_table(conn, query)
+    pyarrow_feather.write_feather(arrow_table, output_path)
+    return arrow_table.num_rows
 
 def safe_int(value):
     if value is None:
@@ -399,6 +983,62 @@ def read_parquet_schema(conn, file_path):
         "raw": schema_rows,
         "columnCount": len(leaf_columns)
     }
+
+def read_relational_schema(conn, file_path, table_name=TABLE_NAME):
+    describe_rows = conn.execute(f"DESCRIBE SELECT * FROM {duckdb_identifier(table_name)}").fetchall()
+    raw_rows = []
+    columns = []
+
+    for row in describe_rows:
+        name = str(row[0])
+        duckdb_type = str(row[1])
+        nullable_value = str(row[2]).upper() if len(row) > 2 and row[2] is not None else ""
+        nullable_status = "required" if nullable_value == "NO" else "nullable"
+        raw_row = {
+            "column_name": name,
+            "column_type": duckdb_type,
+            "null": row[2] if len(row) > 2 else None,
+            "key": row[3] if len(row) > 3 else None,
+            "default": row[4] if len(row) > 4 else None,
+            "extra": row[5] if len(row) > 5 else None
+        }
+        raw_rows.append(raw_row)
+        columns.append({
+            "name": name,
+            "path": name,
+            "parentPath": None,
+            "depth": 1,
+            "physicalType": duckdb_type,
+            "logicalType": duckdb_type,
+            "convertedType": None,
+            "nullableStatus": nullable_status,
+            "repetitionType": None,
+            "repetitionLevel": 0,
+            "definitionLevel": 0 if nullable_status == "required" else 1,
+            "decimalPrecision": None,
+            "decimalScale": None,
+            "timestampUnit": None,
+            "timestampTimezoneInterpretation": None,
+            "timestampIsAdjustedToUTC": None,
+            "numChildren": 0,
+            "children": []
+        })
+
+    return {
+        "columns": columns,
+        "tree": columns,
+        "raw": raw_rows,
+        "columnCount": len(columns),
+        "sourceType": get_file_type(file_path)
+    }
+
+def read_data_schema(conn, file_path, table_name=TABLE_NAME):
+    if get_file_type(file_path) == "parquet":
+        schema = read_parquet_schema(conn, file_path)
+        schema["sourceType"] = "parquet"
+        return schema
+
+    return read_relational_schema(conn, file_path, table_name)
 
 def get_first_value(row, keys, default=None):
     for key in keys:
@@ -1000,6 +1640,224 @@ def analyze_parquet_doctor(conn, file_path, schema, file_size):
         "compressionEncodingAnalysis": compression_encoding
     }
 
+def analyze_duckdb_schema_validation(schema, report):
+    columns = []
+    for column in schema.get("columns", []):
+        issues = []
+        name = column.get("name")
+        duckdb_type = column.get("logicalType") or column.get("physicalType")
+
+        if not name:
+            issues.append("Column name is empty.")
+
+        status = "warning" if issues else "pass"
+        columns.append({
+            "name": name,
+            "path": column.get("path") or name,
+            "physicalType": duckdb_type,
+            "logicalType": duckdb_type,
+            "nullableStatus": column.get("nullableStatus"),
+            "status": status,
+            "issues": issues
+        })
+
+        for issue in issues:
+            add_doctor_issue(
+                report,
+                "warning",
+                "Schema Validation",
+                f"{name or 'Column'}: {issue}",
+                "Rename the column or select a different table before exporting."
+            )
+
+    if not any(column["issues"] for column in columns):
+        add_doctor_issue(report, "pass", "Schema Validation", "DuckDB schema is readable.")
+
+    return {
+        "columns": columns
+    }
+
+def analyze_duckdb_integrity(conn, file_path, file_size, report):
+    source_info = read_duckdb_source_info(conn)
+    relation, relations = get_primary_duckdb_relation(conn)
+    selected_schema = source_info["selectedSchema"] if source_info else relation["schema"]
+    selected_name = source_info["selectedName"] if source_info else relation["name"]
+    table_count = source_info["tableCount"] if source_info else len([item for item in relations if item.get("type") == "BASE TABLE"])
+    view_count = source_info["viewCount"] if source_info else len([item for item in relations if item.get("type") == "VIEW"])
+
+    add_doctor_issue(report, "pass", "File Integrity", "DuckDB database opened successfully.")
+    add_doctor_issue(
+        report,
+        "pass",
+        "Catalog",
+        f"Using {selected_schema}.{selected_name} as the {TABLE_NAME} table alias."
+    )
+
+    source_relation_count = (table_count or 0) + (view_count or 0)
+    if source_relation_count > 1:
+        add_doctor_issue(
+            report,
+            "warning",
+            "Catalog",
+            f"DuckDB database contains {source_relation_count} tables or views; the viewer uses the first one by default.",
+            f"Run SQL against real table names directly, or query the default alias {TABLE_NAME}."
+        )
+
+    return {
+        "fileSize": file_size,
+        "startsWithParquetMagic": None,
+        "endsWithParquetMagic": None,
+        "footerPresent": None,
+        "duckdbReadable": True,
+        "rowGroupsReadable": None,
+        "tableCount": table_count,
+        "viewCount": view_count,
+        "selectedTable": f"{selected_schema}.{selected_name}",
+        "tables": relations
+    }
+
+def analyze_duckdb_doctor(conn, file_path, schema, file_size):
+    report = {
+        "healthScore": 100,
+        "errors": [],
+        "warnings": [],
+        "passedChecks": [],
+        "recommendations": []
+    }
+
+    integrity = analyze_duckdb_integrity(conn, file_path, file_size, report)
+    schema_validation = analyze_duckdb_schema_validation(schema, report)
+
+    try:
+        data_quality = analyze_data_quality(conn, report)
+    except Exception as error:
+        add_doctor_issue(
+            report,
+            "warning",
+            "Data Quality Validation",
+            f"Could not run data quality checks: {error}",
+            "Try narrowing the default table query or checking the database table manually."
+        )
+        data_quality = {"totalRows": 0, "distinctRows": 0, "duplicateRowsEstimate": 0, "columns": []}
+
+    add_doctor_issue(report, "pass", "Storage Metadata", "DuckDB database files do not expose Parquet row groups.")
+
+    return {
+        "healthReport": build_health_report(report),
+        "integrity": integrity,
+        "schemaValidation": schema_validation,
+        "rowGroupAnalysis": {"rowGroups": []},
+        "columnStatistics": {"columns": []},
+        "dataQuality": data_quality,
+        "decimalTimestampDiagnostics": {"columns": []},
+        "compressionEncodingAnalysis": {"columns": []}
+    }
+
+def analyze_tabular_file_integrity(conn, file_path, file_size, report, source_label):
+    row_count = safe_scalar(conn, f"SELECT COUNT(*) FROM {TABLE_NAME}", 0) or 0
+    column_count = len(schema_column_names(conn, TABLE_NAME))
+
+    add_doctor_issue(report, "pass", "File Integrity", f"{source_label} file opened successfully.")
+    add_doctor_issue(
+        report,
+        "pass" if column_count > 0 else "warning",
+        f"{source_label} Structure",
+        f"Inferred {column_count} columns and {row_count} rows from the {source_label} file."
+    )
+
+    if column_count == 0:
+        add_doctor_issue(
+            report,
+            "warning",
+            f"{source_label} Structure",
+            f"No columns were inferred from the {source_label} file.",
+            "Check that the file is valid and has a consistent tabular schema."
+        )
+
+    return {
+        "fileSize": file_size,
+        "startsWithParquetMagic": None,
+        "endsWithParquetMagic": None,
+        "footerPresent": None,
+        "duckdbReadable": True,
+        "rowGroupsReadable": None,
+        "tableCount": None,
+        "viewCount": None,
+        "selectedTable": TABLE_NAME,
+        "rows": row_count,
+        "columns": column_count
+    }
+
+def schema_column_names(conn, table_name):
+    return [
+        row[0]
+        for row in conn.execute(f"DESCRIBE SELECT * FROM {duckdb_identifier(table_name)}").fetchall()
+    ]
+
+def analyze_tabular_file_doctor(conn, file_path, schema, file_size, source_label):
+    report = {
+        "healthScore": 100,
+        "errors": [],
+        "warnings": [],
+        "passedChecks": [],
+        "recommendations": []
+    }
+
+    integrity = analyze_tabular_file_integrity(conn, file_path, file_size, report, source_label)
+    schema_validation = analyze_duckdb_schema_validation(schema, report)
+
+    try:
+        data_quality = analyze_data_quality(conn, report)
+    except Exception as error:
+        add_doctor_issue(
+            report,
+            "warning",
+            "Data Quality Validation",
+            f"Could not run data quality checks: {error}",
+            f"Check the {source_label} file and inferred column types."
+        )
+        data_quality = {"totalRows": 0, "distinctRows": 0, "duplicateRowsEstimate": 0, "columns": []}
+
+    add_doctor_issue(report, "pass", "Storage Metadata", f"{source_label} files do not expose Parquet row groups.")
+
+    return {
+        "healthReport": build_health_report(report),
+        "integrity": integrity,
+        "schemaValidation": schema_validation,
+        "rowGroupAnalysis": {"rowGroups": []},
+        "columnStatistics": {"columns": []},
+        "dataQuality": data_quality,
+        "decimalTimestampDiagnostics": {"columns": []},
+        "compressionEncodingAnalysis": {"columns": []}
+    }
+
+def analyze_csv_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "CSV")
+
+def analyze_avro_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Avro")
+
+def analyze_orc_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "ORC")
+
+def analyze_arrow_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Arrow")
+
+def analyze_feather_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Feather")
+
+def analyze_ipc_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Arrow IPC")
+
+def analyze_tsv_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "TSV")
+
+def analyze_psv_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "PSV")
+
+def analyze_json_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "JSON")
+
 def analyze_failed_parquet_doctor(file_path, file_size, error):
     report = {
         "healthScore": 0,
@@ -1073,18 +1931,20 @@ def analyze_failed_parquet_doctor(file_path, file_size, error):
     }
 
 def type_signature(column):
-    return "|".join([
-        str(column.get("duckdbType") or ""),
-        str(column.get("physicalType") or ""),
-        str(column.get("logicalType") or ""),
-        str(column.get("decimalPrecision") or ""),
-        str(column.get("decimalScale") or ""),
-        str(column.get("timestampUnit") or "")
-    ])
+    type_text = str(column.get("duckdbType") or column.get("logicalType") or column.get("physicalType") or "").upper()
+    if any(token in type_text for token in ("CHAR", "VARCHAR", "STRING", "TEXT")):
+        return "TEXT"
+    if any(token in type_text for token in ("INT", "DECIMAL", "DOUBLE", "FLOAT", "REAL", "NUMERIC")):
+        return "NUMERIC"
+    if any(token in type_text for token in ("DATE", "TIME", "TIMESTAMP")):
+        return "TEMPORAL"
+    if "BOOL" in type_text:
+        return "BOOLEAN"
+    return type_text
 
 def read_compare_columns(conn, file_path):
-    create_named_parquet_view(conn, TABLE_NAME, file_path)
-    schema = read_parquet_schema(conn, file_path)
+    create_named_data_view(conn, TABLE_NAME, file_path)
+    schema = read_data_schema(conn, file_path, TABLE_NAME)
     schema_by_name = {
         column["name"]: column
         for column in schema.get("columns", [])
@@ -1115,13 +1975,11 @@ def read_compare_columns(conn, file_path):
 
 def read_join_columns(conn, table_name, file_path):
     create_named_data_view(conn, table_name, file_path)
-    schema_by_name = {}
-    if file_path.lower().endswith(".parquet"):
-        schema = read_parquet_schema(conn, file_path)
-        schema_by_name = {
-            column["name"]: column
-            for column in schema.get("columns", [])
-        }
+    schema = read_data_schema(conn, file_path, table_name)
+    schema_by_name = {
+        column["name"]: column
+        for column in schema.get("columns", [])
+    }
 
     describe_rows = conn.execute(f"DESCRIBE SELECT * FROM {table_name}").fetchall()
     columns = []
@@ -1654,9 +2512,11 @@ def analyze_dataset_partitions(folder_path):
         "recommendations": list(dict.fromkeys(recommendations))
     }
 
-def read_parquet_file_from_connection(conn, file_path, user_query=None):
+def read_data_file_from_connection(conn, file_path, user_query=None):
     file_size = os.path.getsize(file_path)
-    schema = read_parquet_schema(conn, file_path)
+    file_type = get_file_type(file_path)
+    source_format = get_source_format(file_path)
+    schema = read_data_schema(conn, file_path)
     query = normalize_query(user_query)
 
     limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
@@ -1683,9 +2543,13 @@ def read_parquet_file_from_connection(conn, file_path, user_query=None):
         'totalRows': total_rows,
         'query': query,
         'resultLimited': result_limited,
+        'fileType': file_type,
+        'sourceFormat': source_format,
         'schema': schema,
         'debug': {
             'file_path': file_path,
+            'file_type': file_type,
+            'source_format': source_format,
             'file_size': file_size,
             'columns_count': len(columns),
             'rows_returned': len(data),
@@ -1693,11 +2557,11 @@ def read_parquet_file_from_connection(conn, file_path, user_query=None):
         }
     }
 
-def read_parquet_file(file_path, user_query=None):
+def read_data_file(file_path, user_query=None):
     """
-    Read parquet file and return data as JSON
+    Read a supported data file and return data as JSON
     """
-    print(f"DEBUG: Starting to read parquet file: {file_path}", file=sys.stderr)
+    print(f"DEBUG: Starting to read data file: {file_path}", file=sys.stderr)
     print(f"DEBUG: File exists: {os.path.exists(file_path)}", file=sys.stderr)
     
     if not os.path.exists(file_path):
@@ -1709,10 +2573,9 @@ def read_parquet_file(file_path, user_query=None):
     conn = None
 
     try:
-        conn = duckdb.connect()
+        conn = connect_data_file(file_path)
         print("DEBUG: DuckDB connected successfully", file=sys.stderr)
-        create_parquet_view(conn, file_path)
-        result = read_parquet_file_from_connection(conn, file_path, user_query)
+        result = read_data_file_from_connection(conn, file_path, user_query)
 
         conn.close()
         conn = None
@@ -1723,7 +2586,7 @@ def read_parquet_file(file_path, user_query=None):
             conn.close()
 
         import traceback
-        print(f"DEBUG: Error reading parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Error reading data file: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
         file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
 
@@ -1739,16 +2602,41 @@ def read_parquet_file(file_path, user_query=None):
             }
         }
 
-def run_parquet_doctor_from_connection(conn, file_path):
+def run_file_doctor_from_connection(conn, file_path):
     file_size = os.path.getsize(file_path)
-    schema = read_parquet_schema(conn, file_path)
-    doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
+    file_type = get_file_type(file_path)
+    source_format = get_source_format(file_path)
+    schema = read_data_schema(conn, file_path)
+    if file_type == "duckdb":
+        doctor = analyze_duckdb_doctor(conn, file_path, schema, file_size)
+    elif file_type == "csv":
+        doctor = analyze_csv_doctor(conn, file_path, schema, file_size)
+    elif file_type == "tsv":
+        doctor = analyze_tsv_doctor(conn, file_path, schema, file_size)
+    elif file_type == "psv":
+        doctor = analyze_psv_doctor(conn, file_path, schema, file_size)
+    elif file_type == "json":
+        doctor = analyze_json_doctor(conn, file_path, schema, file_size)
+    elif file_type == "avro":
+        doctor = analyze_avro_doctor(conn, file_path, schema, file_size)
+    elif file_type == "orc":
+        doctor = analyze_orc_doctor(conn, file_path, schema, file_size)
+    elif file_type == "arrow":
+        doctor = analyze_arrow_doctor(conn, file_path, schema, file_size)
+    elif file_type == "feather":
+        doctor = analyze_feather_doctor(conn, file_path, schema, file_size)
+    elif file_type == "ipc":
+        doctor = analyze_ipc_doctor(conn, file_path, schema, file_size)
+    else:
+        doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
     return {
         "success": True,
+        "fileType": file_type,
+        "sourceFormat": source_format,
         "doctor": doctor
     }
 
-def run_parquet_doctor(file_path):
+def run_file_doctor(file_path):
     if not os.path.exists(file_path):
         return {
             "success": False,
@@ -1760,9 +2648,8 @@ def run_parquet_doctor(file_path):
 
     try:
         file_size = os.path.getsize(file_path)
-        conn = duckdb.connect()
-        create_parquet_view(conn, file_path)
-        result = run_parquet_doctor_from_connection(conn, file_path)
+        conn = connect_data_file(file_path)
+        result = run_file_doctor_from_connection(conn, file_path)
         conn.close()
         conn = None
         return result
@@ -1778,15 +2665,83 @@ def run_parquet_doctor(file_path):
             "doctor": analyze_failed_parquet_doctor(file_path, file_size, str(e))
         }
 
-def export_parquet_file_from_connection(conn, output_path, export_format, user_query=None):
+def export_data_file_from_connection(conn, output_path, export_format, user_query=None):
     query = normalize_query(user_query)
+
+    if export_format == "parquet":
+        rows_exported = export_parquet_query(conn, query, output_path)
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
+    if export_format == "duckdb":
+        rows_exported = export_duckdb_query(conn, query, output_path)
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
+    if export_format == "avro":
+        rows_exported = export_avro_query(conn, query, output_path)
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
+    if export_format == "orc":
+        rows_exported = export_orc_query(conn, query, output_path)
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
+    if export_format in ("arrow", "ipc"):
+        rows_exported = export_arrow_ipc_query(conn, query, output_path)
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
+    if export_format == "feather":
+        rows_exported = export_feather_query(conn, query, output_path)
+        return {
+            "success": True,
+            "format": export_format,
+            "outputPath": output_path,
+            "rowsExported": rows_exported,
+            "query": query
+        }
+
     cursor = conn.execute(query)
     columns = [desc[0] for desc in conn.description]
+    unique_columns = make_unique_column_names(columns)
 
     if export_format == "csv":
         rows_exported = export_csv(cursor, columns, output_path)
+    elif export_format == "tsv":
+        rows_exported = export_delimited(cursor, columns, output_path, "\t")
+    elif export_format == "psv":
+        rows_exported = export_delimited(cursor, columns, output_path, "|")
     elif export_format == "json":
-        rows_exported = export_json(cursor, make_unique_column_names(columns), output_path)
+        rows_exported = export_json(cursor, unique_columns, output_path)
+    elif export_format in ("jsonl", "ndjson"):
+        rows_exported = export_json_lines(cursor, unique_columns, output_path)
     else:
         rows_exported = export_sqlite(cursor, columns, output_path)
 
@@ -1798,12 +2753,12 @@ def export_parquet_file_from_connection(conn, output_path, export_format, user_q
         "query": query
     }
 
-def export_parquet_file(file_path, output_path, export_format, user_query=None):
-    print(f"DEBUG: Starting export for parquet file: {file_path}", file=sys.stderr)
+def export_data_file(file_path, output_path, export_format, user_query=None):
+    print(f"DEBUG: Starting export for data file: {file_path}", file=sys.stderr)
     print(f"DEBUG: Export format: {export_format}", file=sys.stderr)
     print(f"DEBUG: Export output: {output_path}", file=sys.stderr)
 
-    if export_format not in ("csv", "json", "sqlite"):
+    if export_format not in SUPPORTED_EXPORT_FORMATS:
         return {
             "success": False,
             "error": f"Unsupported export format: {export_format}"
@@ -1818,9 +2773,8 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
     conn = None
 
     try:
-        conn = duckdb.connect()
-        create_parquet_view(conn, file_path)
-        result = export_parquet_file_from_connection(conn, output_path, export_format, user_query)
+        conn = connect_data_file(file_path)
+        result = export_data_file_from_connection(conn, output_path, export_format, user_query)
 
         conn.close()
         conn = None
@@ -1831,7 +2785,7 @@ def export_parquet_file(file_path, output_path, export_format, user_query=None):
             conn.close()
 
         import traceback
-        print(f"DEBUG: Error exporting parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Error exporting data file: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
 
         return {
@@ -2114,7 +3068,7 @@ def normalize_compare_mappings(base_columns, compare_columns, mappings):
         if base_names != compare_names:
             return {
                 "success": False,
-                "error": "Only Parquet files with the same columns in the same order can be compared.",
+                "error": "Only data files with the same columns in the same order can be compared.",
                 "baseColumns": base_names,
                 "compareColumns": compare_names
             }
@@ -2379,15 +3333,16 @@ def infer_smart_key_mapping(conn, base_columns, compare_columns, mappings):
     return best_candidate
 
 def create_smart_diff_view(conn, table_name, file_path):
-    parquet_path = sql_string(file_path)
+    source_table_name = f"{table_name}_source"
     row_id_column = duckdb_identifier("__parquet_x_smart_row_id")
+    create_named_data_view(conn, source_table_name, file_path)
     conn.execute(
-        f"CREATE OR REPLACE TEMP VIEW {table_name} AS "
-        f"SELECT row_number() OVER () AS {row_id_column}, * FROM read_parquet({parquet_path})"
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT row_number() OVER () AS {row_id_column}, * FROM {duckdb_identifier(source_table_name)}"
     )
 
-def smart_diff_parquet_files(base_path, compare_path):
-    print(f"DEBUG: Starting smart parquet diff: {base_path} vs {compare_path}", file=sys.stderr)
+def smart_diff_data_files(base_path, compare_path):
+    print(f"DEBUG: Starting smart data diff: {base_path} vs {compare_path}", file=sys.stderr)
 
     if not os.path.exists(base_path):
         return {
@@ -2577,7 +3532,7 @@ def smart_diff_parquet_files(base_path, compare_path):
             diff_conn.close()
 
         import traceback
-        print(f"DEBUG: Error running smart parquet diff: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Error running smart data diff: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
 
         return {
@@ -2588,7 +3543,7 @@ def smart_diff_parquet_files(base_path, compare_path):
             "traceback": traceback.format_exc()
         }
 
-def compare_parquet_files(base_path, compare_path, mappings=None, order_mapping=None):
+def compare_data_files(base_path, compare_path, mappings=None, order_mapping=None):
     print(f"DEBUG: Starting parquet compare: {base_path} vs {compare_path}", file=sys.stderr)
 
     if not os.path.exists(base_path):
@@ -2732,7 +3687,7 @@ def compare_parquet_files(base_path, compare_path, mappings=None, order_mapping=
             compare_conn.close()
 
         import traceback
-        print(f"DEBUG: Error comparing parquet files: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Error comparing data files: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
 
         return {
@@ -2761,24 +3716,24 @@ def handle_worker_request(session_manager, request):
             file_path = _worker_payload_text(payload, "filePath")
             query = payload.get("query") if isinstance(payload.get("query"), str) else None
             conn = session_manager.get_session_connection(session_id, file_path)
-            result = read_parquet_file_from_connection(conn, file_path, query)
+            result = read_data_file_from_connection(conn, file_path, query)
         elif command == "doctor":
             session_id = _worker_payload_text(payload, "sessionId")
             file_path = _worker_payload_text(payload, "filePath")
             conn = session_manager.get_session_connection(session_id, file_path)
-            result = run_parquet_doctor_from_connection(conn, file_path)
+            result = run_file_doctor_from_connection(conn, file_path)
         elif command == "export":
             session_id = _worker_payload_text(payload, "sessionId")
             file_path = _worker_payload_text(payload, "filePath")
             output_path = _worker_payload_text(payload, "outputPath")
             export_format = _worker_payload_text(payload, "format")
             query = payload.get("query") if isinstance(payload.get("query"), str) else None
-            if export_format not in ("csv", "json", "sqlite"):
+            if export_format not in SUPPORTED_EXPORT_FORMATS:
                 raise ValueError(f"Unsupported export format: {export_format}")
             if not output_path:
                 raise ValueError("Worker export request missing outputPath.")
             conn = session_manager.get_session_connection(session_id, file_path)
-            result = export_parquet_file_from_connection(conn, output_path, export_format, query)
+            result = export_data_file_from_connection(conn, output_path, export_format, query)
         elif command == "save_edits":
             file_path = _worker_payload_text(payload, "filePath")
             output_path = _worker_payload_text(payload, "outputPath")
@@ -2797,11 +3752,11 @@ def handle_worker_request(session_manager, request):
             compare_path = _worker_payload_text(payload, "comparePath")
             mappings = payload.get("mappings") if isinstance(payload.get("mappings"), list) else None
             order_mapping = payload.get("orderMapping") if isinstance(payload.get("orderMapping"), dict) else None
-            result = compare_parquet_files(file_path, compare_path, mappings, order_mapping)
+            result = compare_data_files(file_path, compare_path, mappings, order_mapping)
         elif command == "smart_diff":
             file_path = _worker_payload_text(payload, "filePath")
             compare_path = _worker_payload_text(payload, "comparePath")
-            result = smart_diff_parquet_files(file_path, compare_path)
+            result = smart_diff_data_files(file_path, compare_path)
         elif command == "join_metadata":
             file_path = _worker_payload_text(payload, "filePath")
             join_path = _worker_payload_text(payload, "joinPath")
@@ -2867,7 +3822,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({
             'success': False,
-            'error': 'Usage: python read_parquet.py <file_path> [query] [--doctor] [--export csv|json|sqlite <output_path>] [--save-edits output_path edits_json_path] [--create-parquet output_path payload_json_path] [--compare compare_path [mappings_json] [order_mapping_json]] [--smart-diff compare_path] [--compare-metadata compare_path] [--join-metadata join_path] [--join join_path options_json] [--schema-drift reference_path] [--dataset-scan folder_path]'
+            'error': 'Usage: python read_data_file.py <file_path> [query] [--doctor] [--export csv|tsv|psv|json|jsonl|ndjson|sqlite|parquet|duckdb|avro|orc|arrow|feather|ipc <output_path>] [--save-edits output_path edits_json_path] [--create-parquet output_path payload_json_path] [--compare compare_path [mappings_json] [order_mapping_json]] [--smart-diff compare_path] [--compare-metadata compare_path] [--join-metadata join_path] [--join join_path options_json] [--schema-drift reference_path] [--dataset-scan folder_path]'
         }))
         sys.exit(1)
     
@@ -2875,14 +3830,14 @@ if __name__ == "__main__":
     args = sys.argv[2:]
 
     if "--doctor" in args:
-        result = run_parquet_doctor(file_path)
+        result = run_file_doctor(file_path)
     elif "--join-metadata" in args:
         join_metadata_index = args.index("--join-metadata")
 
         if len(args) < join_metadata_index + 2:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --join-metadata <join_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --join-metadata <join_path>'
             }
         else:
             join_path = args[join_metadata_index + 1]
@@ -2893,7 +3848,7 @@ if __name__ == "__main__":
         if len(args) < join_index + 3:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --join <join_path> <options_json>'
+                'error': 'Usage: python read_data_file.py <file_path> --join <join_path> <options_json>'
             }
         else:
             join_path = args[join_index + 1]
@@ -2905,7 +3860,7 @@ if __name__ == "__main__":
         if len(args) < metadata_index + 2:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --compare-metadata <compare_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --compare-metadata <compare_path>'
             }
         else:
             compare_path = args[metadata_index + 1]
@@ -2916,7 +3871,7 @@ if __name__ == "__main__":
         if len(args) < drift_index + 2:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --schema-drift <reference_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --schema-drift <reference_path>'
             }
         else:
             reference_path = args[drift_index + 1]
@@ -2927,7 +3882,7 @@ if __name__ == "__main__":
         if len(args) < dataset_index + 2:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --dataset-scan <folder_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --dataset-scan <folder_path>'
             }
         else:
             folder_path = args[dataset_index + 1]
@@ -2938,19 +3893,19 @@ if __name__ == "__main__":
         if len(args) < smart_diff_index + 2:
             print(json.dumps({
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --smart-diff <compare_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --smart-diff <compare_path>'
             }))
             sys.exit(1)
 
         compare_path = args[smart_diff_index + 1]
-        result = smart_diff_parquet_files(file_path, compare_path)
+        result = smart_diff_data_files(file_path, compare_path)
     elif "--compare" in args:
         compare_index = args.index("--compare")
 
         if len(args) < compare_index + 2:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --compare <compare_path> [mappings_json] [order_mapping_json]'
+                'error': 'Usage: python read_data_file.py <file_path> --compare <compare_path> [mappings_json] [order_mapping_json]'
             }
         else:
             compare_path = args[compare_index + 1]
@@ -2960,7 +3915,7 @@ if __name__ == "__main__":
                 mappings = json.loads(args[compare_index + 2])
             if len(args) > compare_index + 3 and args[compare_index + 3].strip():
                 order_mapping = json.loads(args[compare_index + 3])
-            result = compare_parquet_files(file_path, compare_path, mappings, order_mapping)
+            result = compare_data_files(file_path, compare_path, mappings, order_mapping)
     elif "--export" in args:
         export_index = args.index("--export")
         user_query = args[0] if export_index > 0 and args[0].strip() else None
@@ -2968,19 +3923,19 @@ if __name__ == "__main__":
         if len(args) < export_index + 3:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> [query] --export csv|json|sqlite <output_path>'
+                'error': 'Usage: python read_data_file.py <file_path> [query] --export csv|tsv|psv|json|jsonl|ndjson|sqlite|parquet|duckdb|avro|orc|arrow|feather|ipc <output_path>'
             }
         else:
             export_format = args[export_index + 1]
             output_path = args[export_index + 2]
-            result = export_parquet_file(file_path, output_path, export_format, user_query)
+            result = export_data_file(file_path, output_path, export_format, user_query)
     elif "--save-edits" in args:
         save_edits_index = args.index("--save-edits")
 
         if len(args) < save_edits_index + 3:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --save-edits <output_path> <edits_json_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --save-edits <output_path> <edits_json_path>'
             }
         else:
             output_path = args[save_edits_index + 1]
@@ -2992,7 +3947,7 @@ if __name__ == "__main__":
         if len(args) < create_index + 3:
             result = {
                 'success': False,
-                'error': 'Usage: python read_parquet.py <file_path> --create-parquet <output_path> <payload_json_path>'
+                'error': 'Usage: python read_data_file.py <file_path> --create-parquet <output_path> <payload_json_path>'
             }
         else:
             output_path = args[create_index + 1]
@@ -3000,6 +3955,6 @@ if __name__ == "__main__":
             result = create_parquet_file(output_path, payload_path)
     else:
         user_query = args[0] if len(args) == 1 else None
-        result = read_parquet_file(file_path, user_query)
+        result = read_data_file(file_path, user_query)
 
     print(json.dumps(result))

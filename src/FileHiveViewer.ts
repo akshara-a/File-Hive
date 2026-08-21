@@ -1,41 +1,57 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { IParquetReader, ParquetCompareMapping, ParquetCompareOrderMapping, ParquetJoinOptions, ParquetWriteOptions } from './interfaces/IParquetReader';
+import { IDataFileReader, DataFileCompareMapping, DataFileCompareOrderMapping, DataFileExportFormat, DataFileJoinOptions, ParquetWriteOptions } from './interfaces/IDataFileReader';
 import { IWebviewRenderer } from './interfaces/IWebviewRenderer';
 
-export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
-    public static readonly viewType = 'parquetViewer.parquetViewer';
+export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
+    public static readonly viewType = 'fileHive.fileViewer';
+    private static readonly exportFormats: readonly DataFileExportFormat[] = [
+        'csv',
+        'tsv',
+        'psv',
+        'json',
+        'jsonl',
+        'ndjson',
+        'sqlite',
+        'parquet',
+        'duckdb',
+        'avro',
+        'orc',
+        'arrow',
+        'feather',
+        'ipc'
+    ];
     private readonly compareFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
     private readonly joinFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
 
     /**
-     * Constructs a ParquetViewer object.
-     * @param {IParquetReader} parquetReader - The parquet reader to use.
+     * Constructs a FileHiveViewer object.
+     * @param {IDataFileReader} dataFileReader - The data file reader to use.
      * @param {IWebviewRenderer} webviewRenderer - The webview renderer to use.
      */
     constructor(
-        private readonly parquetReader: IParquetReader,
+        private readonly dataFileReader: IDataFileReader,
         private readonly webviewRenderer: IWebviewRenderer
     ) {}
 
     /**
-     * Registers a custom editor provider for the parquet viewer.
+     * Registers a custom editor provider for File Hive.
      * 
      * This function registers a custom editor provider which can be used to
-     * render parquet files in VS Code.
+     * render supported data files in VS Code.
      * 
-     * @param {IParquetReader} parquetReader - The parquet reader to use.
+     * @param {IDataFileReader} dataFileReader - The data file reader to use.
      * @param {IWebviewRenderer} webviewRenderer - The webview renderer to use.
      * @returns {vscode.Disposable} The disposable custom editor provider.
      */
     public static register(
-        parquetReader: IParquetReader,
+        dataFileReader: IDataFileReader,
         webviewRenderer: IWebviewRenderer
     ): vscode.Disposable {
-        const provider = new ParquetViewer(parquetReader, webviewRenderer);
+        const provider = new FileHiveViewer(dataFileReader, webviewRenderer);
         return vscode.window.registerCustomEditorProvider(
-            ParquetViewer.viewType,
+            FileHiveViewer.viewType,
             provider
         );
     }
@@ -55,7 +71,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         return {
             uri,
             dispose: () => {
-                void this.parquetReader.releaseFileSession(uri).catch(() => undefined);
+                void this.dataFileReader.releaseFileSession(uri).catch(() => undefined);
             }
         };
     }
@@ -168,7 +184,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
      * It calls updateWebviewContent to update the webview content.
      * 
      * @param webviewPanel The webview panel to initialize the content for.
-     * @param uri The uri of the parquet file to initialize the content with.
+     * @param uri The uri of the data file to initialize the content with.
      * @returns A promise that resolves when the webview content is initialized.
      */
     private async initializeWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
@@ -182,7 +198,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
      * It calls updateWebviewContent to update the webview content.
      * 
      * @param webviewPanel The webview panel to refresh the content for.
-     * @param uri The uri of the parquet file to refresh the content with.
+     * @param uri The uri of the data file to refresh the content with.
      * @returns A promise that resolves when the webview content is refreshed.
      */
     private async refreshWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: unknown): Promise<void> {
@@ -194,20 +210,20 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
      * Runs a SQL-like query against the parquet data and updates the existing webview.
      *
      * @param webviewPanel The webview panel to update.
-     * @param uri The parquet file URI to query.
+     * @param uri The data file URI to query.
      * @param query The SQL query received from the webview.
      */
     private async queryWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: unknown): Promise<void> {
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        const parquetData = await this.parquetReader.readParquetFile(uri, sqlQuery);
-        await webviewPanel.webview.postMessage({ type: 'data', data: parquetData });
+        const dataFileData = await this.dataFileReader.readDataFile(uri, sqlQuery);
+        await webviewPanel.webview.postMessage({ type: 'data', data: dataFileData });
     }
 
     /**
      * Exports the current parquet query result to a user-selected file.
      *
      * @param webviewPanel The webview panel requesting the export.
-     * @param uri The parquet file URI to export from.
+     * @param uri The data file URI to export from.
      * @param format The requested export format.
      * @param query The SQL query received from the webview.
      */
@@ -217,7 +233,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         format?: unknown,
         query?: unknown
     ): Promise<void> {
-        if (format !== 'csv' && format !== 'json' && format !== 'sqlite') {
+        if (typeof format !== 'string' || !FileHiveViewer.exportFormats.includes(format as DataFileExportFormat)) {
             await webviewPanel.webview.postMessage({
                 type: 'exportResult',
                 result: { success: false, error: 'Unsupported export format.' }
@@ -225,11 +241,12 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const defaultUri = this.getDefaultExportUri(uri, format);
+        const exportFormat = format as DataFileExportFormat;
+        const defaultUri = this.getDefaultExportUri(uri, exportFormat);
         const outputUri = await vscode.window.showSaveDialog({
             defaultUri,
-            filters: this.getExportFilters(format),
-            saveLabel: `Export ${format.toUpperCase()}`
+            filters: this.getExportFilters(exportFormat),
+            saveLabel: `Export ${this.getExportLabel(exportFormat)}`
         });
 
         if (!outputUri) {
@@ -240,8 +257,16 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
+        if (path.resolve(outputUri.fsPath) === path.resolve(uri.fsPath)) {
+            await webviewPanel.webview.postMessage({
+                type: 'exportResult',
+                result: { success: false, error: 'Choose a new file path instead of overwriting the currently open file.' }
+            });
+            return;
+        }
+
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        const result = await this.parquetReader.exportParquetFile(uri, format, outputUri, sqlQuery);
+        const result = await this.dataFileReader.exportDataFile(uri, exportFormat, outputUri, sqlQuery);
 
         if (result.success) {
             vscode.window.showInformationMessage(
@@ -254,22 +279,57 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         await webviewPanel.webview.postMessage({ type: 'exportResult', result });
     }
 
-    private getDefaultExportUri(uri: vscode.Uri, format: 'csv' | 'json' | 'sqlite'): vscode.Uri {
-        const extension = format === 'sqlite' ? 'sqlite' : format;
+    private getDefaultExportUri(uri: vscode.Uri, format: DataFileExportFormat): vscode.Uri {
+        const extension = this.getExportExtension(format);
         const parsedPath = path.parse(uri.fsPath);
-        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}.${extension}`));
+        const outputName = parsedPath.ext.toLowerCase() === `.${extension}`
+            ? `${parsedPath.name}_export`
+            : parsedPath.name;
+        return vscode.Uri.file(path.join(parsedPath.dir, `${outputName}.${extension}`));
     }
 
-    private getExportFilters(format: 'csv' | 'json' | 'sqlite'): Record<string, string[]> {
-        if (format === 'csv') {
-            return { 'CSV Files': ['csv'] };
-        }
+    private getExportExtension(format: DataFileExportFormat): string {
+        return format;
+    }
 
-        if (format === 'json') {
-            return { 'JSON Files': ['json'] };
-        }
+    private getExportLabel(format: DataFileExportFormat): string {
+        const labels: Record<DataFileExportFormat, string> = {
+            csv: 'CSV',
+            tsv: 'TSV',
+            psv: 'PSV',
+            json: 'JSON',
+            jsonl: 'JSONL',
+            ndjson: 'NDJSON',
+            sqlite: 'SQLite',
+            parquet: 'Parquet',
+            duckdb: 'DuckDB',
+            avro: 'Avro',
+            orc: 'ORC',
+            arrow: 'Arrow',
+            feather: 'Feather',
+            ipc: 'IPC'
+        };
+        return labels[format];
+    }
 
-        return { 'SQLite Databases': ['sqlite', 'db'] };
+    private getExportFilters(format: DataFileExportFormat): Record<string, string[]> {
+        const filters: Record<DataFileExportFormat, Record<string, string[]>> = {
+            csv: { 'CSV Files': ['csv'] },
+            tsv: { 'TSV Files': ['tsv'] },
+            psv: { 'PSV Files': ['psv'] },
+            json: { 'JSON Files': ['json'] },
+            jsonl: { 'JSON Lines Files': ['jsonl'] },
+            ndjson: { 'NDJSON Files': ['ndjson'] },
+            sqlite: { 'SQLite Databases': ['sqlite', 'db'] },
+            parquet: { 'Parquet Files': ['parquet'] },
+            duckdb: { 'DuckDB Databases': ['duckdb'] },
+            avro: { 'Avro Files': ['avro'] },
+            orc: { 'ORC Files': ['orc'] },
+            arrow: { 'Arrow Files': ['arrow'] },
+            feather: { 'Feather Files': ['feather'] },
+            ipc: { 'IPC Files': ['ipc'] }
+        };
+        return filters[format];
     }
 
     private async saveEditedParquet(
@@ -304,7 +364,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.saveEditedParquetFile(uri, outputUri, parsedColumns, parsedRows);
+        const result = await this.dataFileReader.saveEditedParquetFile(uri, outputUri, parsedColumns, parsedRows);
 
         if (result.success) {
             const openAction = 'Open New Parquet';
@@ -312,7 +372,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             const action = await vscode.window.showInformationMessage(message, openAction);
 
             if (action === openAction) {
-                await vscode.commands.executeCommand('vscode.openWith', outputUri, ParquetViewer.viewType);
+                await vscode.commands.executeCommand('vscode.openWith', outputUri, FileHiveViewer.viewType);
             }
         } else {
             vscode.window.showErrorMessage(result.error || 'Could not save edited Parquet file.');
@@ -364,7 +424,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.createParquetFile(uri, outputUri, writeOptions);
+        const result = await this.dataFileReader.createParquetFile(uri, outputUri, writeOptions);
 
         if (result.success) {
             const openAction = 'Open Created Parquet';
@@ -372,7 +432,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             const action = await vscode.window.showInformationMessage(message, openAction);
 
             if (action === openAction) {
-                await vscode.commands.executeCommand('vscode.openWith', outputUri, ParquetViewer.viewType);
+                await vscode.commands.executeCommand('vscode.openWith', outputUri, FileHiveViewer.viewType);
             }
         } else {
             vscode.window.showErrorMessage(result.error || 'Could not create Parquet file.');
@@ -462,7 +522,18 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
-            filters: { 'Parquet Files': ['parquet'] },
+            filters: {
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Parquet Files': ['parquet'],
+                'DuckDB Databases': ['duckdb'],
+                'SQLite Databases': ['sqlite', 'db'],
+                'CSV Files': ['csv'],
+                'Delimited Files': ['tsv', 'psv'],
+                'JSON Files': ['json', 'jsonl', 'ndjson'],
+                'Avro Files': ['avro'],
+                'ORC Files': ['orc'],
+                'Arrow Files': ['arrow', 'feather', 'ipc']
+            },
             openLabel: 'Compare With'
         });
 
@@ -478,7 +549,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         const compareUri = selectedFiles[0];
         this.compareFiles.set(webviewPanel, compareUri);
 
-        const metadataResult = await this.parquetReader.getParquetCompareMetadata(uri, compareUri);
+        const metadataResult = await this.dataFileReader.getCompareMetadata(uri, compareUri);
         await webviewPanel.webview.postMessage({ type: 'compareMetadata', result: metadataResult });
 
         if (!metadataResult.success) {
@@ -493,9 +564,16 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'csv'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
-                'CSV Files': ['csv']
+                'DuckDB Databases': ['duckdb'],
+                'SQLite Databases': ['sqlite', 'db'],
+                'CSV Files': ['csv'],
+                'Delimited Files': ['tsv', 'psv'],
+                'JSON Files': ['json', 'jsonl', 'ndjson'],
+                'Avro Files': ['avro'],
+                'ORC Files': ['orc'],
+                'Arrow Files': ['arrow', 'feather', 'ipc']
             },
             openLabel: 'Join With'
         });
@@ -512,7 +590,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         const joinUri = selectedFiles[0];
         this.joinFiles.set(webviewPanel, joinUri);
 
-        const metadataResult = await this.parquetReader.getJoinMetadata(uri, joinUri);
+        const metadataResult = await this.dataFileReader.getJoinMetadata(uri, joinUri);
         await webviewPanel.webview.postMessage({ type: 'joinMetadata', result: metadataResult });
 
         if (!metadataResult.success) {
@@ -540,7 +618,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.joinParquetFile(uri, joinUri, joinOptions);
+        const result = await this.dataFileReader.joinDataFile(uri, joinUri, joinOptions);
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Join failed.');
@@ -549,7 +627,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         await webviewPanel.webview.postMessage({ type: 'joinResult', result });
     }
 
-    private parseJoinOptions(options?: unknown): ParquetJoinOptions | undefined {
+    private parseJoinOptions(options?: unknown): DataFileJoinOptions | undefined {
         if (typeof options !== 'object' || options === null ||
             !('baseColumn' in options) || !('joinColumn' in options) || !('joinType' in options)) {
             return undefined;
@@ -664,7 +742,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.compareParquetFile(
+        const result = await this.dataFileReader.compareDataFile(
             uri,
             compareUri,
             compareMappings,
@@ -689,16 +767,16 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.smartDiffParquetFile(uri, compareUri);
+        const result = await this.dataFileReader.smartDiffDataFile(uri, compareUri);
 
         if (!result.success) {
-            vscode.window.showErrorMessage(result.error || 'Smart Parquet Diff failed.');
+            vscode.window.showErrorMessage(result.error || 'Smart Diff failed.');
         }
 
         await webviewPanel.webview.postMessage({ type: 'compareResult', result });
     }
 
-    private parseCompareMappings(mappings?: unknown): ParquetCompareMapping[] | undefined {
+    private parseCompareMappings(mappings?: unknown): DataFileCompareMapping[] | undefined {
         if (!Array.isArray(mappings)) {
             return undefined;
         }
@@ -717,7 +795,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
         return parsedMappings.length > 0 ? parsedMappings : undefined;
     }
 
-    private parseCompareOrderMapping(orderMapping?: unknown): ParquetCompareOrderMapping | undefined {
+    private parseCompareOrderMapping(orderMapping?: unknown): DataFileCompareOrderMapping | undefined {
         if (typeof orderMapping !== 'object' || orderMapping === null ||
             !('baseColumn' in orderMapping) || !('compareColumn' in orderMapping)) {
             return undefined;
@@ -738,7 +816,18 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
-            filters: { 'Parquet Files': ['parquet'] },
+            filters: {
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Parquet Files': ['parquet'],
+                'DuckDB Databases': ['duckdb'],
+                'SQLite Databases': ['sqlite', 'db'],
+                'CSV Files': ['csv'],
+                'Delimited Files': ['tsv', 'psv'],
+                'JSON Files': ['json', 'jsonl', 'ndjson'],
+                'Avro Files': ['avro'],
+                'ORC Files': ['orc'],
+                'Arrow Files': ['arrow', 'feather', 'ipc']
+            },
             openLabel: 'Use as Reference'
         });
 
@@ -750,7 +839,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.detectSchemaDrift(uri, selectedFiles[0]);
+        const result = await this.dataFileReader.detectSchemaDrift(uri, selectedFiles[0]);
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Schema drift check failed.');
@@ -775,7 +864,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.parquetReader.scanParquetDataset(uri, selectedFolders[0]);
+        const result = await this.dataFileReader.scanParquetDataset(uri, selectedFolders[0]);
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Dataset scan failed.');
@@ -785,7 +874,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
     }
 
     private async runDoctorChecks(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
-        const result = await this.parquetReader.runParquetDoctor(uri);
+        const result = await this.dataFileReader.runFileDoctor(uri);
         await webviewPanel.webview.postMessage({ type: 'doctorResult', result });
     }
 
@@ -793,16 +882,16 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
          * Updates the webview content for the given webview panel and uri.
          * 
          * This function updates the webview content for the given webview panel and uri.
-         * It reads the parquet file at the given uri using the parquet reader and
+         * It reads the data file at the given uri using the data reader and
          * generates the webview content using the webview renderer.
          * 
          * @param webviewPanel The webview panel to update the content for.
-         * @param uri The uri of the parquet file to update the content with.
+         * @param uri The uri of the data file to update the content with.
          * @returns A promise that resolves when the webview content is updated.
          */
     private async updateWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: string): Promise<void> {
-        const parquetData = await this.parquetReader.readParquetFile(uri, query);
-        webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, parquetData);
+        const dataFileData = await this.dataFileReader.readDataFile(uri, query);
+        webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, dataFileData);
     }
 
     private getLoadingWebviewContent(): string {
@@ -859,7 +948,7 @@ export class ParquetViewer implements vscode.CustomReadonlyEditorProvider {
 <body>
     <main class="status">
         <div class="spinner" aria-hidden="true"></div>
-        <div class="title">Preparing Parquet viewer</div>
+            <div class="title">Preparing data file viewer</div>
         <div class="detail">Setting up local Python and DuckDB support. This only happens when needed.</div>
     </main>
 </body>
