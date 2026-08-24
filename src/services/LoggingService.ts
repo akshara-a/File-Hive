@@ -1,43 +1,42 @@
 import * as vscode from 'vscode';
-import log = require('loglevel');
 import { EXTENSION_NAME } from '../common/constant';
+
+type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+
+const levelPriority: Record<LogLevel, number> = {
+    trace: 0,
+    debug: 1,
+    info: 2,
+    warn: 3,
+    error: 4
+};
 
 export class LoggingService implements vscode.Disposable {
     private readonly outputChannel: vscode.OutputChannel;
-    private readonly logger: log.Logger;
+    private readonly level: LogLevel = 'info';
 
     constructor(name: string = EXTENSION_NAME) {
         this.outputChannel = vscode.window.createOutputChannel(name);
-        this.logger = log.getLogger('parquet-x');
-        this.logger.methodFactory = (methodName) => {
-            return (...messages: unknown[]) => {
-                this.outputChannel.appendLine(
-                    `[${new Date().toLocaleTimeString()}] [${methodName.toUpperCase()}] ${messages.map(formatLogValue).join(' ')}`
-                );
-            };
-        };
-        this.logger.setDefaultLevel('info');
-        this.logger.rebuild();
     }
 
     public trace(message: string, ...details: unknown[]): void {
-        this.logger.trace(message, ...details);
+        this.write('trace', message, ...details);
     }
 
     public debug(message: string, ...details: unknown[]): void {
-        this.logger.debug(message, ...details);
+        this.write('debug', message, ...details);
     }
 
     public info(message: string, ...details: unknown[]): void {
-        this.logger.info(message, ...details);
+        this.write('info', message, ...details);
     }
 
     public warn(message: string, ...details: unknown[]): void {
-        this.logger.warn(message, ...details);
+        this.write('warn', message, ...details);
     }
 
     public error(message: string, ...details: unknown[]): void {
-        this.logger.error(message, ...details);
+        this.write('error', message, ...details);
     }
 
     public show(preserveFocus: boolean = true): void {
@@ -46,6 +45,16 @@ export class LoggingService implements vscode.Disposable {
 
     public dispose(): void {
         this.outputChannel.dispose();
+    }
+
+    private write(level: LogLevel, message: string, ...details: unknown[]): void {
+        if (levelPriority[level] < levelPriority[this.level]) {
+            return;
+        }
+
+        this.outputChannel.appendLine(
+            `[${new Date().toLocaleTimeString()}] [${level.toUpperCase()}] ${[message, ...details].map(formatLogValue).join(' ')}`
+        );
     }
 }
 

@@ -10,10 +10,10 @@ Use this quick verification pass before packaging or handing off changes:
 npm.cmd run compile
 npm.cmd run copy-files
 npm.cmd run lint
-py -3 -c "import ast, pathlib; ast.parse(pathlib.Path('src/read_parquet.py').read_text())"
+py -3 -c "import ast, pathlib; ast.parse(pathlib.Path('src/read_data_file.py').read_text())"
 ```
 
-These checks cover the TypeScript build, Python helper copy step, lint rules, and a fast syntax check for the Parquet reader bridge.
+These checks cover the TypeScript build, Python helper copy step, lint rules, and a fast syntax check for the data file reader bridge.
 
 ## Packaging
 
@@ -23,12 +23,14 @@ Use `@vscode/vsce` to create the installable VSIX package:
 npx.cmd @vscode/vsce package
 ```
 
-The package is written to the repository root as a `.vsix` file, for example `parquet-x-1.0.8.vsix`.
+The package is written to the repository root as a `.vsix` file, for example `parquet-x-1.1.5.vsix`.
+
+The Marketplace package identity intentionally remains `parquet-x` even though the displayed product name is File Hive. Keep `package.json.name` as `parquet-x` so Marketplace publishes update the existing `CosmicTechnoid.parquet-x` listing.
 
 To install and smoke-test the package locally:
 
 ```powershell
-code.cmd --install-extension .\parquet-x-1.0.8.vsix
+code.cmd --install-extension .\parquet-x-1.1.5.vsix
 ```
 
 If the version in `package.json` changes, update the `.vsix` filename in the install command.
@@ -60,5 +62,5 @@ npx.cmd @vscode/vsce publish
 
 - `npm.cmd run compile` writes the extension output to `out/`.
 - `npm.cmd run copy-files` keeps Python helper files available beside the compiled extension code.
-- Re-run the Python syntax check whenever `src/read_parquet.py` changes.
+- Re-run the Python syntax check whenever `src/read_data_file.py` changes.
 - Review `.vscodeignore` before packaging so development-only files are not included in the VSIX.
