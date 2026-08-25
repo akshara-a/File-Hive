@@ -23,14 +23,14 @@ Use `@vscode/vsce` to create the installable VSIX package:
 npx.cmd @vscode/vsce package
 ```
 
-The package is written to the repository root as a `.vsix` file, for example `parquet-x-1.1.5.vsix`.
+The package is written to the repository root as a `.vsix` file, for example `parquet-x-1.2.0.vsix`.
 
 The Marketplace package identity intentionally remains `parquet-x` even though the displayed product name is File Hive. Keep `package.json.name` as `parquet-x` so Marketplace publishes update the existing `CosmicTechnoid.parquet-x` listing.
 
 To install and smoke-test the package locally:
 
 ```powershell
-code.cmd --install-extension .\parquet-x-1.1.5.vsix
+code.cmd --install-extension .\parquet-x-1.2.0.vsix
 ```
 
 If the version in `package.json` changes, update the `.vsix` filename in the install command.

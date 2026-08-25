@@ -11,6 +11,7 @@ import {
     DataFileCompareResult,
     DataFileReadResult,
     DataFileDoctorRunResult,
+    DataFileRelation,
     DataFileDatasetAnalysisResult,
     ParquetEditSaveResult,
     DataFileExportFormat,
@@ -19,7 +20,9 @@ import {
     DataFileJoinResult,
     DataFileSchemaDriftResult,
     ParquetWriteOptions,
-    ParquetWriteResult
+    ParquetWriteResult,
+    DataFileExportScope,
+    DataFileSourceOptions
 } from '../interfaces/IDataFileReader';
 import { LoggingService } from '../services/LoggingService';
 
@@ -80,7 +83,12 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
      * @param uri The URI of the data file to read.
      * @returns A promise that resolves to a DataFileReadResult.
      */
-    async readDataFile(uri: vscode.Uri, query?: string): Promise<DataFileReadResult> {
+    async readDataFile(
+        uri: vscode.Uri,
+        query?: string,
+        selectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileReadResult> {
         this.logger.info('Reading data file', uri.fsPath);
 
         const result = await this.sendWorkerRequest(
@@ -88,19 +96,27 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
             {
                 sessionId: this.getOrCreateSessionId(uri),
                 filePath: uri.fsPath,
-                query: query ?? null
+                query: query ?? null,
+                selectedRelation: selectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
         return result as DataFileReadResult;
     }
 
-    async runFileDoctor(uri: vscode.Uri): Promise<DataFileDoctorRunResult> {
+    async runFileDoctor(
+        uri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileDoctorRunResult> {
         const result = await this.sendWorkerRequest(
             'doctor',
             {
                 sessionId: this.getOrCreateSessionId(uri),
-                filePath: uri.fsPath
+                filePath: uri.fsPath,
+                selectedRelation: selectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             180000
         );
@@ -134,7 +150,10 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
         uri: vscode.Uri,
         format: DataFileExportFormat,
         outputUri: vscode.Uri,
-        query?: string
+        query?: string,
+        selectedRelation?: DataFileRelation,
+        exportScope?: DataFileExportScope,
+        sourceOptions?: DataFileSourceOptions
     ): Promise<DataFileExportResult> {
         const result = await this.sendWorkerRequest(
             'export',
@@ -143,7 +162,10 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
                 filePath: uri.fsPath,
                 query: query ?? null,
                 format,
-                outputPath: outputUri.fsPath
+                outputPath: outputUri.fsPath,
+                selectedRelation: selectedRelation ?? null,
+                exportScope: exportScope ?? 'query',
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
@@ -153,6 +175,7 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
     async saveEditedParquetFile(
         uri: vscode.Uri,
         outputUri: vscode.Uri,
+        format: DataFileExportFormat,
         columns: string[],
         rows: Record<string, any>[]
     ): Promise<ParquetEditSaveResult> {
@@ -168,7 +191,8 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
                 {
                     filePath: uri.fsPath,
                     outputPath: outputUri.fsPath,
-                    editsPath: payloadPath
+                    editsPath: payloadPath,
+                    format
                 },
                 120000
             );
@@ -218,12 +242,21 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
         }
     }
 
-    async getCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareMetadataResult> {
+    async getCompareMetadata(
+        uri: vscode.Uri,
+        compareUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        compareSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileCompareMetadataResult> {
         const result = await this.sendWorkerRequest(
             'compare_metadata',
             {
                 filePath: uri.fsPath,
-                comparePath: compareUri.fsPath
+                comparePath: compareUri.fsPath,
+                selectedRelation: selectedRelation ?? null,
+                compareSelectedRelation: compareSelectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
@@ -234,7 +267,10 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
         uri: vscode.Uri,
         compareUri: vscode.Uri,
         mappings?: DataFileCompareMapping[],
-        orderMapping?: DataFileCompareOrderMapping
+        orderMapping?: DataFileCompareOrderMapping,
+        selectedRelation?: DataFileRelation,
+        compareSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
     ): Promise<DataFileCompareResult> {
         const result = await this.sendWorkerRequest(
             'compare',
@@ -242,56 +278,96 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
                 filePath: uri.fsPath,
                 comparePath: compareUri.fsPath,
                 mappings: mappings ?? null,
-                orderMapping: orderMapping ?? null
+                orderMapping: orderMapping ?? null,
+                selectedRelation: selectedRelation ?? null,
+                compareSelectedRelation: compareSelectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
         return result as DataFileCompareResult;
     }
 
-    async smartDiffDataFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareResult> {
+    async smartDiffDataFile(
+        uri: vscode.Uri,
+        compareUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        compareSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileCompareResult> {
         const result = await this.sendWorkerRequest(
             'smart_diff',
             {
                 filePath: uri.fsPath,
-                comparePath: compareUri.fsPath
+                comparePath: compareUri.fsPath,
+                selectedRelation: selectedRelation ?? null,
+                compareSelectedRelation: compareSelectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
         return result as DataFileCompareResult;
     }
 
-    async joinDataFile(uri: vscode.Uri, joinUri: vscode.Uri, options: DataFileJoinOptions): Promise<DataFileJoinResult> {
+    async joinDataFile(
+        uri: vscode.Uri,
+        joinUri: vscode.Uri,
+        options: DataFileJoinOptions,
+        selectedRelation?: DataFileRelation,
+        joinSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileJoinResult> {
         const result = await this.sendWorkerRequest(
             'join',
             {
                 filePath: uri.fsPath,
                 joinPath: joinUri.fsPath,
-                options
+                options,
+                selectedRelation: selectedRelation ?? null,
+                joinSelectedRelation: joinSelectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
         return result as DataFileJoinResult;
     }
 
-    async getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<DataFileJoinResult> {
+    async getJoinMetadata(
+        uri: vscode.Uri,
+        joinUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        joinSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileJoinResult> {
         const result = await this.sendWorkerRequest(
             'join_metadata',
             {
                 filePath: uri.fsPath,
-                joinPath: joinUri.fsPath
+                joinPath: joinUri.fsPath,
+                selectedRelation: selectedRelation ?? null,
+                joinSelectedRelation: joinSelectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );
         return result as DataFileJoinResult;
     }
 
-    async detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<DataFileSchemaDriftResult> {
+    async detectSchemaDrift(
+        uri: vscode.Uri,
+        referenceUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        referenceSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileSchemaDriftResult> {
         const result = await this.sendWorkerRequest(
             'schema_drift',
             {
                 filePath: uri.fsPath,
-                referencePath: referenceUri.fsPath
+                referencePath: referenceUri.fsPath,
+                selectedRelation: selectedRelation ?? null,
+                referenceSelectedRelation: referenceSelectedRelation ?? null,
+                sourceOptions: sourceOptions ?? null
             },
             120000
         );

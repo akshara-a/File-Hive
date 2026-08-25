@@ -67,6 +67,7 @@ export class PythonEnvironmentManager {
     private setupStatusDepth: number = 0;
     private setupStatusHideTimer: NodeJS.Timeout | null = null;
     private readonly stateValidationPromise: Promise<void>;
+    private dataDependenciesVerified = false;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -151,8 +152,27 @@ export class PythonEnvironmentManager {
         if (await this.isVenvValid()) {
             this.log('Virtual environment ready');
             this.isInitialized = true;
+            this.dataDependenciesVerified = true;
             this.reportSetupProgress(options, 'Existing Python environment is ready.', 90);
             return true;
+        }
+
+        if (await exists(this.venvPythonPath)) {
+            this.reportSetupProgress(options, 'Installing missing data dependencies...', 10);
+            const installed = await this.installDataPackages(options);
+            if (!installed) {
+                return false;
+            }
+
+            this.reportSetupProgress(options, 'Verifying repaired environment...', 10);
+            const repaired = await this.verifyDataPackages();
+            if (repaired) {
+                this.isInitialized = true;
+                this.dataDependenciesVerified = true;
+                await this.context.globalState.update(INITIALIZED_STATE_KEY, true);
+                this.reportSetupProgress(options, 'Existing Python environment repaired.', 80);
+            }
+            return repaired;
         }
 
         this.reportSetupProgress(options, 'Looking for a Python interpreter...', 10);
@@ -205,6 +225,7 @@ export class PythonEnvironmentManager {
         const verified = await this.verifyDataPackages();
         if (verified) {
             this.isInitialized = true;
+            this.dataDependenciesVerified = true;
             this.log('Environment ready');
             await this.context.globalState.update(INITIALIZED_STATE_KEY, true);
             this.reportSetupProgress(options, 'Python environment is ready.', 20);
@@ -1034,6 +1055,15 @@ export class PythonEnvironmentManager {
     }
 
     public async ensureInitialized(): Promise<void> {
+        if (this.isInitialized && !this.dataDependenciesVerified) {
+            if (await this.isVenvValid()) {
+                this.dataDependenciesVerified = true;
+            } else {
+                this.isInitialized = false;
+                await this.context.globalState.update(INITIALIZED_STATE_KEY, false);
+            }
+        }
+
         if (!this.isInitialized) {
             const initialized = await this.initializeEnvironment();
             if (!initialized) {
@@ -1101,7 +1131,6 @@ export class PythonEnvironmentManager {
                     pyarrow_info = f"pyarrow {pyarrow.__version__}"
                 except:
                     pyarrow_info = "pyarrow NOT AVAILABLE"
-                    
                 import json
                 print(json.dumps({
                     "python": sys.version.split()[0],

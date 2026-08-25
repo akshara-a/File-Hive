@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
   "displayName": "File Hive",
-  "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, CSV, TSV, PSV, JSON, Avro, ORC, Arrow, Feather, and IPC files in VS Code.",
-  "version": "1.1.5",
+  "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, CSV, TSV, PSV, JSON, Avro, ORC, Arrow, Feather, and IPC files, plus preview Markdown files in VS Code.",
+  "version": "1.2.0",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",
@@ -26,13 +26,49 @@
     "Other"
   ],
   "keywords": [
-    "Apache Parquet",
-    "Data",
-    "File Hive",
-    "Data Visualization",
-    "DuckDB",
-    "uv",
-    "Parquet"
+    "file hive",
+    "data viewer",
+    "data file viewer",
+    "table viewer",
+    "data explorer",
+    "dataset",
+    "data analysis",
+    "data profiling",
+    "data visualization",
+    "eda",
+    "sql",
+    "query",
+    "export",
+    "convert",
+    "converter",
+    "compare",
+    "join",
+    "schema",
+    "schema drift",
+    "file doctor",
+    "parquet",
+    "apache parquet",
+    "parquet viewer",
+    "duckdb",
+    "duckdb viewer",
+    "sqlite",
+    "sqlite viewer",
+    "csv",
+    "csv viewer",
+    "tsv",
+    "psv",
+    "json",
+    "jsonl",
+    "ndjson",
+    "avro",
+    "orc",
+    "arrow",
+    "apache arrow",
+    "feather",
+    "ipc",
+    "markdown",
+    "markdown preview",
+    "md"
   ],
   "activationEvents": [
     "onCommand:fileHive.setupEnvironment",
@@ -92,6 +128,12 @@
           },
           {
             "filenamePattern": "*.ipc"
+          },
+          {
+            "filenamePattern": "*.md"
+          },
+          {
+            "filenamePattern": "*.markdown"
           }
         ]
       }

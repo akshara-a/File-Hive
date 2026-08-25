@@ -2,6 +2,25 @@
 
 All notable changes to File Hive, formerly Parquet-X, are documented here.
 
+## 1.2.x
+
+### [1.2.0] - 2026-08-24
+
+#### Added
+- Added table/view discovery for multi-table DuckDB and SQLite files.
+- Added multi-relation export choices for database sources: export the current SQL result, one selected table/view, or every table/view as separate files in a ZIP archive.
+- Added table/view selection for multi-relation DuckDB and SQLite files used as Compare, Join, and Schema Drift secondary inputs.
+- Added CSV, TSV, and PSV reload options for header rows, delimiter overrides, encodings, quote characters, escape characters, and null-string handling.
+- Added JSON, JSONL, and NDJSON reload options for nested-field flattening and record-path selection.
+- Added Markdown file support with a text-only preview and only applicable viewer actions.
+- Added an Open as Text action for CSV, TSV, PSV, JSON, JSONL, NDJSON, and Markdown sources.
+
+#### Changed
+- DuckDB and SQLite files now expose available tables/views in the Data tab and preserve the selected relation across query, refresh, export, quick aggregation, and Doctor workflows.
+- Export save defaults now include the selected table/view name when exporting one relation from a multi-relation source.
+- Viewer tabs, subtabs, and Doctor panels now hide workflows that do not apply to the loaded source or current query result.
+- Edited result saves now write a same-format copy; use Export for format conversion.
+
 ## 1.1.x
 
 ### [1.1.5] - 2026-08-21
