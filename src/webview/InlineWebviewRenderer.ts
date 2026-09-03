@@ -110,8 +110,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         if (normalizedFileType === 'ipc') {
             return 'IPC';
         }
-        if (normalizedFileType === 'markdown' || normalizedFileType === 'md') {
-            return 'Markdown';
+        if (normalizedFileType === 'excel' || normalizedFileType === 'xlsx' || normalizedFileType === 'xls') {
+            return 'Excel';
+        }
+        if (normalizedFileType === 'sqlite3') {
+            return 'SQLite';
+        }
+        if (normalizedFileType === 'workspace') {
+            return 'Workspace';
         }
         return 'Parquet';
     }
@@ -458,6 +464,17 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <select id="relation-picker"></select>
                 </label>
                 <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
+                <div class="pagination-controls hidden" id="pagination-controls" style="display: inline-flex; align-items: center; gap: 8px; margin-left: auto;">
+                    <button id="prev-page-btn" class="btn btn-secondary btn-sm" disabled>&lt; Prev</button>
+                    <span id="page-info">1 - 1000</span>
+                    <button id="next-page-btn" class="btn btn-secondary btn-sm">&gt; Next</button>
+                    <select id="page-size-select" style="margin-left: 8px;">
+                        <option value="100">100</option>
+                        <option value="500">500</option>
+                        <option value="1000" selected>1000</option>
+                        <option value="5000">5000</option>
+                    </select>
+                </div>
             </div>
             <div id="flat-file-options" class="flat-file-options hidden">
                 <label class="flat-file-header-toggle">
@@ -505,6 +522,24 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="json-file-actions">
                     <button id="apply-json-options-btn" class="btn btn-secondary">Reload</button>
                     <button id="reset-json-options-btn" class="btn btn-secondary">Reset Options</button>
+                </div>
+            </div>
+            <div id="excel-file-options" class="excel-file-options hidden">
+                <label>
+                    Header row
+                    <input id="excel-header-row" type="number" min="0" max="1048576" value="1" />
+                </label>
+                <label>
+                    Data starts
+                    <input id="excel-data-start-row" type="number" min="1" max="1048576" value="2" />
+                </label>
+                <label class="excel-infer-toggle">
+                    <input id="excel-infer-types" type="checkbox" />
+                    Infer types
+                </label>
+                <div class="excel-file-actions">
+                    <button id="apply-excel-options-btn" class="btn btn-secondary">Reload</button>
+                    <button id="reset-excel-options-btn" class="btn btn-secondary">Reset Options</button>
                 </div>
             </div>
             <div class="quick-aggregation" data-capability-scope="columns">
@@ -841,7 +876,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         const vscode = acquireVsCodeApi();
         const DEFAULT_QUERY = 'SELECT * FROM file_data';
         const EXPORT_FORMATS = ['csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'sqlite', 'parquet', 'duckdb', 'avro', 'orc', 'arrow', 'feather', 'ipc'];
-        const SOURCE_FORMATS = [...EXPORT_FORMATS, 'markdown'];
+        const SOURCE_FORMATS = [...EXPORT_FORMATS, 'excel', 'xlsx', 'xls', 'workspace'];
         const VIEW_TO_GROUP = {
             data: 'explore',
             eda: 'explore',
@@ -872,8 +907,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let doctorRequestInFlight = false;
         let currentColumns = [];
         let currentRows = [];
-        let currentTotalRows = 0;
-        let currentResultLimited = false;
+        let currentOffset = 0;
+        let currentLimit = 1000;
+        let currentHasMore = false;
         let editRows = [];
         let editColumnNames = [];
         let writeRows = [];
@@ -901,10 +937,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function normalizeFileType(fileType) {
-            if (fileType === 'md') {
-                return 'markdown';
-            }
-            const supportedFileTypes = ['duckdb', 'sqlite', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc', 'markdown'];
+            const supportedFileTypes = ['workspace', 'duckdb', 'sqlite', 'sqlite3', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc', 'excel', 'xlsx', 'xls'];
             if (supportedFileTypes.includes(fileType)) {
                 return fileType;
             }
@@ -912,9 +945,6 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function normalizeSourceFormat(format) {
-            if (format === 'md') {
-                return 'markdown';
-            }
             if (SOURCE_FORMATS.includes(format)) {
                 return format;
             }
@@ -936,12 +966,16 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             return ['json', 'jsonl', 'ndjson'].includes(currentSourceFormat || currentFileType);
         }
 
+        function isExcelSource() {
+            return ['excel', 'xlsx'].includes(currentSourceFormat || currentFileType);
+        }
+
         function isTextEditorSource() {
             return isDelimitedTextSource() || isJsonSource() || isTextOnlySource();
         }
 
         function isTextOnlySource() {
-            return (currentSourceFormat || currentFileType) === 'markdown';
+            return false;
         }
 
         function getDefaultDelimiter(format) {
@@ -977,7 +1011,25 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 };
             }
 
+            if (['excel', 'xlsx'].includes(format)) {
+                return {
+                    excel: {
+                        headerRow: 1,
+                        dataStartRow: 2,
+                        inferTypes: false
+                    }
+                };
+            }
+
             return {};
+        }
+
+        function normalizeExcelRowNumber(value, fallback, minimum) {
+            const numberValue = Number(value);
+            if (!Number.isFinite(numberValue)) {
+                return fallback;
+            }
+            return Math.min(1048576, Math.max(minimum, Math.trunc(numberValue)));
         }
 
         function normalizeJsonRecordPath(value) {
@@ -1018,11 +1070,24 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 };
             }
 
+            if (defaults.excel) {
+                const incoming = options && options.excel ? options.excel : {};
+                const headerRow = normalizeExcelRowNumber(incoming.headerRow, defaults.excel.headerRow, 0);
+                const minimumDataStart = headerRow > 0 ? headerRow + 1 : 1;
+                return {
+                    excel: {
+                        headerRow,
+                        dataStartRow: normalizeExcelRowNumber(incoming.dataStartRow, Math.max(defaults.excel.dataStartRow, minimumDataStart), minimumDataStart),
+                        inferTypes: typeof incoming.inferTypes === 'boolean' ? incoming.inferTypes : defaults.excel.inferTypes
+                    }
+                };
+            }
+
             return {};
         }
 
         function getSourceOptionsPayload() {
-            if (isDelimitedTextSource() || isJsonSource()) {
+            if (isDelimitedTextSource() || isJsonSource() || isExcelSource()) {
                 return JSON.parse(JSON.stringify(currentSourceOptions));
             }
 
@@ -1073,7 +1138,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 visualizer: hasColumns && hasRows,
                 schema: hasSchema,
                 edit: hasColumns,
-                write: isParquetSource(),
+                write: hasColumns,
                 export: hasColumns,
                 compare: hasColumns,
                 join: hasColumns,
@@ -1136,8 +1201,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             document.querySelectorAll('[data-capability-scope="columns"]').forEach((panel) => {
                 setCapabilityElementHidden(panel, currentColumns.length === 0);
             });
-
-            setCapabilityElementHidden(document.getElementById('doctor-dataset-scan-btn'), !isParquetSource());
+            setCapabilityElementHidden(document.getElementById('doctor-dataset-scan-btn'), isTextOnlySource());
         }
 
         function formatDelimiterForInput(delimiter) {
@@ -1223,6 +1287,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             currentDoctor = null;
             renderDoctorPanel(null);
             currentQuery = DEFAULT_QUERY;
+            currentOffset = 0;
             const queryInput = document.getElementById('query-input');
             if (queryInput) {
                 queryInput.value = currentQuery;
@@ -1232,7 +1297,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 type: 'query',
                 query: currentQuery,
                 selectedRelation: getSelectedRelationPayload(),
-                sourceOptions: getSourceOptionsPayload()
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
             });
         }
 
@@ -1285,6 +1352,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             currentDoctor = null;
             renderDoctorPanel(null);
             currentQuery = DEFAULT_QUERY;
+            currentOffset = 0;
             const queryInput = document.getElementById('query-input');
             if (queryInput) {
                 queryInput.value = currentQuery;
@@ -1294,7 +1362,83 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 type: 'query',
                 query: currentQuery,
                 selectedRelation: getSelectedRelationPayload(),
-                sourceOptions: getSourceOptionsPayload()
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
+            });
+        }
+
+        function renderExcelFileOptions() {
+            const container = document.getElementById('excel-file-options');
+            if (!container) {
+                return;
+            }
+
+            setCapabilityElementHidden(container, !isExcelSource());
+            if (!isExcelSource()) {
+                return;
+            }
+
+            currentSourceOptions = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType);
+            const options = currentSourceOptions.excel;
+            const headerRowInput = document.getElementById('excel-header-row');
+            const dataStartRowInput = document.getElementById('excel-data-start-row');
+            const inferTypesInput = document.getElementById('excel-infer-types');
+
+            if (headerRowInput) {
+                headerRowInput.value = String(options.headerRow);
+            }
+            if (dataStartRowInput) {
+                dataStartRowInput.value = String(options.dataStartRow);
+                dataStartRowInput.min = String(options.headerRow > 0 ? options.headerRow + 1 : 1);
+            }
+            if (inferTypesInput) {
+                inferTypesInput.checked = Boolean(options.inferTypes);
+            }
+        }
+
+        function readExcelOptionsFromControls() {
+            const headerRowInput = document.getElementById('excel-header-row');
+            const dataStartRowInput = document.getElementById('excel-data-start-row');
+            const inferTypesInput = document.getElementById('excel-infer-types');
+            const fallback = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType).excel;
+            const headerRow = normalizeExcelRowNumber(headerRowInput ? headerRowInput.value : fallback.headerRow, fallback.headerRow, 0);
+            const minimumDataStart = headerRow > 0 ? headerRow + 1 : 1;
+
+            return {
+                excel: {
+                    headerRow,
+                    dataStartRow: normalizeExcelRowNumber(dataStartRowInput ? dataStartRowInput.value : fallback.dataStartRow, Math.max(fallback.dataStartRow, minimumDataStart), minimumDataStart),
+                    inferTypes: inferTypesInput ? inferTypesInput.checked : fallback.inferTypes
+                }
+            };
+        }
+
+        function reloadWithExcelOptions(reset) {
+            if (!isExcelSource()) {
+                return;
+            }
+
+            currentSourceOptions = reset
+                ? getDefaultSourceOptions(currentSourceFormat || currentFileType)
+                : normalizeSourceOptions(readExcelOptionsFromControls(), currentSourceFormat || currentFileType);
+            renderExcelFileOptions();
+            currentDoctor = null;
+            renderDoctorPanel(null);
+            currentQuery = DEFAULT_QUERY;
+            currentOffset = 0;
+            const queryInput = document.getElementById('query-input');
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
+            setLoading(reset ? 'Reloading Excel with default options...' : 'Reloading Excel...');
+            vscode.postMessage({
+                type: 'query',
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
             });
         }
 
@@ -1433,12 +1577,15 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (queryInput) {
                 queryInput.value = currentQuery;
             }
+            currentOffset = 0;
             setLoading('Loading ' + formatRelationLabel(nextRelation) + '...');
             vscode.postMessage({
                 type: 'query',
                 query: currentQuery,
                 selectedRelation: getSelectedRelationPayload(),
-                sourceOptions: getSourceOptionsPayload()
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
             });
         }
 
@@ -1480,8 +1627,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (normalizedFileType === 'ipc') {
                 return 'IPC';
             }
-            if (normalizedFileType === 'markdown' || normalizedFileType === 'md') {
-                return 'Markdown';
+            if (normalizedFileType === 'excel' || normalizedFileType === 'xlsx' || normalizedFileType === 'xls') {
+                return 'Excel';
+            }
+            if (normalizedFileType === 'sqlite3') {
+                return 'SQLite';
+            }
+            if (normalizedFileType === 'workspace') {
+                return 'Workspace';
             }
             return normalizedFileType === 'duckdb' ? 'DuckDB' : 'Parquet';
         }
@@ -1501,11 +1654,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 orc: 'ORC',
                 arrow: 'Arrow',
                 feather: 'Feather',
-                ipc: 'IPC'
+                ipc: 'IPC',
+                excel: 'Excel',
+                workspace: 'Workspace'
             };
-            if (format === 'markdown') {
-                return 'Markdown';
-            }
             return labels[format] || String(format || '').toUpperCase();
         }
 
@@ -1814,9 +1966,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const dateProfiles = profiles.filter((profile) => profile.inferredType === 'date');
             const highMissing = profiles.filter((profile) => profile.missingRatio >= 0.2);
             const mostlyUnique = profiles.filter((profile) => profile.presentCount > 1 && profile.distinctRatio >= 0.95);
-
-            if (currentResultLimited && currentTotalRows > currentRows.length) {
-                suggestions.push('EDA is based on the current ' + formatCount(currentRows.length) + ' displayed rows from ' + formatCount(currentTotalRows) + ' total rows. Run a narrower query or aggregate for full-file confidence.');
+            if (currentHasMore) {
+                suggestions.push('EDA is based on the currently loaded page (' + formatCount(currentRows.length) + ' rows). Load more pages or aggregate for full-file confidence.');
             }
             if (numericProfiles.length && categoricalProfiles.length) {
                 suggestions.push('Compare numeric metrics by ' + categoricalProfiles[0].column + ' using Quick Aggregations or the Visualize tab.');
@@ -2180,6 +2331,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             return schema;
         }
 
+        function quoteSqlIdentifier(value) {
+            return '"' + String(value).replace(/"/g, '""') + '"';
+        }
+
         function createParquetFromWrite() {
             if (!writeRows.length || !writeSchema.length) {
                 refreshWritePreview();
@@ -2195,24 +2350,36 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 const compression = document.getElementById('write-compression');
                 const rowGroupInput = document.getElementById('write-row-group-size');
                 const rowGroupSize = Math.min(10000000, Math.max(1, Number(rowGroupInput ? rowGroupInput.value : 100000) || 100000));
-                const rows = writeRows.map((row) => {
-                    const outputRow = {};
-                    schema.forEach((column) => {
-                        outputRow[column.name] = row[column.sourceName];
+                
+                const payloadOptions = {
+                    columns: schema.map((column) => ({ name: column.name, type: column.type })),
+                    compression: compression ? compression.value : 'snappy',
+                    rowGroupSize
+                };
+
+                const writeSource = document.getElementById('write-source');
+                if (writeSource && writeSource.value === 'current') {
+                    const selectParts = schema.map((column) => 'TRY_CAST(' + quoteSqlIdentifier(column.sourceName) + ' AS ' + column.type + ') AS ' + quoteSqlIdentifier(column.name));
+                    const query = 'SELECT ' + selectParts.join(', ') + ' FROM (' + currentQuery + ')';
+                    payloadOptions.query = query;
+                } else {
+                    const rows = writeRows.map((row) => {
+                        const outputRow = {};
+                        schema.forEach((column) => {
+                            outputRow[column.name] = row[column.sourceName];
+                        });
+                        return outputRow;
                     });
-                    return outputRow;
-                });
+                    payloadOptions.rows = rows;
+                }
 
                 setStatus('Creating Parquet...', 'status-loading');
                 setWriteMessage('', false);
                 vscode.postMessage({
                     type: 'createParquet',
-                    options: {
-                        columns: schema.map((column) => ({ name: column.name, type: column.type })),
-                        rows,
-                        compression: compression ? compression.value : 'snappy',
-                        rowGroupSize
-                    }
+                    options: payloadOptions,
+                    selectedRelation: getSelectedRelationPayload(),
+                    sourceOptions: getSourceOptionsPayload()
                 });
             } catch (error) {
                 setWriteMessage(error instanceof Error ? error.message : String(error), true);
@@ -3174,7 +3341,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 sourceType.textContent = formatFileTypeLabel(currentSourceFormat || currentFileType);
             }
             if (rowCount) {
-                rowCount.textContent = formatCount(currentTotalRows);
+                const loadedEnd = currentOffset + currentRows.length;
+                rowCount.textContent = currentHasMore ? formatCount(loadedEnd) + '+' : formatCount(loadedEnd);
             }
             if (querySummary) {
                 const queryText = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : currentQuery || DEFAULT_QUERY;
@@ -4454,10 +4622,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             updateSourceTypeBadge();
             updateRelations(data);
 
-            // Hide loading container
             loadingContainer.classList.add('hidden');
 
-            // Reset all states
             errorContainer.classList.add('hidden');
             dataContainer.classList.add('hidden');
             statusElement.classList.remove('status-success', 'status-error', 'status-loading');
@@ -4472,12 +4638,13 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 }
                 currentColumns = [];
                 currentRows = [];
-                currentTotalRows = 0;
-                currentResultLimited = false;
+                currentOffset = 0;
+                currentHasMore = false;
                 currentTextPreview = null;
                 applyFeatureAvailability(data);
                 renderFlatFileOptions();
                 renderJsonFileOptions();
+                renderExcelFileOptions();
                 renderTextEditorOption();
                 renderTextPreviewPanel();
                 setActiveView(currentDoctor ? 'doctor' : 'data');
@@ -4489,9 +4656,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             
             // Update summary information
-            document.getElementById('total-rows').textContent = typeof data.totalRows === 'number'
-                ? formatCount(data.totalRows)
-                : '-';
+            const loadedStart = data.rowCount > 0 ? data.offset + 1 : 0;
+            const loadedEnd = data.offset + data.rowCount;
+            document.getElementById('total-rows').textContent = data.hasMore ? formatCount(loadedEnd) + '+' : formatCount(loadedEnd);
             document.getElementById('showing-rows').textContent = formatCount(data.rowCount);
             document.getElementById('column-count').textContent = data.columns ? data.columns.length : 0;
             if (data.query) {
@@ -4502,8 +4669,30 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 }
             }
 
-            if (data.resultLimited) {
-                queryLimitMessage.classList.remove('hidden');
+            // Update pagination UI
+            const paginationControls = document.getElementById('pagination-controls');
+            if (paginationControls) {
+                paginationControls.classList.remove('hidden');
+                
+                const prevBtn = document.getElementById('prev-page-btn');
+                if (prevBtn) {
+                    prevBtn.disabled = data.offset === 0;
+                }
+                
+                const nextBtn = document.getElementById('next-page-btn');
+                if (nextBtn) {
+                    nextBtn.disabled = !data.hasMore;
+                }
+                
+                const pageInfo = document.getElementById('page-info');
+                if (pageInfo) {
+                    pageInfo.textContent = formatCount(loadedStart) + ' - ' + formatCount(loadedEnd);
+                }
+
+                const pageSizeSelect = document.getElementById('page-size-select');
+                if (pageSizeSelect) {
+                    pageSizeSelect.value = String(data.limit || 1000);
+                }
             }
 
             if (data.schema) {
@@ -4523,10 +4712,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             currentColumns = data.columns || [];
             currentRows = cloneRows(data.data || []);
-            currentTotalRows = typeof data.totalRows === 'number'
-                ? data.totalRows
-                : currentRows.length;
-            currentResultLimited = Boolean(data.resultLimited);
+            currentOffset = data.offset || 0;
+            currentLimit = data.limit || 1000;
+            currentHasMore = Boolean(data.hasMore);
+            
             editRows = cloneRows(currentRows);
             resetEditColumnNames();
             renderEditPanel();
@@ -4542,6 +4731,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             applyFeatureAvailability(data);
             renderFlatFileOptions();
             renderJsonFileOptions();
+            renderExcelFileOptions();
             renderTextEditorOption();
             renderTextPreviewPanel();
             setActiveView(isViewAvailable(previousActiveView) ? previousActiveView : getFirstAvailableView());
@@ -4558,8 +4748,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 applyTableView();
                 dataContainer.classList.remove('hidden');
                 statusElement.textContent = 'Loaded ' + formatCount(data.rowCount) + ' rows';
-                if (data.resultLimited) {
-                    statusElement.textContent += ' (limited)';
+                if (data.hasMore) {
+                    statusElement.textContent += ' (more available)';
                 }
                 statusElement.classList.add('status-success');
             } else {
@@ -4909,6 +5099,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const resetFlatFileOptionsBtn = document.getElementById('reset-flat-file-options-btn');
             const applyJsonOptionsBtn = document.getElementById('apply-json-options-btn');
             const resetJsonOptionsBtn = document.getElementById('reset-json-options-btn');
+            const applyExcelOptionsBtn = document.getElementById('apply-excel-options-btn');
+            const resetExcelOptionsBtn = document.getElementById('reset-excel-options-btn');
             const schemaSearchInput = document.getElementById('schema-search-input');
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
             const generateSchemaDocsBtn = document.getElementById('generate-schema-docs-btn');
@@ -5027,7 +5219,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                         type: 'refresh',
                         query: currentQuery,
                         selectedRelation: getSelectedRelationPayload(),
-                        sourceOptions: getSourceOptionsPayload()
+                        sourceOptions: getSourceOptionsPayload(),
+                        offset: currentOffset,
+                        limit: currentLimit
                     });
                 });
             }
@@ -5035,13 +5229,73 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (runQueryBtn) {
                 runQueryBtn.addEventListener('click', () => {
                     currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : DEFAULT_QUERY;
+                    currentOffset = 0; // Reset pagination when running a new query
                     setLoading('Running query...');
                     vscode.postMessage({
                         type: 'query',
                         query: currentQuery,
                         selectedRelation: getSelectedRelationPayload(),
-                        sourceOptions: getSourceOptionsPayload()
+                        sourceOptions: getSourceOptionsPayload(),
+                        offset: currentOffset,
+                        limit: currentLimit
                     });
+                });
+            }
+
+            const prevPageBtn = document.getElementById('prev-page-btn');
+            const nextPageBtn = document.getElementById('next-page-btn');
+            const pageSizeSelect = document.getElementById('page-size-select');
+
+            if (prevPageBtn) {
+                prevPageBtn.addEventListener('click', () => {
+                    if (currentOffset > 0) {
+                        currentOffset = Math.max(0, currentOffset - currentLimit);
+                        setLoading('Loading previous page...');
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: currentOffset,
+                            limit: currentLimit
+                        });
+                    }
+                });
+            }
+
+            if (nextPageBtn) {
+                nextPageBtn.addEventListener('click', () => {
+                    if (currentHasMore) {
+                        currentOffset += currentLimit;
+                        setLoading('Loading next page...');
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: currentOffset,
+                            limit: currentLimit
+                        });
+                    }
+                });
+            }
+
+            if (pageSizeSelect) {
+                pageSizeSelect.addEventListener('change', (e) => {
+                    const newLimit = parseInt(e.target.value, 10);
+                    if (!isNaN(newLimit) && newLimit > 0) {
+                        currentLimit = newLimit;
+                        currentOffset = 0; // Reset offset when page size changes
+                        setLoading('Changing page size...');
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: currentOffset,
+                            limit: currentLimit
+                        });
+                    }
                 });
             }
 
@@ -5056,7 +5310,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                         type: 'query',
                         query: currentQuery,
                         selectedRelation: getSelectedRelationPayload(),
-                        sourceOptions: getSourceOptionsPayload()
+                        sourceOptions: getSourceOptionsPayload(),
+                        offset: 0,
+                        limit: currentLimit
                     });
                 });
             }
@@ -5072,7 +5328,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                             type: 'query',
                             query: currentQuery,
                             selectedRelation: getSelectedRelationPayload(),
-                            sourceOptions: getSourceOptionsPayload()
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: 0,
+                            limit: currentLimit
                         });
                     }
                 });
@@ -5103,6 +5361,18 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             if (resetJsonOptionsBtn) {
                 resetJsonOptionsBtn.addEventListener('click', () => {
                     reloadWithJsonOptions(true);
+                });
+            }
+
+            if (applyExcelOptionsBtn) {
+                applyExcelOptionsBtn.addEventListener('click', () => {
+                    reloadWithExcelOptions(false);
+                });
+            }
+
+            if (resetExcelOptionsBtn) {
+                resetExcelOptionsBtn.addEventListener('click', () => {
+                    reloadWithExcelOptions(true);
                 });
             }
 
@@ -5711,6 +5981,32 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-input-foreground);
         }
         .json-file-actions {
+            display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr));
+            gap: 8px;
+        }
+        .excel-file-options {
+            display: grid; grid-template-columns: repeat(2, minmax(120px, 180px)) minmax(110px, auto) auto;
+            gap: 8px; align-items: end; padding: 10px 12px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .excel-file-options label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .excel-file-options input[type="number"] {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+        .excel-infer-toggle {
+            min-height: 32px; justify-content: center;
+        }
+        .excel-infer-toggle input {
+            width: auto;
+        }
+        .excel-file-actions {
             display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr));
             gap: 8px;
         }
@@ -6419,6 +6715,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             .flat-file-actions { grid-template-columns: 1fr; }
             .json-file-options { grid-template-columns: 1fr; }
             .json-file-actions { grid-template-columns: 1fr; }
+            .excel-file-options { grid-template-columns: 1fr; }
+            .excel-file-actions { grid-template-columns: 1fr; }
             .quick-aggregation { grid-template-columns: 1fr; }
             .aggregation-actions { grid-template-columns: 1fr; }
             .table-tools { grid-template-columns: 1fr; }

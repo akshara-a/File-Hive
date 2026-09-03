@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 export interface IDataFileReader {
-    readDataFile(uri: vscode.Uri, query?: string, selectedRelation?: DataFileRelation, sourceOptions?: DataFileSourceOptions): Promise<DataFileReadResult>;
+    readDataFile(uri: vscode.Uri, query?: string, selectedRelation?: DataFileRelation, sourceOptions?: DataFileSourceOptions, offset?: number, limit?: number): Promise<DataFileReadResult>;
     runFileDoctor(uri: vscode.Uri, selectedRelation?: DataFileRelation, sourceOptions?: DataFileSourceOptions): Promise<DataFileDoctorRunResult>;
     releaseFileSession(uri: vscode.Uri): Promise<void>;
     exportDataFile(
@@ -23,7 +23,9 @@ export interface IDataFileReader {
     createParquetFile(
         uri: vscode.Uri,
         outputUri: vscode.Uri,
-        options: ParquetWriteOptions
+        options: ParquetWriteOptions,
+        selectedRelation?: DataFileRelation | null,
+        sourceOptions?: DataFileSourceOptions | null
     ): Promise<ParquetWriteResult>;
     getCompareMetadata(
         uri: vscode.Uri,
@@ -89,7 +91,7 @@ export type DataFileExportFormat =
     | 'feather'
     | 'ipc';
 
-export type DataFileSourceFormat = DataFileExportFormat | 'markdown';
+export type DataFileSourceFormat = DataFileExportFormat | 'excel' | 'xlsx' | 'xls' | 'workspace';
 
 export interface DataFileReadResult {
     success: boolean;
@@ -98,9 +100,10 @@ export interface DataFileReadResult {
     data?: any[];
     columns?: string[];
     rowCount?: number;
-    totalRows?: number;
+    offset?: number;
+    limit?: number;
+    hasMore?: boolean;
     query?: string;
-    resultLimited?: boolean;
     schema?: DataFileSchemaResult;
     doctor?: DataFileDoctorResult;
     relations?: DataFileRelation[];
@@ -133,6 +136,7 @@ export interface DataFileRelation {
 export interface DataFileSourceOptions {
     delimitedText?: DataFileDelimitedTextOptions;
     json?: DataFileJsonOptions;
+    excel?: DataFileExcelOptions;
 }
 
 export interface DataFileDelimitedTextOptions {
@@ -149,12 +153,20 @@ export interface DataFileJsonOptions {
     recordPath?: string;
 }
 
+export interface DataFileExcelOptions {
+    headerRow?: number;
+    dataStartRow?: number;
+    inferTypes?: boolean;
+}
+
 export type DataFileExportScope = 'query' | 'relation' | 'allRelations';
 
 export type DataFileType =
     | 'parquet'
+    | 'workspace'
     | 'duckdb'
     | 'sqlite'
+    | 'excel'
     | 'csv'
     | 'tsv'
     | 'psv'
@@ -163,8 +175,7 @@ export type DataFileType =
     | 'orc'
     | 'arrow'
     | 'feather'
-    | 'ipc'
-    | 'markdown';
+    | 'ipc';
 
 export interface DataFileTextPreview {
     content: string;
@@ -279,7 +290,8 @@ export interface ParquetWriteColumn {
 
 export interface ParquetWriteOptions {
     columns: ParquetWriteColumn[];
-    rows: Record<string, any>[];
+    rows?: Record<string, any>[];
+    query?: string;
     compression: ParquetCompressionCodec;
     rowGroupSize?: number;
 }

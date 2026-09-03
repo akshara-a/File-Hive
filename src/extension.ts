@@ -117,6 +117,28 @@ export async function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(
             vscode.commands.registerCommand(REGISTER_COMMANDS.ENVIRONMENT_DOCTOR, showEnvironmentDoctor)
         );
+        context.subscriptions.push(
+            vscode.commands.registerCommand(REGISTER_COMMANDS.MOUNT_WORKSPACE, async () => {
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (!workspaceFolders || workspaceFolders.length === 0) {
+                    vscode.window.showInformationMessage("No workspace folder is currently open.");
+                    return;
+                }
+
+                const folder = workspaceFolders[0].uri;
+                const workspaceFile = vscode.Uri.joinPath(folder, '.filehive.workspace');
+                
+                try {
+                    // Create an empty file
+                    await vscode.workspace.fs.writeFile(workspaceFile, new Uint8Array(0));
+                    
+                    // Open it with File Hive
+                    await vscode.commands.executeCommand('vscode.openWith', workspaceFile, 'fileHive.fileViewer');
+                } catch (e) {
+                    vscode.window.showErrorMessage("Failed to mount workspace: " + e);
+                }
+            })
+        );
 
         // Register our custom editor provider using the factory
         const fileHiveViewer = FileHiveViewerFactory.create(context, pythonManager, logger);

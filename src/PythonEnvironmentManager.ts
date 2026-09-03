@@ -343,8 +343,11 @@ export class PythonEnvironmentManager {
                     await this.installDataPackagesWithPip();
                 }
 
-                this.log('DuckDB and PyArrow installed');
-                this.reportSetupProgress(progressOptions, 'DuckDB and PyArrow installed.', 10);
+                this.reportSetupProgress(progressOptions, 'Installing DuckDB file extensions...', 5);
+                await this.installDuckDbExtensions();
+
+                this.log('DuckDB, PyArrow, and DuckDB file extensions installed');
+                this.reportSetupProgress(progressOptions, 'DuckDB, PyArrow, and file extensions installed.', 10);
                 return true;
             } catch (error) {
                 this.log(`Failed to install data dependencies: ${error}`);
@@ -547,6 +550,22 @@ export class PythonEnvironmentManager {
             'duckdb',
             'pyarrow',
             '--quiet'
+        ], 120000);
+    }
+
+    private async installDuckDbExtensions(): Promise<void> {
+        await this.runCommand(this.venvPythonPath, [
+            '-c',
+            [
+                'import duckdb',
+                'conn = duckdb.connect()',
+                'try:',
+                '    for extension in ("avro", "spatial", "excel"):',
+                '        conn.execute(f"INSTALL {extension}")',
+                '        conn.execute(f"LOAD {extension}")',
+                'finally:',
+                '    conn.close()'
+            ].join('\n')
         ], 120000);
     }
 

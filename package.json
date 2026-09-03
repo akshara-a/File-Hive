@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
   "displayName": "File Hive",
-  "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, CSV, TSV, PSV, JSON, Avro, ORC, Arrow, Feather, and IPC files, plus preview Markdown files in VS Code.",
-  "version": "1.2.0",
+  "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, Excel, CSV, TSV, PSV, JSONL, NDJSON, Avro, ORC, Arrow, Feather, and IPC files in VS Code.",
+  "version": "1.2.1",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",
@@ -66,15 +66,15 @@
     "apache arrow",
     "feather",
     "ipc",
-    "markdown",
-    "markdown preview",
-    "md"
+    "excel",
+    "xlsx"
   ],
   "activationEvents": [
     "onCommand:fileHive.setupEnvironment",
     "onCommand:fileHive.showLogs",
     "onCommand:fileHive.resetEnvironment",
     "onCommand:fileHive.environmentDoctor",
+    "onCommand:fileHive.mountWorkspace",
     "onCustomEditor:fileHive.fileViewer"
   ],
   "main": "./out/extension.js",
@@ -86,6 +86,9 @@
         "selector": [
           {
             "filenamePattern": "*.parquet"
+          },
+          {
+            "filenamePattern": "*.workspace"
           },
           {
             "filenamePattern": "*.duckdb"
@@ -106,13 +109,19 @@
             "filenamePattern": "*.psv"
           },
           {
-            "filenamePattern": "*.json"
-          },
-          {
             "filenamePattern": "*.jsonl"
           },
           {
             "filenamePattern": "*.ndjson"
+          },
+          {
+            "filenamePattern": "*.xlsx"
+          },
+          {
+            "filenamePattern": "*.xls"
+          },
+          {
+            "filenamePattern": "*.sqlite3"
           },
           {
             "filenamePattern": "*.avro"
@@ -128,12 +137,6 @@
           },
           {
             "filenamePattern": "*.ipc"
-          },
-          {
-            "filenamePattern": "*.md"
-          },
-          {
-            "filenamePattern": "*.markdown"
           }
         ]
       }
@@ -163,12 +166,17 @@
         "command": "fileHive.environmentDoctor",
         "title": "Show Environment Doctor",
         "category": "File Hive"
+      },
+      {
+        "command": "fileHive.mountWorkspace",
+        "title": "Mount Workspace Database",
+        "category": "File Hive"
       }
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile && npm run copy-files",
-    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && npm run copy-files",
     "copy-files": "copyfiles -u 1 src/*.py out/",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",

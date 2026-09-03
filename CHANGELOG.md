@@ -4,6 +4,24 @@ All notable changes to File Hive, formerly Parquet-X, are documented here.
 
 ## 1.2.x
 
+### [1.2.1] - 2026-08-26
+
+#### Added
+- Added `.xlsx` (Excel) and `.sqlite3` file support to the data viewer.
+- Added `.xlsx` reload options for choosing the header row and first data row.
+- Excel reads default to text columns to avoid failures when a column mixes values like numbers and labels.
+- Added a **Mount Workspace Database** command that mounts the entire workspace as queryable views.
+- Added UI Pagination for viewing large datasets without performance degradation.
+- Dataset scans (partition analysis) are now available for all tabular datasets, not just Parquet.
+
+#### Changed
+- Removed `.markdown` and `.md` file support, as well as automatic `.json` interception for a less intrusive user experience.
+- The "Create Parquet" tool is now available for all tabular sources (CSV, DuckDB, JSON, Excel, etc.), not just Parquet files.
+
+#### Performance
+- Rewrote the "Create Parquet" (Write) engine to execute a native DuckDB `COPY` operation instead of serializing JSON between V8 and Python. File conversion overhead is gone!
+- Rewrote data "Export" engine to execute DuckDB native `COPY` for CSV, TSV, PSV, JSON, JSONL, and NDJSON files, making exports incredibly fast.
+
 ### [1.2.0] - 2026-08-24
 
 #### Added

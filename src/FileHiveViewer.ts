@@ -131,10 +131,10 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
             switch (message.type) {
                 case 'refresh':
-                    await this.refreshWebviewContent(webviewPanel, document.uri, message.query, message.selectedRelation, message.sourceOptions);
+                    await this.refreshWebviewContent(webviewPanel, document.uri, message.query, message.selectedRelation, message.sourceOptions, message.offset, message.limit);
                     break;
                 case 'query':
-                    await this.queryWebviewContent(webviewPanel, document.uri, message.query, message.selectedRelation, message.sourceOptions);
+                    await this.queryWebviewContent(webviewPanel, document.uri, message.query, message.selectedRelation, message.sourceOptions, message.offset, message.limit);
                     break;
                 case 'export':
                     await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query, message.selectedRelation, message.relations, message.sourceOptions);
@@ -147,7 +147,7 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
                     await this.saveEditedData(webviewPanel, document.uri, message.columns, message.rows, message.sourceFormat);
                     break;
                 case 'createParquet':
-                    await this.createParquet(webviewPanel, document.uri, message.options);
+                    await this.createParquet(webviewPanel, document.uri, message.options, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'selectCompareFile':
                     await this.selectCompareFile(webviewPanel, document.uri, message.customMappingEnabled, message.selectedRelation, message.sourceOptions);
@@ -212,10 +212,12 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         uri: vscode.Uri,
         query?: unknown,
         selectedRelation?: unknown,
-        sourceOptions?: unknown
+        sourceOptions?: unknown,
+        offset?: number,
+        limit?: number
     ): Promise<void> {
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        await this.updateWebviewContent(webviewPanel, uri, sqlQuery, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions));
+        await this.updateWebviewContent(webviewPanel, uri, sqlQuery, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions), offset, limit);
     }
 
     /**
@@ -230,10 +232,12 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         uri: vscode.Uri,
         query?: unknown,
         selectedRelation?: unknown,
-        sourceOptions?: unknown
+        sourceOptions?: unknown,
+        offset?: number,
+        limit?: number
     ): Promise<void> {
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        const dataFileData = await this.dataFileReader.readDataFile(uri, sqlQuery, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions));
+        const dataFileData = await this.dataFileReader.readDataFile(uri, sqlQuery, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions), offset, limit);
         await webviewPanel.webview.postMessage({ type: 'data', data: dataFileData });
     }
 
@@ -385,7 +389,7 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             json: { 'JSON Files': ['json'] },
             jsonl: { 'JSON Lines Files': ['jsonl'] },
             ndjson: { 'NDJSON Files': ['ndjson'] },
-            sqlite: { 'SQLite Databases': ['sqlite', 'db'] },
+            sqlite: { 'SQLite Databases': ['sqlite', 'sqlite3', 'db'] },
             parquet: { 'Parquet Files': ['parquet'] },
             duckdb: { 'DuckDB Databases': ['duckdb'] },
             avro: { 'Avro Files': ['avro'] },
@@ -477,7 +481,9 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
     private async createParquet(
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
-        options?: unknown
+        options?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
     ): Promise<void> {
         const writeOptions = this.parseWriteOptions(options);
 
@@ -512,7 +518,9 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.dataFileReader.createParquetFile(uri, outputUri, writeOptions);
+        const parsedRelation = this.parseSelectedRelation(selectedRelation);
+        const parsedSourceOptions = this.parseSourceOptions(sourceOptions);
+        const result = await this.dataFileReader.createParquetFile(uri, outputUri, writeOptions, parsedRelation, parsedSourceOptions);
 
         if (result.success) {
             const openAction = 'Open Created Parquet';
@@ -536,17 +544,18 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
 
     private parseWriteOptions(options?: unknown): ParquetWriteOptions | undefined {
         if (typeof options !== 'object' || options === null ||
-            !('columns' in options) || !('rows' in options) || !('compression' in options)) {
+            !('columns' in options) || !('compression' in options)) {
             return undefined;
         }
 
         const rawColumns = (options as { columns?: unknown }).columns;
         const rawRows = (options as { rows?: unknown }).rows;
+        const rawQuery = (options as { query?: unknown }).query;
         const rawCompression = String((options as { compression?: unknown }).compression || '').toLowerCase();
         const rawRowGroupSize = (options as { rowGroupSize?: unknown }).rowGroupSize;
         const allowedCompressions = ['uncompressed', 'snappy', 'gzip', 'brotli', 'zstd'];
 
-        if (!Array.isArray(rawColumns) || !Array.isArray(rawRows) || !allowedCompressions.includes(rawCompression)) {
+        if (!Array.isArray(rawColumns) || !allowedCompressions.includes(rawCompression)) {
             return undefined;
         }
 
@@ -560,22 +569,31 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             }))
             .filter((column) => column.name.length > 0 && column.type.length > 0);
 
-        const rows = rawRows.filter((row): row is Record<string, any> => {
-            return typeof row === 'object' && row !== null && !Array.isArray(row);
-        });
+        let rows: Record<string, any>[] | undefined = undefined;
+        if (Array.isArray(rawRows)) {
+            rows = rawRows.filter((row): row is Record<string, any> => {
+                return typeof row === 'object' && row !== null && !Array.isArray(row);
+            });
+        }
+        
+        let query: string | undefined = undefined;
+        if (typeof rawQuery === 'string') {
+            query = rawQuery;
+        }
 
         const rowGroupSize = Number(rawRowGroupSize);
         const normalizedRowGroupSize = Number.isFinite(rowGroupSize)
             ? Math.min(10_000_000, Math.max(1, Math.trunc(rowGroupSize)))
             : undefined;
 
-        if (!columns.length || !rows.length) {
+        if (!columns.length || (!rows && !query)) {
             return undefined;
         }
 
         return {
             columns,
             rows,
+            query,
             compression: rawCompression as ParquetWriteOptions['compression'],
             rowGroupSize: normalizedRowGroupSize
         };
@@ -613,10 +631,11 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'sqlite3', 'db', 'xlsx', 'xls', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
                 'DuckDB Databases': ['duckdb'],
-                'SQLite Databases': ['sqlite', 'db'],
+                'SQLite Databases': ['sqlite', 'sqlite3', 'db'],
+                'Excel Workbooks': ['xlsx', 'xls'],
                 'CSV Files': ['csv'],
                 'Delimited Files': ['tsv', 'psv'],
                 'JSON Files': ['json', 'jsonl', 'ndjson'],
@@ -681,10 +700,11 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'sqlite3', 'db', 'xlsx', 'xls', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
                 'DuckDB Databases': ['duckdb'],
-                'SQLite Databases': ['sqlite', 'db'],
+                'SQLite Databases': ['sqlite', 'sqlite3', 'db'],
+                'Excel Workbooks': ['xlsx', 'xls'],
                 'CSV Files': ['csv'],
                 'Delimited Files': ['tsv', 'psv'],
                 'JSON Files': ['json', 'jsonl', 'ndjson'],
@@ -990,10 +1010,11 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'sqlite3', 'db', 'xlsx', 'xls', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
                 'DuckDB Databases': ['duckdb'],
-                'SQLite Databases': ['sqlite', 'db'],
+                'SQLite Databases': ['sqlite', 'sqlite3', 'db'],
+                'Excel Workbooks': ['xlsx', 'xls'],
                 'CSV Files': ['csv'],
                 'Delimited Files': ['tsv', 'psv'],
                 'JSON Files': ['json', 'jsonl', 'ndjson'],
@@ -1088,15 +1109,17 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         uri: vscode.Uri,
         query?: string,
         selectedRelation?: DataFileRelation,
-        sourceOptions?: DataFileSourceOptions
+        sourceOptions?: DataFileSourceOptions,
+        offset?: number,
+        limit?: number
     ): Promise<void> {
-        const dataFileData = await this.dataFileReader.readDataFile(uri, query, selectedRelation, sourceOptions);
+        const dataFileData = await this.dataFileReader.readDataFile(uri, query, selectedRelation, sourceOptions, offset, limit);
         webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, dataFileData);
     }
 
     private isRelationSelectableDataFile(uri: vscode.Uri): boolean {
         const extension = path.extname(uri.fsPath).toLowerCase();
-        return extension === '.duckdb' || extension === '.sqlite' || extension === '.db';
+        return extension === '.duckdb' || extension === '.sqlite' || extension === '.sqlite3' || extension === '.db';
     }
 
     private async chooseRelationForFile(uri: vscode.Uri, actionLabel: string): Promise<DataFileRelation | undefined | null> {
@@ -1266,6 +1289,30 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
                     ? String(jsonOptions.recordPath ?? '').trim().slice(0, 240)
                     : undefined
             };
+        }
+
+        if ('excel' in sourceOptions && typeof sourceOptions.excel === 'object' && sourceOptions.excel !== null) {
+            const excelOptions = sourceOptions.excel as Record<string, unknown>;
+            const readRowNumber = (key: string): number | undefined => {
+                if (!(key in excelOptions)) {
+                    return undefined;
+                }
+
+                const value = Number(excelOptions[key]);
+                return Number.isFinite(value)
+                    ? Math.min(1_048_576, Math.max(0, Math.trunc(value)))
+                    : undefined;
+            };
+
+            const parsed = {
+                headerRow: readRowNumber('headerRow'),
+                dataStartRow: readRowNumber('dataStartRow'),
+                inferTypes: 'inferTypes' in excelOptions ? Boolean(excelOptions.inferTypes) : undefined
+            };
+
+            if (Object.values(parsed).some((value) => value !== undefined)) {
+                parsedOptions.excel = parsed;
+            }
         }
 
         return Object.keys(parsedOptions).length ? parsedOptions : undefined;

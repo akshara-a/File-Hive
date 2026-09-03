@@ -1,12 +1,14 @@
 # File Hive
 
-File Hive is an open-source Visual Studio Code extension for inspecting local data files without leaving your editor. It provides a local viewer for browsing tabular data, running read-only SQL queries, creating Parquet files, performing exploratory data analysis, exporting results, comparing and joining files, visualizing query results, reviewing schema metadata, diagnosing common data quality issues, and previewing Markdown files.
+File Hive is an open-source Visual Studio Code extension for inspecting local data files without leaving your editor. It provides a local viewer for browsing tabular data, running read-only SQL queries, creating Parquet files, performing exploratory data analysis, exporting results, comparing and joining files, visualizing query results, reviewing schema metadata, and diagnosing common data quality issues.
 
 All file processing runs locally through DuckDB in an isolated Python environment created by the extension. When `uv` is available, File Hive uses it to create the environment and install DuckDB faster, with Python/pip as a fallback.
 
 ## Features
 
-- Open `.parquet`, `.duckdb`, `.sqlite`, `.db`, `.csv`, `.tsv`, `.psv`, `.json`, `.jsonl`, `.ndjson`, `.avro`, `.orc`, `.arrow`, `.feather`, `.ipc`, `.md`, and `.markdown` files in a custom VS Code editor.
+- Open `.parquet`, `.duckdb`, `.sqlite`, `.sqlite3`, `.db`, `.csv`, `.tsv`, `.psv`, `.jsonl`, `.ndjson`, `.avro`, `.orc`, `.arrow`, `.feather`, `.ipc`, `.xlsx`, and `.xls` files in a custom VS Code editor.
+- **Mount Workspace Database**: Run the `File Hive: Mount Workspace Database` command to instantly turn all supported files in your workspace into queryable views (`SELECT * FROM my_file_csv JOIN my_other_file_parquet`).
+- **Pagination**: View massive datasets effortlessly with paginated scrolling.
 - Choose tables or views from multi-relation DuckDB and SQLite sources.
 - Navigate grouped tabs for Explore, Transform, Export, Compare & Join, and Quality workflows. Tabs and subtabs are shown only when they apply to the loaded file and current result.
 - Browse rows in a table view with result counts, column counts, sorting, and column visibility.
@@ -15,16 +17,15 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 - Run read-only SQL using the `file_data` table alias.
 - Build quick group-by aggregations without writing SQL.
 - Profile the current query result in the EDA tab with column types, missing values, duplicate rows, numeric summaries, quality checks, and suggested next steps.
-- Create Parquet files from pasted JSON arrays, NDJSON streams, or the current query result with editable schema, compression, and row group size controls.
-- Export the current query result to any supported target format except the open file's own source format.
+- Create Parquet files natively from CSV, DuckDB, JSON, Excel, and other tabular files with editable schema, compression, and row group size controls.
+- Export the current query result to any supported target format instantly via DuckDB COPY.
 - Edit loaded result rows, rename output columns, and save the result as a new same-format copy.
 - Compare supported data files with Smart Diff, strict column matching, or custom same-type column mapping.
 - Join the open data file with another supported data file and preview the result.
 - Visualize current query results with bar, line, scatter, and histogram charts.
 - Inspect schema structure, physical types, logical types, nullability, repetition levels, definition levels, decimals, and timestamps.
-- Run File Doctor diagnostics on demand for integrity, schema quality, data quality, schema drift, and Parquet-specific row group, statistics, compression, encoding, and dataset partition checks.
+- Run File Doctor diagnostics on demand for integrity, schema quality, data quality, schema drift, and dataset partition checks for all tabular formats.
 - Copy schema JSON or generate Markdown schema documentation.
-- Preview Markdown files with only text-applicable actions shown.
 
 ## Installation
 
@@ -52,9 +53,11 @@ For DuckDB and SQLite files with more than one table or view, use the Table drop
 
 For CSV, TSV, and PSV files, use the flat-file options in the Data subtab to reload with a header toggle, delimiter override, encoding, quote character, escape character, and null-string value. Use `\t` for a tab delimiter.
 
-For JSON, JSONL, and NDJSON files, use the JSON options in the Data subtab to flatten nested object fields or choose a record path such as `data.items`.
+For JSONL and NDJSON files, use the JSON options in the Data subtab to flatten nested object fields or choose a record path such as `data.items`.
 
-For CSV, TSV, PSV, JSON, JSONL, NDJSON, and Markdown files, choose **Open as Text** when direct text editing is a better fit than the viewer.
+For `.xlsx` files, use the Excel options in the Data subtab to choose the header row and the row where data starts, then reload the sheet. Type inference is off by default so mixed text/numeric columns still open; enable **Infer types** when the sheet is clean.
+
+For CSV, TSV, PSV, JSONL, and NDJSON files, choose **Open as Text** when direct text editing is a better fit than the viewer.
 
 ```sql
 SELECT *
@@ -69,17 +72,17 @@ File Hive hides workflow tabs when the current source or query result cannot use
 
 | Workflow | Applies To | Hidden When |
 | --- | --- | --- |
-| Tabular data preview and SQL query | Parquet, DuckDB, SQLite, CSV, TSV, PSV, JSON, JSONL, NDJSON, Avro, ORC, Arrow, Feather, and IPC files | Non-tabular text sources |
-| Markdown preview | Markdown files | Tabular sources |
+| Tabular data preview and SQL query | Parquet, DuckDB, SQLite, Excel, CSV, TSV, PSV, JSONL, NDJSON, Avro, ORC, Arrow, Feather, IPC, and mounted workspace sources | Sources without tabular data |
 | Flat-file reload options | CSV, TSV, and PSV files | Non-delimited sources |
-| JSON reload options | JSON, JSONL, and NDJSON files | Non-JSON sources |
+| JSON reload options | JSONL and NDJSON files | Non-JSON sources |
+| Excel row options | `.xlsx` files | Non-Excel sources |
 | Table dropdown | DuckDB and SQLite files with more than one table or view | Single-table files, flat file formats, or databases with only one relation |
 | Table tools and quick aggregation | Current result has columns | The current result has no columns |
 | EDA | Current result has rows and columns | The current result is empty or has no columns |
 | Visualize | Current result has rows and columns | The current result is empty or has no columns |
 | Schema | Schema metadata is available | No schema metadata was returned |
 | Edit Data | Current result has columns; saves a new copy in the same source format | The current result has no columns |
-| Create Parquet | Parquet sources | Non-Parquet sources |
+| Create Parquet | Current result has columns | The current result has no columns |
 | Export | Current result has columns | The current result has no columns |
 | Export one table/view | Multi-relation DuckDB and SQLite files | Single-relation sources and flat file formats |
 | Export all tables/views as ZIP | Multi-relation DuckDB and SQLite files | Single-relation sources and flat file formats |
@@ -104,7 +107,7 @@ Open the Explore group, then choose the EDA subtab to profile the current query 
 
 ### Create Parquet Files
 
-Open the Transform group on a Parquet source, then choose the Create Parquet subtab to create a new `.parquet` file from the current query result, pasted JSON array, or pasted NDJSON stream. Preview the inferred structure, edit output column names and types, choose Snappy, Gzip, Brotli, Zstd, or uncompressed output, set the row group size, and save the new file.
+Open the Transform group, then choose the Create Parquet subtab to create a new `.parquet` file from the current query result, pasted JSON array, or pasted NDJSON stream. Preview the inferred structure, edit output column names and types, choose Snappy, Gzip, Brotli, Zstd, or uncompressed output, set the row group size, and save the new file.
 
 ### Export Results
 

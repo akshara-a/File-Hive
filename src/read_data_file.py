@@ -19,7 +19,8 @@ COMPARE_TABLE_NAME = "compare_data"
 SOURCE_INFO_TABLE_NAME = "__file_hive_source_info"
 SCHEMA_ROOT_NAMES = ("schema", "root")
 DUCKDB_FILE_EXTENSIONS = (".duckdb",)
-SQLITE_FILE_EXTENSIONS = (".sqlite", ".db")
+SQLITE_FILE_EXTENSIONS = (".sqlite", ".db", ".sqlite3")
+EXCEL_FILE_EXTENSIONS = (".xlsx", ".xls")
 AVRO_FILE_EXTENSIONS = (".avro",)
 ORC_FILE_EXTENSIONS = (".orc",)
 ARROW_FILE_EXTENSIONS = (".arrow",)
@@ -77,14 +78,15 @@ def get_file_type(file_path):
         return "psv"
     if lower_path.endswith(JSON_FILE_EXTENSIONS):
         return "json"
-    if lower_path.endswith(MARKDOWN_FILE_EXTENSIONS):
-        return "markdown"
+    if lower_path.endswith(EXCEL_FILE_EXTENSIONS):
+        return "excel"
 
-    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, .ipc, .md, and .markdown files are supported.")
-
+    if lower_path.endswith(".workspace"):
+        return "workspace"
+    raise ValueError("Only .parquet, .workspace, .duckdb, .sqlite, .sqlite3, .db, .xlsx, .xls, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported.")
 def get_source_format(file_path):
     lower_path = str(file_path or "").lower()
-    if lower_path.endswith(".db"):
+    if lower_path.endswith((".db", ".sqlite3")):
         return "sqlite"
     if lower_path.endswith(".jsonl"):
         return "jsonl"
@@ -94,8 +96,10 @@ def get_source_format(file_path):
         return "duckdb"
     if lower_path.endswith(".sqlite"):
         return "sqlite"
-    if lower_path.endswith(MARKDOWN_FILE_EXTENSIONS):
-        return "markdown"
+    if lower_path.endswith(".xlsx"):
+        return "xlsx"
+    if lower_path.endswith(".xls"):
+        return "xls"
 
     extension = os.path.splitext(lower_path)[1].lstrip(".")
     if extension in SUPPORTED_EXPORT_FORMATS:
@@ -267,6 +271,39 @@ def normalize_json_options(source_options=None):
 
     return options
 
+def normalize_excel_options(source_options=None):
+    options = {
+        "headerRow": 1,
+        "dataStartRow": 2,
+        "inferTypes": False
+    }
+
+    excel_options = {}
+    if isinstance(source_options, dict) and isinstance(source_options.get("excel"), dict):
+        excel_options = source_options.get("excel") or {}
+
+    def read_row_number(key, fallback, minimum):
+        try:
+            value = int(excel_options.get(key, fallback))
+        except (TypeError, ValueError):
+            value = fallback
+
+        return max(minimum, min(value, 1048576))
+
+    header_row = read_row_number("headerRow", options["headerRow"], 0)
+    minimum_data_start = header_row + 1 if header_row > 0 else 1
+    data_start_row = read_row_number(
+        "dataStartRow",
+        max(options["dataStartRow"], minimum_data_start),
+        minimum_data_start
+    )
+
+    return {
+        "headerRow": header_row,
+        "dataStartRow": data_start_row,
+        "inferTypes": bool(excel_options.get("inferTypes", options["inferTypes"]))
+    }
+
 def normalize_source_options(file_type, source_options=None):
     if file_type in ("csv", "tsv", "psv"):
         return {
@@ -276,6 +313,11 @@ def normalize_source_options(file_type, source_options=None):
     if file_type == "json":
         return {
             "json": normalize_json_options(source_options)
+        }
+
+    if file_type == "excel":
+        return {
+            "excel": normalize_excel_options(source_options)
         }
 
     return None
@@ -459,6 +501,132 @@ def create_avro_view(conn, table_name, file_path):
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
         f"SELECT * FROM read_avro({avro_path})"
+    )
+
+def ensure_spatial_extension(conn):
+    try:
+        conn.execute("LOAD spatial")
+        return
+    except Exception:
+        pass
+    try:
+        conn.execute("INSTALL spatial")
+        conn.execute("LOAD spatial")
+    except Exception as error:
+        raise RuntimeError(
+            "DuckDB spatial extension is not available. Run the environment setup with network access so DuckDB can install the spatial extension for reading Excel files."
+        ) from error
+
+def ensure_excel_extension(conn):
+    try:
+        conn.execute("LOAD excel")
+        return
+    except Exception:
+        pass
+    try:
+        conn.execute("INSTALL excel")
+        conn.execute("LOAD excel")
+    except Exception as error:
+        raise RuntimeError(
+            "DuckDB excel extension is not available. Run the environment setup with network access so DuckDB can install the excel extension for reading XLSX files."
+        ) from error
+
+def xlsx_column_index(cell_reference):
+    match = re.match(r"^([A-Za-z]+)", str(cell_reference or ""))
+    if not match:
+        return None
+
+    index = 0
+    for char in match.group(1).upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+def xlsx_column_name(index):
+    index = max(1, min(int(index or 1), 16384))
+    letters = []
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "".join(reversed(letters))
+
+def infer_xlsx_last_column(file_path, *row_numbers):
+    target_rows = {int(row_number) for row_number in row_numbers if int(row_number or 0) > 0}
+    if not target_rows:
+        return "XFD"
+
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            worksheet_names = sorted(
+                name for name in archive.namelist()
+                if re.match(r"^xl/worksheets/sheet\d+\.xml$", name)
+            )
+            if not worksheet_names:
+                return "XFD"
+
+            import xml.etree.ElementTree as etree
+            max_column = 0
+            max_target_row = max(target_rows)
+            with archive.open(worksheet_names[0]) as worksheet_file:
+                for _, element in etree.iterparse(worksheet_file, events=("end",)):
+                    if not element.tag.endswith("}row"):
+                        continue
+
+                    row_number = int(element.attrib.get("r") or 0)
+                    if row_number in target_rows:
+                        for cell in element:
+                            if not cell.tag.endswith("}c"):
+                                continue
+                            column_index = xlsx_column_index(cell.attrib.get("r"))
+                            if column_index:
+                                max_column = max(max_column, column_index)
+
+                    element.clear()
+                    if row_number >= max_target_row:
+                        break
+
+            return xlsx_column_name(max_column or 16384)
+    except Exception:
+        return "XFD"
+
+def create_excel_view(conn, table_name, file_path, source_options=None):
+    excel_path = sql_string(file_path)
+    if not str(file_path or "").lower().endswith(".xlsx"):
+        ensure_spatial_extension(conn)
+        conn.execute(
+            f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+            f"SELECT * FROM st_read({excel_path})"
+        )
+        return
+
+    ensure_excel_extension(conn)
+    options = normalize_excel_options(source_options)
+    header_row = options["headerRow"]
+    data_start_row = options["dataStartRow"]
+    header_sql = sql_bool(header_row > 0)
+    range_start_row = header_row if header_row > 0 else data_start_row
+    range_end_column = infer_xlsx_last_column(file_path, header_row, data_start_row)
+    read_sql = (
+        f"read_xlsx({excel_path}, "
+        f"header = {header_sql}, "
+        f"all_varchar = {sql_bool(not options['inferTypes'])}, "
+        f"range = {sql_string(f'A{range_start_row}:{range_end_column}1048576')}, "
+        f"stop_at_empty = TRUE)"
+    )
+
+    if header_row > 0 and data_start_row > header_row + 1:
+        row_number_column = duckdb_identifier("__file_hive_excel_row_number")
+        first_data_row_number = data_start_row - header_row
+        conn.execute(
+            f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+            f"SELECT * EXCLUDE ({row_number_column}) FROM ("
+            f"SELECT row_number() OVER () AS {row_number_column}, * FROM {read_sql}"
+            f") AS excel_source WHERE {row_number_column} >= {first_data_row_number}"
+        )
+        return
+
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM {read_sql}"
     )
 
 def create_orc_view(conn, table_name, file_path):
@@ -747,8 +915,69 @@ def create_data_view(conn, file_path, selected_relation=None, source_options=Non
     if file_type == "feather":
         create_feather_view(conn, TABLE_NAME, file_path)
         return
+    if file_type == "excel":
+        create_excel_view(conn, TABLE_NAME, file_path, source_options)
+        return
+    if file_type == "workspace":
+        create_workspace_views(conn, file_path)
+        return
 
-    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files can be opened directly as tabular data.")
+    raise ValueError("Only .parquet, .workspace, .duckdb, .sqlite, .sqlite3, .db, .xlsx, .xls, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files can be opened directly as tabular data.")
+
+def create_workspace_views(conn, workspace_path):
+    workspace_dir = os.path.dirname(workspace_path)
+    supported_exts = {
+        ".parquet",
+        ".duckdb",
+        ".sqlite",
+        ".sqlite3",
+        ".db",
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".tsv",
+        ".psv",
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".avro",
+        ".orc",
+        ".arrow",
+        ".feather",
+        ".ipc",
+    }
+    mounted_files = []
+    used_names = set()
+    
+    for root, dirs, files in os.walk(workspace_dir):
+        # Exclude common large/unrelated directories
+        dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build')]
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in supported_exts:
+                file_path = os.path.join(root, file)
+                try:
+                    relative_path = os.path.relpath(file_path, workspace_dir)
+                    name_without_ext = os.path.splitext(relative_path)[0]
+                    table_name = re.sub(r"[^A-Za-z0-9_]+", "_", name_without_ext).strip("_") or "data"
+                    if table_name[0].isdigit():
+                        table_name = "_" + table_name
+                    base_table_name = table_name
+                    suffix = 2
+                    while table_name.lower() in used_names:
+                        table_name = f"{base_table_name}_{suffix}"
+                        suffix += 1
+                    used_names.add(table_name.lower())
+                    create_named_data_view(conn, table_name, file_path)
+                    mounted_files.append(table_name)
+                except Exception as e:
+                    print(f"DEBUG: Failed to mount {file_path}: {e}", file=sys.stderr)
+                
+    if not mounted_files:
+        conn.execute(f"CREATE VIEW {TABLE_NAME} AS SELECT 'No tabular files found in workspace' AS status")
+    else:
+        # Create a default view for the UI to display initially
+        conn.execute(f"CREATE VIEW {TABLE_NAME} AS SELECT 'Workspace mounted successfully. Try running custom queries!' AS status, {len(mounted_files)} AS files_mounted")
 
 def create_named_data_view(conn, table_name, file_path, selected_relation=None, source_options=None):
     file_type = get_file_type(file_path)
@@ -796,7 +1025,11 @@ def create_named_data_view(conn, table_name, file_path, selected_relation=None, 
         create_sqlite_view(conn, table_name, file_path, selected_relation)
         return
 
-    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported for joins.")
+    if file_type == "excel":
+        create_excel_view(conn, table_name, file_path, source_options)
+        return
+
+    raise ValueError("Only .parquet, .duckdb, .sqlite, .sqlite3, .db, .xlsx, .xls, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported for joins.")
 
 def selected_relation_key(selected_relation):
     if not selected_relation:
@@ -1131,6 +1364,25 @@ def export_parquet_query(conn, query, output_path):
     rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
     conn.execute(
         f"COPY ({query}) TO {sql_string(output_path)} (FORMAT PARQUET)"
+    )
+    return rows_exported
+
+def export_delimited_query(conn, query, output_path, delimiter):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    conn.execute(
+        f"COPY ({query}) TO {sql_string(output_path)} (HEADER, DELIMITER {sql_string(delimiter)})"
+    )
+    return rows_exported
+
+def export_json_query(conn, query, output_path, array_format=True):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    options = "(FORMAT JSON, ARRAY TRUE)" if array_format else "(FORMAT JSON)"
+    conn.execute(
+        f"COPY ({query}) TO {sql_string(output_path)} {options}"
     )
     return rows_exported
 
@@ -2279,6 +2531,12 @@ def analyze_tabular_file_doctor(conn, file_path, schema, file_size, source_label
 def analyze_csv_doctor(conn, file_path, schema, file_size):
     return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "CSV")
 
+def analyze_sqlite_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "SQLite")
+
+def analyze_excel_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Excel")
+
 def analyze_avro_doctor(conn, file_path, schema, file_size):
     return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Avro")
 
@@ -2792,7 +3050,7 @@ def extract_partition_values(root_path, file_path):
 
     return partitions
 
-def scan_single_parquet_file(root_path, file_path):
+def scan_single_dataset_file(root_path, file_path):
     file_size = os.path.getsize(file_path)
     conn = duckdb.connect()
 
@@ -2828,22 +3086,25 @@ def analyze_dataset_partitions(folder_path):
     if not os.path.isdir(folder_path):
         return {"success": False, "error": f"Dataset folder does not exist: {folder_path}"}
 
-    parquet_files = []
+    data_files = []
     for current_root, _, files in os.walk(folder_path):
         for filename in files:
-            if filename.lower().endswith(".parquet"):
-                parquet_files.append(os.path.join(current_root, filename))
+            try:
+                if get_file_type(filename) != "workspace":
+                    data_files.append(os.path.join(current_root, filename))
+            except ValueError:
+                pass
 
-    parquet_files.sort()
+    data_files.sort()
 
-    if not parquet_files:
+    if not data_files:
         return {
             "success": False,
             "folderPath": folder_path,
-            "error": "No .parquet files found in the selected folder."
+            "error": "No tabular data files found in the selected folder."
         }
 
-    files = [scan_single_parquet_file(folder_path, parquet_file) for parquet_file in parquet_files]
+    files = [scan_single_dataset_file(folder_path, data_file) for data_file in data_files]
     schema_groups = {}
     for file_info in files:
         signature = file_info.get("schemaSignature") or "unreadable"
@@ -2957,7 +3218,7 @@ def analyze_dataset_partitions(folder_path):
         "recommendations": list(dict.fromkeys(recommendations))
     }
 
-def read_data_file_from_connection(conn, file_path, user_query=None, source_options=None):
+def read_data_file_from_connection(conn, file_path, user_query=None, source_options=None, offset=0, limit=MAX_RESULT_ROWS):
     file_size = os.path.getsize(file_path)
     file_type = get_file_type(file_path)
     source_format = get_source_format(file_path)
@@ -2967,19 +3228,17 @@ def read_data_file_from_connection(conn, file_path, user_query=None, source_opti
     schema = read_data_schema(conn, file_path)
     query = normalize_query(user_query)
 
-    limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
-    print(f"DEBUG: Executing query: {query}", file=sys.stderr)
+    limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {limit + 1} OFFSET {offset}"
+    print(f"DEBUG: Executing query: {query} with offset {offset} limit {limit}", file=sys.stderr)
 
     result = conn.execute(limited_query).fetchall()
     columns = [desc[0] for desc in conn.description]
-    result_limited = len(result) > MAX_RESULT_ROWS
-    if result_limited:
-        result = result[:MAX_RESULT_ROWS]
-
-    total_rows = None if result_limited else len(result)
+    
+    has_more = len(result) > limit
+    if has_more:
+        result = result[:limit]
 
     print(f"DEBUG: Retrieved {len(result)} rows, {len(columns)} columns", file=sys.stderr)
-    print(f"DEBUG: Columns: {columns}", file=sys.stderr)
 
     data = convert_rows_to_json(columns, result)
 
@@ -2988,9 +3247,10 @@ def read_data_file_from_connection(conn, file_path, user_query=None, source_opti
         'data': data,
         'columns': columns,
         'rowCount': len(data),
-        'totalRows': total_rows,
+        'offset': offset,
+        'limit': limit,
+        'hasMore': has_more,
         'query': query,
-        'resultLimited': result_limited,
         'fileType': file_type,
         'sourceFormat': source_format,
         'sourceOptions': normalized_source_options,
@@ -3006,7 +3266,9 @@ def read_data_file_from_connection(conn, file_path, user_query=None, source_opti
             'file_size': file_size,
             'columns_count': len(columns),
             'rows_returned': len(data),
-            'result_limited': result_limited
+            'has_more': has_more,
+            'offset': offset,
+            'limit': limit
         }
     }
 
@@ -3089,6 +3351,10 @@ def run_file_doctor_from_connection(conn, file_path, source_options=None):
         doctor = analyze_feather_doctor(conn, file_path, schema, file_size)
     elif file_type == "ipc":
         doctor = analyze_ipc_doctor(conn, file_path, schema, file_size)
+    elif file_type == "sqlite":
+        doctor = analyze_sqlite_doctor(conn, file_path, schema, file_size)
+    elif file_type == "excel":
+        doctor = analyze_excel_doctor(conn, file_path, schema, file_size)
     else:
         doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
     return {
@@ -3198,21 +3464,19 @@ def export_data_file_from_connection(conn, output_path, export_format, user_quer
             "query": query
         }
 
-    cursor = conn.execute(query)
-    columns = [desc[0] for desc in conn.description]
-    unique_columns = make_unique_column_names(columns)
-
     if export_format == "csv":
-        rows_exported = export_csv(cursor, columns, output_path)
+        rows_exported = export_delimited_query(conn, query, output_path, ",")
     elif export_format == "tsv":
-        rows_exported = export_delimited(cursor, columns, output_path, "\t")
+        rows_exported = export_delimited_query(conn, query, output_path, "\t")
     elif export_format == "psv":
-        rows_exported = export_delimited(cursor, columns, output_path, "|")
+        rows_exported = export_delimited_query(conn, query, output_path, "|")
     elif export_format == "json":
-        rows_exported = export_json(cursor, unique_columns, output_path)
+        rows_exported = export_json_query(conn, query, output_path, array_format=True)
     elif export_format in ("jsonl", "ndjson"):
-        rows_exported = export_json_lines(cursor, unique_columns, output_path)
+        rows_exported = export_json_query(conn, query, output_path, array_format=False)
     else:
+        cursor = conn.execute(query)
+        columns = [desc[0] for desc in conn.description]
         rows_exported = export_sqlite(cursor, columns, output_path)
 
     return {
@@ -3411,12 +3675,13 @@ def normalize_write_type(value):
 
 def normalize_write_payload(payload):
     columns = payload.get("columns") or []
-    rows = payload.get("rows") or []
+    rows = payload.get("rows")
+    query = payload.get("query")
 
     if not isinstance(columns, list) or not columns:
         raise ValueError("Write payload columns must be a non-empty list.")
-    if not isinstance(rows, list) or not rows:
-        raise ValueError("Write payload rows must be a non-empty list.")
+    if not isinstance(rows, list) and not isinstance(query, str):
+        raise ValueError("Write payload must provide either rows or query.")
 
     normalized_columns = []
     seen_names = set()
@@ -3441,18 +3706,19 @@ def normalize_write_payload(payload):
         })
 
     normalized_rows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise ValueError("Each row must be an object.")
+    if rows is not None:
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Each row must be an object.")
 
-        normalized_row = {}
-        for column in normalized_columns:
-            value = row.get(column["name"])
-            if isinstance(value, (dict, list)):
-                normalized_row[column["name"]] = json.dumps(value, ensure_ascii=False)
-            else:
-                normalized_row[column["name"]] = value
-        normalized_rows.append(normalized_row)
+            normalized_row = {}
+            for column in normalized_columns:
+                value = row.get(column["name"])
+                if isinstance(value, (dict, list)):
+                    normalized_row[column["name"]] = json.dumps(value, ensure_ascii=False)
+                else:
+                    normalized_row[column["name"]] = value
+            normalized_rows.append(normalized_row)
 
     compression = str(payload.get("compression") or "snappy").lower()
     if compression not in SUPPORTED_WRITE_COMPRESSIONS:
@@ -3462,7 +3728,7 @@ def normalize_write_payload(payload):
     if row_group_size is not None:
         row_group_size = max(1, min(int(row_group_size), 10000000))
 
-    return normalized_columns, normalized_rows, compression, row_group_size
+    return normalized_columns, normalized_rows, query, compression, row_group_size
 
 def build_create_parquet_copy_options(compression, row_group_size):
     options = [
@@ -3475,7 +3741,7 @@ def build_create_parquet_copy_options(compression, row_group_size):
 
     return ", ".join(options)
 
-def create_parquet_file(output_path, payload_path):
+def create_parquet_file(conn_from_session, output_path, payload_path):
     if not os.path.exists(payload_path):
         return {
             "success": False,
@@ -3486,40 +3752,56 @@ def create_parquet_file(output_path, payload_path):
 
     conn = None
     rows_path = None
+    rows_exported = 0
 
     try:
         with open(payload_path, "r", encoding="utf-8") as payload_file:
             payload = json.load(payload_file)
 
-        columns, rows, compression, row_group_size = normalize_write_payload(payload)
-        rows_path = os.path.join(os.path.dirname(payload_path), "normalized-write-rows.json")
-
-        with open(rows_path, "w", encoding="utf-8") as rows_file:
-            json.dump(rows, rows_file, ensure_ascii=False)
-
-        conn = duckdb.connect()
+        columns, rows, query, compression, row_group_size = normalize_write_payload(payload)
 
         if os.path.exists(output_path):
             os.remove(output_path)
 
-        select_columns = ", ".join(
-            f"TRY_CAST({duckdb_identifier(column['name'])} AS {column['type']}) AS {duckdb_identifier(column['name'])}"
-            for column in columns
-        )
         copy_options = build_create_parquet_copy_options(compression, row_group_size)
-        conn.execute(
-            f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
-            f"TO {sql_string(output_path)} ({copy_options})"
-        )
 
-        conn.close()
-        conn = None
+        if query:
+            # Fast path: query native export
+            conn = conn_from_session
+            # Execute query to get row count
+            rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+            conn.execute(
+                f"COPY ({query}) TO {sql_string(output_path)} ({copy_options})"
+            )
+            # do NOT close the connection because it is managed by the session manager
+            conn = None
+        else:
+            # Slow path: json text piping
+            rows_path = os.path.join(os.path.dirname(payload_path), "normalized-write-rows.json")
+            with open(rows_path, "w", encoding="utf-8") as rows_file:
+                json.dump(rows, rows_file, ensure_ascii=False)
+    
+            conn = duckdb.connect()
+            
+            select_columns = ", ".join(
+                f"TRY_CAST({duckdb_identifier(column['name'])} AS {column['type']}) AS {duckdb_identifier(column['name'])}"
+                for column in columns
+            )
+            
+            rows_exported = len(rows)
+            conn.execute(
+                f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
+                f"TO {sql_string(output_path)} ({copy_options})"
+            )
+    
+            conn.close()
+            conn = None
 
         return {
             "success": True,
             "format": "parquet",
             "outputPath": output_path,
-            "rowsExported": len(rows),
+            "rowsExported": rows_exported,
             "columnsExported": len(columns),
             "compression": compression,
             "rowGroupSize": row_group_size
@@ -4227,11 +4509,11 @@ def handle_worker_request(session_manager, request):
             query = payload.get("query") if isinstance(payload.get("query"), str) else None
             selected_relation = _worker_payload_relation(payload, "selectedRelation")
             source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
-            if get_file_type(file_path) == "markdown":
-                result = read_markdown_file(file_path)
-            else:
-                conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
-                result = read_data_file_from_connection(conn, file_path, query, source_options)
+            offset = int(payload.get("offset", 0)) if str(payload.get("offset")).isdigit() else 0
+            limit = int(payload.get("limit", MAX_RESULT_ROWS)) if str(payload.get("limit")).isdigit() else MAX_RESULT_ROWS
+
+            conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
+            result = read_data_file_from_connection(conn, file_path, query, source_options, offset, limit)
         elif command == "doctor":
             session_id = _worker_payload_text(payload, "sessionId")
             file_path = _worker_payload_text(payload, "filePath")
@@ -4261,9 +4543,15 @@ def handle_worker_request(session_manager, request):
             export_format = payload.get("format") if payload.get("format") in SUPPORTED_EXPORT_FORMATS else "parquet"
             result = save_edited_parquet_file(file_path, output_path, edits_path, export_format)
         elif command == "create_parquet":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
+            
             output_path = _worker_payload_text(payload, "outputPath")
             payload_path = _worker_payload_text(payload, "payloadPath")
-            result = create_parquet_file(output_path, payload_path)
+            result = create_parquet_file(conn, output_path, payload_path)
         elif command == "compare_metadata":
             file_path = _worker_payload_text(payload, "filePath")
             compare_path = _worker_payload_text(payload, "comparePath")

@@ -87,7 +87,9 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
         uri: vscode.Uri,
         query?: string,
         selectedRelation?: DataFileRelation,
-        sourceOptions?: DataFileSourceOptions
+        sourceOptions?: DataFileSourceOptions,
+        offset?: number,
+        limit?: number
     ): Promise<DataFileReadResult> {
         this.logger.info('Reading data file', uri.fsPath);
 
@@ -98,13 +100,14 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
                 filePath: uri.fsPath,
                 query: query ?? null,
                 selectedRelation: selectedRelation ?? null,
-                sourceOptions: sourceOptions ?? null
+                sourceOptions: sourceOptions ?? null,
+                offset: offset ?? 0,
+                limit: limit ?? 1000
             },
             120000
         );
         return result as DataFileReadResult;
     }
-
     async runFileDoctor(
         uri: vscode.Uri,
         selectedRelation?: DataFileRelation,
@@ -212,7 +215,9 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
     async createParquetFile(
         uri: vscode.Uri,
         outputUri: vscode.Uri,
-        options: ParquetWriteOptions
+        options: ParquetWriteOptions,
+        selectedRelation?: DataFileRelation | null,
+        sourceOptions?: DataFileSourceOptions | null
     ): Promise<ParquetWriteResult> {
         let tempDir: string | undefined;
 
@@ -224,6 +229,10 @@ export class PythonDataFileReader implements IDataFileReader, vscode.Disposable 
             const result = await this.sendWorkerRequest(
                 'create_parquet',
                 {
+                    sessionId: this.getOrCreateSessionId(uri),
+                    filePath: uri.fsPath,
+                    selectedRelation: selectedRelation ?? null,
+                    sourceOptions: sourceOptions ?? null,
                     outputPath: outputUri.fsPath,
                     payloadPath
                 },
