@@ -31,6 +31,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 ${this.generateLoadingContainer()}
                 <div id="data-view" class="view-panel">
                     ${this.generateQueryContainer()}
+                    ${this.generateTextPreviewContainer()}
                     ${this.generateDataContainer()}
                 </div>
                 ${this.generateEdaContainer()}
@@ -65,6 +66,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <span id="source-type" class="source-pill">${fileType}</span>
             </div>
             <div class="controls">
+                <button id="header-open-text-editor-btn" class="btn btn-secondary hidden">Open as Text</button>
                 <button id="refresh-btn" class="btn">
                     <span class="icon">↻</span> Refresh
                 </button>
@@ -74,38 +76,48 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
     }
 
     private formatFileTypeLabel(fileType: unknown): string {
-        if (fileType === 'duckdb') {
+        const normalizedFileType = String(fileType || '').toLowerCase();
+        if (normalizedFileType === 'duckdb') {
             return 'DuckDB';
         }
-        if (fileType === 'sqlite') {
+        if (normalizedFileType === 'sqlite') {
             return 'SQLite';
         }
-        if (fileType === 'csv') {
+        if (normalizedFileType === 'csv') {
             return 'CSV';
         }
-        if (fileType === 'tsv') {
+        if (normalizedFileType === 'tsv') {
             return 'TSV';
         }
-        if (fileType === 'psv') {
+        if (normalizedFileType === 'psv') {
             return 'PSV';
         }
-        if (fileType === 'json') {
+        if (normalizedFileType === 'json') {
             return 'JSON';
         }
-        if (fileType === 'avro') {
+        if (normalizedFileType === 'avro') {
             return 'Avro';
         }
-        if (fileType === 'orc') {
+        if (normalizedFileType === 'orc') {
             return 'ORC';
         }
-        if (fileType === 'arrow') {
+        if (normalizedFileType === 'arrow') {
             return 'Arrow';
         }
-        if (fileType === 'feather') {
+        if (normalizedFileType === 'feather') {
             return 'Feather';
         }
-        if (fileType === 'ipc') {
+        if (normalizedFileType === 'ipc') {
             return 'IPC';
+        }
+        if (normalizedFileType === 'excel' || normalizedFileType === 'xlsx' || normalizedFileType === 'xls') {
+            return 'Excel';
+        }
+        if (normalizedFileType === 'sqlite3') {
+            return 'SQLite';
+        }
+        if (normalizedFileType === 'workspace') {
+            return 'Workspace';
         }
         return 'Parquet';
     }
@@ -347,7 +359,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <h3>Schema Validation</h3>
                     <div id="doctor-schema-validation"></div>
                 </section>
-                <section class="doctor-panel">
+                <section class="doctor-panel" data-format-scope="parquet">
                     <h3>Column Statistics Check</h3>
                     <div id="doctor-column-statistics"></div>
                 </section>
@@ -355,11 +367,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <h3>Data Quality Validation</h3>
                     <div id="doctor-data-quality"></div>
                 </section>
-                <section class="doctor-panel">
+                <section class="doctor-panel" data-format-scope="parquet">
                     <h3>Decimal and Timestamp Diagnostics</h3>
                     <div id="doctor-decimal-timestamp"></div>
                 </section>
-                <section class="doctor-panel">
+                <section class="doctor-panel" data-format-scope="parquet">
                     <h3>Compression and Encoding Analysis</h3>
                     <div id="doctor-compression-encoding"></div>
                 </section>
@@ -368,11 +380,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     <div id="doctor-schema-drift"></div>
                 </section>
             </div>
-            <section class="doctor-panel doctor-row-groups-panel">
+            <section class="doctor-panel doctor-row-groups-panel" data-format-scope="parquet">
                 <h3>Row Group Analysis</h3>
                 <div id="doctor-row-groups"></div>
             </section>
-            <section class="doctor-panel doctor-row-groups-panel">
+            <section class="doctor-panel doctor-row-groups-panel" data-format-scope="parquet">
                 <h3>Dataset and Partition Analysis</h3>
                 <div id="doctor-dataset-analysis"></div>
             </section>
@@ -435,47 +447,144 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
     private generateQueryContainer(): string {
         return `
-        <section class="query-container">
+        <section id="query-container" class="query-container">
             <div class="query-toolbar">
                 <label for="query-input">SQL Query</label>
                 <div class="query-actions">
+                    <button id="data-controls-toggle-btn" class="btn btn-secondary" type="button" aria-expanded="true">Collapse</button>
+                    <button id="open-text-editor-btn" class="btn btn-secondary hidden">Open as Text</button>
                     <button id="run-query-btn" class="btn">Run Query</button>
                     <button id="reset-query-btn" class="btn btn-secondary">Reset</button>
                 </div>
             </div>
-            <textarea id="query-input" spellcheck="false">SELECT * FROM file_data</textarea>
-            <div class="query-meta">
-                Table: <code>file_data</code>
-                <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
-            </div>
-            <div class="quick-aggregation">
-                <label>
-                    Group
-                    <select id="aggregation-group-column"></select>
-                </label>
-                <label>
-                    Metric
-                    <select id="aggregation-value-column"></select>
-                </label>
-                <label>
-                    Function
-                    <select id="aggregation-function">
-                        <option value="count">Count</option>
-                        <option value="sum">Sum</option>
-                        <option value="avg">Average</option>
-                        <option value="min">Min</option>
-                        <option value="max">Max</option>
-                    </select>
-                </label>
-                <label>
-                    Limit
-                    <input id="aggregation-limit" type="number" min="1" max="1000" value="100" />
-                </label>
-                <div class="aggregation-actions">
-                    <button id="run-aggregation-btn" class="btn btn-secondary">Run Aggregation</button>
-                    <button id="reset-aggregation-btn" class="btn btn-secondary">Reset</button>
+            <div id="data-controls-body" class="data-controls-body">
+                <textarea id="query-input" spellcheck="false">SELECT * FROM file_data</textarea>
+                <div class="query-meta">
+                    Table: <code>file_data</code>
+                    <label id="relation-picker-wrap" class="relation-picker hidden">
+                        Table
+                        <select id="relation-picker"></select>
+                    </label>
+                    <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
+                    <div class="pagination-controls hidden" id="pagination-controls" style="display: inline-flex; align-items: center; gap: 8px; margin-left: auto;">
+                        <button id="prev-page-btn" class="btn btn-secondary btn-sm" disabled>&lt; Prev</button>
+                        <span id="page-info">1 - 1000</span>
+                        <button id="next-page-btn" class="btn btn-secondary btn-sm">&gt; Next</button>
+                        <select id="page-size-select" style="margin-left: 8px;">
+                            <option value="100">100</option>
+                            <option value="500">500</option>
+                            <option value="1000" selected>1000</option>
+                            <option value="5000">5000</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="flat-file-options" class="flat-file-options hidden">
+                    <label class="flat-file-header-toggle">
+                        <input id="flat-file-header" type="checkbox" checked />
+                        Header row
+                    </label>
+                    <label>
+                        Delimiter
+                        <input id="flat-file-delimiter" type="text" maxlength="8" />
+                    </label>
+                    <label>
+                        Encoding
+                        <select id="flat-file-encoding">
+                            <option value="utf-8">UTF-8</option>
+                            <option value="latin-1">Latin-1</option>
+                            <option value="utf-16">UTF-16</option>
+                        </select>
+                    </label>
+                    <label>
+                        Quote
+                        <input id="flat-file-quote" type="text" maxlength="1" value="&quot;" />
+                    </label>
+                    <label>
+                        Escape
+                        <input id="flat-file-escape" type="text" maxlength="1" value="&quot;" />
+                    </label>
+                    <label>
+                        Null
+                        <input id="flat-file-null" type="text" maxlength="64" />
+                    </label>
+                    <div class="flat-file-actions">
+                        <button id="apply-flat-file-options-btn" class="btn btn-secondary">Reload</button>
+                        <button id="reset-flat-file-options-btn" class="btn btn-secondary">Reset Options</button>
+                    </div>
+                </div>
+                <div id="json-file-options" class="json-file-options hidden">
+                    <label class="json-flatten-toggle">
+                        <input id="json-flatten" type="checkbox" />
+                        Flatten nested fields
+                    </label>
+                    <label>
+                        Record path
+                        <input id="json-record-path" type="text" maxlength="240" placeholder="data.items" />
+                    </label>
+                    <div class="json-file-actions">
+                        <button id="apply-json-options-btn" class="btn btn-secondary">Reload</button>
+                        <button id="reset-json-options-btn" class="btn btn-secondary">Reset Options</button>
+                    </div>
+                </div>
+                <div id="excel-file-options" class="excel-file-options hidden">
+                    <label>
+                        Header row
+                        <input id="excel-header-row" type="number" min="0" max="1048576" value="1" />
+                    </label>
+                    <label>
+                        Data starts
+                        <input id="excel-data-start-row" type="number" min="1" max="1048576" value="2" />
+                    </label>
+                    <label class="excel-infer-toggle">
+                        <input id="excel-infer-types" type="checkbox" />
+                        Infer types
+                    </label>
+                    <div class="excel-file-actions">
+                        <button id="apply-excel-options-btn" class="btn btn-secondary">Reload</button>
+                        <button id="reset-excel-options-btn" class="btn btn-secondary">Reset Options</button>
+                    </div>
+                </div>
+                <div class="quick-aggregation" data-capability-scope="columns">
+                    <label>
+                        Group
+                        <select id="aggregation-group-column"></select>
+                    </label>
+                    <label id="aggregation-value-column-label">
+                        Metric
+                        <select id="aggregation-value-column"></select>
+                    </label>
+                    <label>
+                        Function
+                        <select id="aggregation-function">
+                            <option value="count">Count</option>
+                            <option value="sum">Sum</option>
+                            <option value="avg">Average</option>
+                            <option value="min">Min</option>
+                            <option value="max">Max</option>
+                        </select>
+                    </label>
+                    <label>
+                        Limit
+                        <input id="aggregation-limit" type="number" min="1" max="1000" value="100" />
+                    </label>
+                    <div class="aggregation-actions">
+                        <button id="run-aggregation-btn" class="btn btn-secondary">Run Aggregation</button>
+                        <button id="reset-aggregation-btn" class="btn btn-secondary">Reset</button>
+                    </div>
                 </div>
             </div>
+        </section>`;
+    }
+
+    private generateTextPreviewContainer(): string {
+        return `
+        <section id="text-preview-container" class="text-preview-container hidden">
+            <div class="text-preview-summary">
+                <div class="summary-item">Lines: <span id="text-preview-lines">0</span></div>
+                <div class="summary-item">Size: <span id="text-preview-size">0 B</span></div>
+                <div id="text-preview-truncated" class="summary-item hidden">Preview truncated</div>
+            </div>
+            <pre id="text-preview-content" class="text-preview-content"></pre>
         </section>`;
     }
 
@@ -654,7 +763,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 <div class="summary-item">Showing: <span id="showing-rows">0</span> rows</div>
                 <div class="summary-item">Columns: <span id="column-count">0</span></div>
             </div>
-            <div class="table-tools">
+            <div class="table-tools" data-capability-scope="columns">
                 <label>
                     Sort
                     <select id="table-sort-column"></select>
@@ -696,19 +805,19 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         <section id="edit-container" class="edit-container view-panel hidden">
             <div class="edit-toolbar">
                 <div>
-                    <h2>Edit Data</h2>
-                    <p>Edits will be saved as a new Parquet file. To view the changes, open that new Parquet file.</p>
+                    <h2>Edit Result</h2>
+                    <p>Edits are saved as a new file in the format you choose.</p>
                 </div>
                 <div class="edit-actions">
                     <button id="add-edit-row-btn" class="btn btn-secondary">Add Row</button>
                     <button id="reset-edits-btn" class="btn btn-secondary">Reset Edits</button>
-                    <button id="save-edits-btn" class="btn">Save New Parquet</button>
+                    <button id="save-edits-btn" class="btn">Save As...</button>
                 </div>
             </div>
             <div class="edit-column-tools">
                 <div>
                     <h3>Column Names</h3>
-                    <p>Rename columns here before saving the edited data as a new Parquet file.</p>
+                    <p>Rename columns here before saving the edited result.</p>
                 </div>
                 <button id="reset-column-names-btn" class="btn btn-secondary">Reset Names</button>
             </div>
@@ -770,9 +879,27 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         const vscode = acquireVsCodeApi();
         const DEFAULT_QUERY = 'SELECT * FROM file_data';
         const EXPORT_FORMATS = ['csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'sqlite', 'parquet', 'duckdb', 'avro', 'orc', 'arrow', 'feather', 'ipc'];
+        const SOURCE_FORMATS = [...EXPORT_FORMATS, 'excel', 'xlsx', 'xls', 'workspace'];
+        const VIEW_TO_GROUP = {
+            data: 'explore',
+            eda: 'explore',
+            visualizer: 'explore',
+            schema: 'explore',
+            edit: 'transform',
+            write: 'transform',
+            export: 'export',
+            compare: 'combine',
+            join: 'combine',
+            doctor: 'quality'
+        };
         let currentQuery = DEFAULT_QUERY;
         let currentFileType = 'parquet';
         let currentSourceFormat = 'parquet';
+        let currentRelations = [];
+        let currentSelectedRelation = null;
+        let currentSourceOptions = getDefaultSourceOptions('parquet');
+        let currentFeatureCapabilities = getDefaultFeatureCapabilities();
+        let currentTextPreview = null;
         let currentSchema = null;
         let currentSchemaDocs = '';
         let currentCompareResult = null;
@@ -783,8 +910,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let doctorRequestInFlight = false;
         let currentColumns = [];
         let currentRows = [];
-        let currentTotalRows = 0;
-        let currentResultLimited = false;
+        let currentOffset = 0;
+        let currentLimit = 1000;
+        let currentHasMore = false;
+        let dataControlsCollapsed = false;
         let editRows = [];
         let editColumnNames = [];
         let writeRows = [];
@@ -801,7 +930,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         function initialize(data) {
             const queryInput = document.getElementById('query-input');
             currentFileType = normalizeFileType(data && data.fileType);
-            currentSourceFormat = normalizeExportFormat(data && (data.sourceFormat || data.fileType));
+            currentSourceFormat = normalizeSourceFormat(data && (data.sourceFormat || data.fileType));
+            currentSourceOptions = normalizeSourceOptions(data && data.sourceOptions, currentSourceFormat || currentFileType);
             updateSourceTypeBadge();
             currentQuery = data.query || DEFAULT_QUERY;
             if (queryInput) {
@@ -811,9 +941,16 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function normalizeFileType(fileType) {
-            const supportedFileTypes = ['duckdb', 'sqlite', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'];
+            const supportedFileTypes = ['workspace', 'duckdb', 'sqlite', 'sqlite3', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc', 'excel', 'xlsx', 'xls'];
             if (supportedFileTypes.includes(fileType)) {
                 return fileType;
+            }
+            return 'parquet';
+        }
+
+        function normalizeSourceFormat(format) {
+            if (SOURCE_FORMATS.includes(format)) {
+                return format;
             }
             return 'parquet';
         }
@@ -825,44 +962,700 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             return 'parquet';
         }
 
+        function isDelimitedTextSource() {
+            return ['csv', 'tsv', 'psv'].includes(currentSourceFormat || currentFileType);
+        }
+
+        function isJsonSource() {
+            return ['json', 'jsonl', 'ndjson'].includes(currentSourceFormat || currentFileType);
+        }
+
+        function isExcelSource() {
+            return ['excel', 'xlsx'].includes(currentSourceFormat || currentFileType);
+        }
+
+        function isTextEditorSource() {
+            return isDelimitedTextSource() || isJsonSource() || isTextOnlySource();
+        }
+
+        function isTextOnlySource() {
+            return false;
+        }
+
+        function getDefaultDelimiter(format) {
+            if (format === 'tsv') {
+                return '\\t';
+            }
+            if (format === 'psv') {
+                return '|';
+            }
+            return ',';
+        }
+
+        function getDefaultSourceOptions(format) {
+            if (['csv', 'tsv', 'psv'].includes(format)) {
+                return {
+                    delimitedText: {
+                        header: true,
+                        delimiter: getDefaultDelimiter(format),
+                        encoding: 'utf-8',
+                        quote: '"',
+                        escape: '"',
+                        nullString: ''
+                    }
+                };
+            }
+
+            if (['json', 'jsonl', 'ndjson'].includes(format)) {
+                return {
+                    json: {
+                        flatten: false,
+                        recordPath: ''
+                    }
+                };
+            }
+
+            if (['excel', 'xlsx'].includes(format)) {
+                return {
+                    excel: {
+                        headerRow: 1,
+                        dataStartRow: 2,
+                        inferTypes: false
+                    }
+                };
+            }
+
+            return {};
+        }
+
+        function normalizeExcelRowNumber(value, fallback, minimum) {
+            const numberValue = Number(value);
+            if (!Number.isFinite(numberValue)) {
+                return fallback;
+            }
+            return Math.min(1048576, Math.max(minimum, Math.trunc(numberValue)));
+        }
+
+        function normalizeJsonRecordPath(value) {
+            return String(value || '')
+                .trim()
+                .replace(/^\\$\\.?/, '')
+                .replace(/^\\./, '')
+                .slice(0, 240);
+        }
+
+        function normalizeSourceOptions(options, format) {
+            const defaults = getDefaultSourceOptions(format);
+            if (defaults.delimitedText) {
+                const incoming = options && options.delimitedText ? options.delimitedText : {};
+                const supportedEncodings = ['utf-8', 'latin-1', 'utf-16'];
+                const incomingEncoding = typeof incoming.encoding === 'string'
+                    ? incoming.encoding.trim().toLowerCase()
+                    : defaults.delimitedText.encoding;
+                return {
+                    delimitedText: {
+                        header: typeof incoming.header === 'boolean' ? incoming.header : defaults.delimitedText.header,
+                        delimiter: typeof incoming.delimiter === 'string' && incoming.delimiter ? incoming.delimiter : defaults.delimitedText.delimiter,
+                        encoding: supportedEncodings.includes(incomingEncoding) ? incomingEncoding : defaults.delimitedText.encoding,
+                        quote: typeof incoming.quote === 'string' ? incoming.quote.slice(0, 1) : defaults.delimitedText.quote,
+                        escape: typeof incoming.escape === 'string' ? incoming.escape.slice(0, 1) : defaults.delimitedText.escape,
+                        nullString: typeof incoming.nullString === 'string' ? incoming.nullString.slice(0, 64) : defaults.delimitedText.nullString
+                    }
+                };
+            }
+
+            if (defaults.json) {
+                const incoming = options && options.json ? options.json : {};
+                return {
+                    json: {
+                        flatten: typeof incoming.flatten === 'boolean' ? incoming.flatten : defaults.json.flatten,
+                        recordPath: normalizeJsonRecordPath(incoming.recordPath)
+                    }
+                };
+            }
+
+            if (defaults.excel) {
+                const incoming = options && options.excel ? options.excel : {};
+                const headerRow = normalizeExcelRowNumber(incoming.headerRow, defaults.excel.headerRow, 0);
+                const minimumDataStart = headerRow > 0 ? headerRow + 1 : 1;
+                return {
+                    excel: {
+                        headerRow,
+                        dataStartRow: normalizeExcelRowNumber(incoming.dataStartRow, Math.max(defaults.excel.dataStartRow, minimumDataStart), minimumDataStart),
+                        inferTypes: typeof incoming.inferTypes === 'boolean' ? incoming.inferTypes : defaults.excel.inferTypes
+                    }
+                };
+            }
+
+            return {};
+        }
+
+        function getSourceOptionsPayload() {
+            if (isDelimitedTextSource() || isJsonSource() || isExcelSource()) {
+                return JSON.parse(JSON.stringify(currentSourceOptions));
+            }
+
+            return null;
+        }
+
+        function getDefaultFeatureCapabilities() {
+            return {
+                data: true,
+                eda: false,
+                visualizer: false,
+                schema: false,
+                edit: false,
+                write: false,
+                export: false,
+                compare: false,
+                join: false,
+                doctor: false
+            };
+        }
+
+        function isParquetSource() {
+            return currentFileType === 'parquet' || currentSourceFormat === 'parquet';
+        }
+
+        function getFeatureCapabilities(data) {
+            const success = Boolean(data && data.success);
+            const hasColumns = currentColumns.length > 0;
+            const hasRows = currentRows.length > 0;
+            const hasSchema = Boolean(currentSchema && Array.isArray(currentSchema.columns) && currentSchema.columns.length > 0);
+            const hasDoctor = Boolean(data && data.doctor);
+
+            if (!success) {
+                return {
+                    ...getDefaultFeatureCapabilities(),
+                    data: true,
+                    doctor: hasDoctor
+                };
+            }
+
+            if (isTextOnlySource()) {
+                return getDefaultFeatureCapabilities();
+            }
+
+            return {
+                data: true,
+                eda: hasColumns && hasRows,
+                visualizer: hasColumns && hasRows,
+                schema: hasSchema,
+                edit: hasColumns,
+                write: hasColumns,
+                export: hasColumns,
+                compare: hasColumns,
+                join: hasColumns,
+                doctor: true
+            };
+        }
+
+        function setCapabilityElementHidden(element, hidden) {
+            if (!element) {
+                return;
+            }
+
+            element.hidden = hidden;
+            element.classList.toggle('hidden', hidden);
+        }
+
+        function applyDataControlsCollapsedState() {
+            const body = document.getElementById('data-controls-body');
+            const toggleButton = document.getElementById('data-controls-toggle-btn');
+            const tableTools = document.querySelector('.table-tools');
+
+            setCapabilityElementHidden(body, dataControlsCollapsed);
+            setCapabilityElementHidden(tableTools, dataControlsCollapsed || currentColumns.length === 0);
+
+            if (toggleButton) {
+                toggleButton.textContent = dataControlsCollapsed ? 'Show Controls' : 'Collapse';
+                toggleButton.setAttribute('aria-expanded', dataControlsCollapsed ? 'false' : 'true');
+            }
+        }
+
+        function getAvailableViewsForGroup(groupName) {
+            return Object.keys(VIEW_TO_GROUP).filter((viewName) => {
+                return VIEW_TO_GROUP[viewName] === groupName && currentFeatureCapabilities[viewName];
+            });
+        }
+
+        function getFirstAvailableView() {
+            return ['data', 'schema', 'edit', 'write', 'export', 'compare', 'join', 'doctor', 'eda', 'visualizer']
+                .find((viewName) => currentFeatureCapabilities[viewName]) || 'data';
+        }
+
+        function getActiveViewName() {
+            const activeTab = document.querySelector('.subtab-btn.active');
+            if (!activeTab || !activeTab.id || !activeTab.id.endsWith('-tab')) {
+                return 'data';
+            }
+
+            return activeTab.id.slice(0, -4);
+        }
+
+        function isViewAvailable(viewName) {
+            return Boolean(currentFeatureCapabilities[viewName]);
+        }
+
+        function applyFeatureAvailability(data) {
+            currentFeatureCapabilities = getFeatureCapabilities(data);
+
+            Object.keys(VIEW_TO_GROUP).forEach((viewName) => {
+                setCapabilityElementHidden(
+                    document.getElementById(viewName + '-tab'),
+                    !currentFeatureCapabilities[viewName]
+                );
+            });
+
+            document.querySelectorAll('[data-view-group]').forEach((tab) => {
+                const groupViews = getAvailableViewsForGroup(tab.dataset.viewGroup);
+                setCapabilityElementHidden(tab, groupViews.length === 0);
+            });
+
+            document.querySelectorAll('[data-format-scope="parquet"]').forEach((panel) => {
+                setCapabilityElementHidden(panel, !isParquetSource());
+            });
+
+            document.querySelectorAll('[data-capability-scope="columns"]').forEach((panel) => {
+                setCapabilityElementHidden(panel, currentColumns.length === 0);
+            });
+            applyDataControlsCollapsedState();
+            setCapabilityElementHidden(document.getElementById('doctor-dataset-scan-btn'), isTextOnlySource());
+        }
+
+        function formatDelimiterForInput(delimiter) {
+            return delimiter === '\\t' ? '\\\\t' : delimiter;
+        }
+
+        function parseDelimiterInput(value) {
+            const text = String(value || '');
+            return text === '\\\\t' ? '\\t' : text;
+        }
+
+        function renderFlatFileOptions() {
+            const container = document.getElementById('flat-file-options');
+            if (!container) {
+                return;
+            }
+
+            setCapabilityElementHidden(container, !isDelimitedTextSource());
+            if (!isDelimitedTextSource()) {
+                return;
+            }
+
+            currentSourceOptions = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType);
+            const options = currentSourceOptions.delimitedText;
+            const headerInput = document.getElementById('flat-file-header');
+            const delimiterInput = document.getElementById('flat-file-delimiter');
+            const encodingSelect = document.getElementById('flat-file-encoding');
+            const quoteInput = document.getElementById('flat-file-quote');
+            const escapeInput = document.getElementById('flat-file-escape');
+            const nullInput = document.getElementById('flat-file-null');
+
+            if (headerInput) {
+                headerInput.checked = Boolean(options.header);
+            }
+            if (delimiterInput) {
+                delimiterInput.value = formatDelimiterForInput(options.delimiter);
+            }
+            if (encodingSelect) {
+                encodingSelect.value = options.encoding;
+            }
+            if (quoteInput) {
+                quoteInput.value = options.quote;
+            }
+            if (escapeInput) {
+                escapeInput.value = options.escape;
+            }
+            if (nullInput) {
+                nullInput.value = options.nullString;
+            }
+        }
+
+        function readFlatFileOptionsFromControls() {
+            const headerInput = document.getElementById('flat-file-header');
+            const delimiterInput = document.getElementById('flat-file-delimiter');
+            const encodingSelect = document.getElementById('flat-file-encoding');
+            const quoteInput = document.getElementById('flat-file-quote');
+            const escapeInput = document.getElementById('flat-file-escape');
+            const nullInput = document.getElementById('flat-file-null');
+            const fallback = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType).delimitedText;
+            const delimiter = parseDelimiterInput(delimiterInput ? delimiterInput.value : fallback.delimiter);
+
+            return {
+                delimitedText: {
+                    header: headerInput ? headerInput.checked : fallback.header,
+                    delimiter: delimiter || fallback.delimiter,
+                    encoding: encodingSelect ? encodingSelect.value : fallback.encoding,
+                    quote: quoteInput ? quoteInput.value.slice(0, 1) : fallback.quote,
+                    escape: escapeInput ? escapeInput.value.slice(0, 1) : fallback.escape,
+                    nullString: nullInput ? nullInput.value.slice(0, 64) : fallback.nullString
+                }
+            };
+        }
+
+        function reloadWithFlatFileOptions(reset) {
+            if (!isDelimitedTextSource()) {
+                return;
+            }
+
+            currentSourceOptions = reset
+                ? getDefaultSourceOptions(currentSourceFormat || currentFileType)
+                : normalizeSourceOptions(readFlatFileOptionsFromControls(), currentSourceFormat || currentFileType);
+            renderFlatFileOptions();
+            currentDoctor = null;
+            renderDoctorPanel(null);
+            currentQuery = DEFAULT_QUERY;
+            currentOffset = 0;
+            const queryInput = document.getElementById('query-input');
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
+            setLoading(reset ? 'Reloading with default options...' : 'Reloading flat file...');
+            vscode.postMessage({
+                type: 'query',
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
+            });
+        }
+
+        function renderJsonFileOptions() {
+            const container = document.getElementById('json-file-options');
+            if (!container) {
+                return;
+            }
+
+            setCapabilityElementHidden(container, !isJsonSource());
+            if (!isJsonSource()) {
+                return;
+            }
+
+            currentSourceOptions = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType);
+            const options = currentSourceOptions.json;
+            const flattenInput = document.getElementById('json-flatten');
+            const recordPathInput = document.getElementById('json-record-path');
+
+            if (flattenInput) {
+                flattenInput.checked = Boolean(options.flatten);
+            }
+            if (recordPathInput) {
+                recordPathInput.value = options.recordPath || '';
+            }
+        }
+
+        function readJsonOptionsFromControls() {
+            const flattenInput = document.getElementById('json-flatten');
+            const recordPathInput = document.getElementById('json-record-path');
+            const fallback = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType).json;
+
+            return {
+                json: {
+                    flatten: flattenInput ? flattenInput.checked : fallback.flatten,
+                    recordPath: recordPathInput ? normalizeJsonRecordPath(recordPathInput.value) : fallback.recordPath
+                }
+            };
+        }
+
+        function reloadWithJsonOptions(reset) {
+            if (!isJsonSource()) {
+                return;
+            }
+
+            currentSourceOptions = reset
+                ? getDefaultSourceOptions(currentSourceFormat || currentFileType)
+                : normalizeSourceOptions(readJsonOptionsFromControls(), currentSourceFormat || currentFileType);
+            renderJsonFileOptions();
+            currentDoctor = null;
+            renderDoctorPanel(null);
+            currentQuery = DEFAULT_QUERY;
+            currentOffset = 0;
+            const queryInput = document.getElementById('query-input');
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
+            setLoading(reset ? 'Reloading JSON with default options...' : 'Reloading JSON...');
+            vscode.postMessage({
+                type: 'query',
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
+            });
+        }
+
+        function renderExcelFileOptions() {
+            const container = document.getElementById('excel-file-options');
+            if (!container) {
+                return;
+            }
+
+            setCapabilityElementHidden(container, !isExcelSource());
+            if (!isExcelSource()) {
+                return;
+            }
+
+            currentSourceOptions = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType);
+            const options = currentSourceOptions.excel;
+            const headerRowInput = document.getElementById('excel-header-row');
+            const dataStartRowInput = document.getElementById('excel-data-start-row');
+            const inferTypesInput = document.getElementById('excel-infer-types');
+
+            if (headerRowInput) {
+                headerRowInput.value = String(options.headerRow);
+            }
+            if (dataStartRowInput) {
+                dataStartRowInput.value = String(options.dataStartRow);
+                dataStartRowInput.min = String(options.headerRow > 0 ? options.headerRow + 1 : 1);
+            }
+            if (inferTypesInput) {
+                inferTypesInput.checked = Boolean(options.inferTypes);
+            }
+        }
+
+        function readExcelOptionsFromControls() {
+            const headerRowInput = document.getElementById('excel-header-row');
+            const dataStartRowInput = document.getElementById('excel-data-start-row');
+            const inferTypesInput = document.getElementById('excel-infer-types');
+            const fallback = normalizeSourceOptions(currentSourceOptions, currentSourceFormat || currentFileType).excel;
+            const headerRow = normalizeExcelRowNumber(headerRowInput ? headerRowInput.value : fallback.headerRow, fallback.headerRow, 0);
+            const minimumDataStart = headerRow > 0 ? headerRow + 1 : 1;
+
+            return {
+                excel: {
+                    headerRow,
+                    dataStartRow: normalizeExcelRowNumber(dataStartRowInput ? dataStartRowInput.value : fallback.dataStartRow, Math.max(fallback.dataStartRow, minimumDataStart), minimumDataStart),
+                    inferTypes: inferTypesInput ? inferTypesInput.checked : fallback.inferTypes
+                }
+            };
+        }
+
+        function reloadWithExcelOptions(reset) {
+            if (!isExcelSource()) {
+                return;
+            }
+
+            currentSourceOptions = reset
+                ? getDefaultSourceOptions(currentSourceFormat || currentFileType)
+                : normalizeSourceOptions(readExcelOptionsFromControls(), currentSourceFormat || currentFileType);
+            renderExcelFileOptions();
+            currentDoctor = null;
+            renderDoctorPanel(null);
+            currentQuery = DEFAULT_QUERY;
+            currentOffset = 0;
+            const queryInput = document.getElementById('query-input');
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
+            setLoading(reset ? 'Reloading Excel with default options...' : 'Reloading Excel...');
+            vscode.postMessage({
+                type: 'query',
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
+            });
+        }
+
+        function renderTextEditorOption() {
+            const hidden = !isTextEditorSource();
+            setCapabilityElementHidden(document.getElementById('header-open-text-editor-btn'), hidden);
+            setCapabilityElementHidden(document.getElementById('open-text-editor-btn'), hidden);
+        }
+
+        function renderTransformControls() {
+            const saveButton = document.getElementById('save-edits-btn');
+            if (saveButton) {
+                saveButton.textContent = 'Save ' + formatFileTypeLabel(currentSourceFormat || currentFileType) + ' Copy...';
+            }
+        }
+
+        function formatBytes(value) {
+            const bytes = Number(value);
+            if (!Number.isFinite(bytes) || bytes <= 0) {
+                return '0 B';
+            }
+
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let amount = bytes;
+            let unitIndex = 0;
+            while (amount >= 1024 && unitIndex < units.length - 1) {
+                amount = amount / 1024;
+                unitIndex += 1;
+            }
+
+            return (unitIndex === 0 ? String(Math.round(amount)) : amount.toFixed(amount >= 10 ? 1 : 2)) + ' ' + units[unitIndex];
+        }
+
+        function renderTextPreviewPanel() {
+            const queryContainer = document.getElementById('query-container');
+            const textContainer = document.getElementById('text-preview-container');
+            const contentElement = document.getElementById('text-preview-content');
+            const lineElement = document.getElementById('text-preview-lines');
+            const sizeElement = document.getElementById('text-preview-size');
+            const truncatedElement = document.getElementById('text-preview-truncated');
+            const showTextPreview = isTextOnlySource();
+
+            setCapabilityElementHidden(queryContainer, showTextPreview);
+            setCapabilityElementHidden(textContainer, !showTextPreview);
+
+            if (!showTextPreview || !textContainer || !contentElement) {
+                return;
+            }
+
+            const preview = currentTextPreview || {};
+            contentElement.textContent = preview.content || '';
+            if (lineElement) {
+                lineElement.textContent = formatCount(preview.lineCount || 0);
+            }
+            if (sizeElement) {
+                sizeElement.textContent = formatBytes(preview.sizeBytes || 0);
+            }
+            if (truncatedElement) {
+                setCapabilityElementHidden(truncatedElement, !preview.truncated);
+            }
+        }
+
+        function relationKey(relation) {
+            if (!relation) {
+                return '';
+            }
+
+            return [
+                relation.database || '',
+                relation.schema || '',
+                relation.name || '',
+                relation.type || ''
+            ].join('\\u001f');
+        }
+
+        function formatRelationLabel(relation) {
+            if (!relation) {
+                return '';
+            }
+
+            const schemaName = relation.schema ? relation.schema + '.' + relation.name : relation.name;
+            const typeLabel = relation.type === 'VIEW' ? 'view' : 'table';
+            return schemaName + ' (' + typeLabel + ')';
+        }
+
+        function getSelectedRelationPayload() {
+            return currentSelectedRelation ? { ...currentSelectedRelation } : null;
+        }
+
+        function updateRelations(data) {
+            currentRelations = Array.isArray(data && data.relations) ? data.relations : [];
+            currentSelectedRelation = data && data.selectedRelation ? data.selectedRelation : null;
+            renderRelationPicker();
+        }
+
+        function renderRelationPicker() {
+            const pickerWrap = document.getElementById('relation-picker-wrap');
+            const picker = document.getElementById('relation-picker');
+            if (!pickerWrap || !picker) {
+                return;
+            }
+
+            picker.innerHTML = '';
+            if (currentRelations.length <= 1) {
+                pickerWrap.classList.add('hidden');
+                return;
+            }
+
+            currentRelations.forEach((relation) => {
+                const option = document.createElement('option');
+                option.value = relationKey(relation);
+                option.textContent = formatRelationLabel(relation);
+                picker.appendChild(option);
+            });
+
+            picker.value = relationKey(currentSelectedRelation) || relationKey(currentRelations[0]);
+            pickerWrap.classList.remove('hidden');
+        }
+
+        function selectRelationFromPicker() {
+            const picker = document.getElementById('relation-picker');
+            if (!picker) {
+                return;
+            }
+
+            const nextRelation = currentRelations.find((relation) => relationKey(relation) === picker.value);
+            if (!nextRelation || relationKey(nextRelation) === relationKey(currentSelectedRelation)) {
+                return;
+            }
+
+            currentSelectedRelation = nextRelation;
+            currentDoctor = null;
+            renderDoctorPanel(null);
+            currentQuery = DEFAULT_QUERY;
+            const queryInput = document.getElementById('query-input');
+            if (queryInput) {
+                queryInput.value = currentQuery;
+            }
+            currentOffset = 0;
+            setLoading('Loading ' + formatRelationLabel(nextRelation) + '...');
+            vscode.postMessage({
+                type: 'query',
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload(),
+                offset: currentOffset,
+                limit: currentLimit
+            });
+        }
+
         function formatFileTypeLabel(fileType) {
-            if (fileType === 'csv') {
+            const normalizedFileType = String(fileType || '').toLowerCase();
+            if (normalizedFileType === 'csv') {
                 return 'CSV';
             }
-            if (fileType === 'sqlite') {
+            if (normalizedFileType === 'sqlite') {
                 return 'SQLite';
             }
-            if (fileType === 'tsv') {
+            if (normalizedFileType === 'tsv') {
                 return 'TSV';
             }
-            if (fileType === 'psv') {
+            if (normalizedFileType === 'psv') {
                 return 'PSV';
             }
-            if (fileType === 'json') {
+            if (normalizedFileType === 'json') {
                 return 'JSON';
             }
-            if (fileType === 'jsonl') {
+            if (normalizedFileType === 'jsonl') {
                 return 'JSONL';
             }
-            if (fileType === 'ndjson') {
+            if (normalizedFileType === 'ndjson') {
                 return 'NDJSON';
             }
-            if (fileType === 'avro') {
+            if (normalizedFileType === 'avro') {
                 return 'Avro';
             }
-            if (fileType === 'orc') {
+            if (normalizedFileType === 'orc') {
                 return 'ORC';
             }
-            if (fileType === 'arrow') {
+            if (normalizedFileType === 'arrow') {
                 return 'Arrow';
             }
-            if (fileType === 'feather') {
+            if (normalizedFileType === 'feather') {
                 return 'Feather';
             }
-            if (fileType === 'ipc') {
+            if (normalizedFileType === 'ipc') {
                 return 'IPC';
             }
-            return fileType === 'duckdb' ? 'DuckDB' : 'Parquet';
+            if (normalizedFileType === 'excel' || normalizedFileType === 'xlsx' || normalizedFileType === 'xls') {
+                return 'Excel';
+            }
+            if (normalizedFileType === 'sqlite3') {
+                return 'SQLite';
+            }
+            if (normalizedFileType === 'workspace') {
+                return 'Workspace';
+            }
+            return normalizedFileType === 'duckdb' ? 'DuckDB' : 'Parquet';
         }
 
         function formatExportLabel(format) {
@@ -880,7 +1673,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 orc: 'ORC',
                 arrow: 'Arrow',
                 feather: 'Feather',
-                ipc: 'IPC'
+                ipc: 'IPC',
+                excel: 'Excel',
+                workspace: 'Workspace'
             };
             return labels[format] || String(format || '').toUpperCase();
         }
@@ -909,6 +1704,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function setActiveView(viewName) {
+            if (!isViewAvailable(viewName)) {
+                const requestedGroup = VIEW_TO_GROUP[viewName];
+                const fallbackInGroup = requestedGroup ? getAvailableViewsForGroup(requestedGroup)[0] : undefined;
+                viewName = fallbackInGroup || getFirstAvailableView();
+            }
+
             const dataView = document.getElementById('data-view');
             const edaContainer = document.getElementById('eda-container');
             const writeContainer = document.getElementById('write-container');
@@ -919,19 +1720,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const schemaContainer = document.getElementById('schema-container');
             const compareContainer = document.getElementById('compare-container');
             const joinContainer = document.getElementById('join-container');
-            const viewToGroup = {
-                data: 'explore',
-                eda: 'explore',
-                visualizer: 'explore',
-                schema: 'explore',
-                edit: 'transform',
-                write: 'transform',
-                export: 'export',
-                compare: 'combine',
-                join: 'combine',
-                doctor: 'quality'
-            };
-            const activeGroup = viewToGroup[viewName] || 'explore';
+            const activeGroup = VIEW_TO_GROUP[viewName] || 'explore';
 
             const showEda = viewName === 'eda';
             const showWrite = viewName === 'write';
@@ -1196,9 +1985,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const dateProfiles = profiles.filter((profile) => profile.inferredType === 'date');
             const highMissing = profiles.filter((profile) => profile.missingRatio >= 0.2);
             const mostlyUnique = profiles.filter((profile) => profile.presentCount > 1 && profile.distinctRatio >= 0.95);
-
-            if (currentResultLimited && currentTotalRows > currentRows.length) {
-                suggestions.push('EDA is based on the current ' + formatCount(currentRows.length) + ' displayed rows from ' + formatCount(currentTotalRows) + ' total rows. Run a narrower query or aggregate for full-file confidence.');
+            if (currentHasMore) {
+                suggestions.push('EDA is based on the currently loaded page (' + formatCount(currentRows.length) + ' rows). Load more pages or aggregate for full-file confidence.');
             }
             if (numericProfiles.length && categoricalProfiles.length) {
                 suggestions.push('Compare numeric metrics by ' + categoricalProfiles[0].column + ' using Quick Aggregations or the Visualize tab.');
@@ -1562,6 +2350,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             return schema;
         }
 
+        function quoteSqlIdentifier(value) {
+            return '"' + String(value).replace(/"/g, '""') + '"';
+        }
+
         function createParquetFromWrite() {
             if (!writeRows.length || !writeSchema.length) {
                 refreshWritePreview();
@@ -1577,24 +2369,36 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 const compression = document.getElementById('write-compression');
                 const rowGroupInput = document.getElementById('write-row-group-size');
                 const rowGroupSize = Math.min(10000000, Math.max(1, Number(rowGroupInput ? rowGroupInput.value : 100000) || 100000));
-                const rows = writeRows.map((row) => {
-                    const outputRow = {};
-                    schema.forEach((column) => {
-                        outputRow[column.name] = row[column.sourceName];
+                
+                const payloadOptions = {
+                    columns: schema.map((column) => ({ name: column.name, type: column.type })),
+                    compression: compression ? compression.value : 'snappy',
+                    rowGroupSize
+                };
+
+                const writeSource = document.getElementById('write-source');
+                if (writeSource && writeSource.value === 'current') {
+                    const selectParts = schema.map((column) => 'TRY_CAST(' + quoteSqlIdentifier(column.sourceName) + ' AS ' + column.type + ') AS ' + quoteSqlIdentifier(column.name));
+                    const query = 'SELECT ' + selectParts.join(', ') + ' FROM (' + currentQuery + ')';
+                    payloadOptions.query = query;
+                } else {
+                    const rows = writeRows.map((row) => {
+                        const outputRow = {};
+                        schema.forEach((column) => {
+                            outputRow[column.name] = row[column.sourceName];
+                        });
+                        return outputRow;
                     });
-                    return outputRow;
-                });
+                    payloadOptions.rows = rows;
+                }
 
                 setStatus('Creating Parquet...', 'status-loading');
                 setWriteMessage('', false);
                 vscode.postMessage({
                     type: 'createParquet',
-                    options: {
-                        columns: schema.map((column) => ({ name: column.name, type: column.type })),
-                        rows,
-                        compression: compression ? compression.value : 'snappy',
-                        rowGroupSize
-                    }
+                    options: payloadOptions,
+                    selectedRelation: getSelectedRelationPayload(),
+                    sourceOptions: getSourceOptionsPayload()
                 });
             } catch (error) {
                 setWriteMessage(error instanceof Error ? error.message : String(error), true);
@@ -2287,12 +3091,17 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
         function syncAggregationControls() {
             const aggregationFunction = document.getElementById('aggregation-function');
+            const valueColumnLabel = document.getElementById('aggregation-value-column-label');
             const valueColumn = document.getElementById('aggregation-value-column');
             if (!aggregationFunction || !valueColumn) {
                 return;
             }
 
-            valueColumn.disabled = aggregationFunction.value === 'count';
+            const metricRequired = aggregationFunction.value !== 'count';
+            valueColumn.disabled = !metricRequired;
+            if (valueColumnLabel) {
+                valueColumnLabel.classList.toggle('hidden', !metricRequired);
+            }
         }
 
         function runQuickAggregation() {
@@ -2324,7 +3133,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 queryInput.value = query;
             }
             setLoading('Running aggregation...');
-            vscode.postMessage({ type: 'query', query });
+            vscode.postMessage({
+                type: 'query',
+                query,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload()
+            });
         }
 
         function resetQuickAggregation() {
@@ -2346,7 +3160,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 queryInput.value = currentQuery;
             }
             setLoading('Resetting aggregation...');
-            vscode.postMessage({ type: 'query', query: currentQuery });
+            vscode.postMessage({
+                type: 'query',
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload()
+            });
         }
 
         function resetJoinState() {
@@ -2419,7 +3238,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             setStatus('Previewing join...', 'status-loading');
             vscode.postMessage({
                 type: 'runJoin',
-                options: { baseColumn, joinColumn, joinType, limit }
+                options: { baseColumn, joinColumn, joinType, limit },
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload()
             });
         }
 
@@ -2544,7 +3365,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 sourceType.textContent = formatFileTypeLabel(currentSourceFormat || currentFileType);
             }
             if (rowCount) {
-                rowCount.textContent = formatCount(currentTotalRows);
+                const loadedEnd = currentOffset + currentRows.length;
+                rowCount.textContent = currentHasMore ? formatCount(loadedEnd) + '+' : formatCount(loadedEnd);
             }
             if (querySummary) {
                 const queryText = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : currentQuery || DEFAULT_QUERY;
@@ -2564,7 +3386,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             refreshExportPanel();
             setExportMessage('Exporting ' + formatExportLabel(format) + '...', false);
             setStatus('Exporting ' + formatExportLabel(format) + '...', 'status-loading');
-            vscode.postMessage({ type: 'export', format, query: currentQuery });
+            vscode.postMessage({
+                type: 'export',
+                format,
+                query: currentQuery,
+                selectedRelation: getSelectedRelationPayload(),
+                relations: currentRelations,
+                sourceOptions: getSourceOptionsPayload()
+            });
         }
 
         function handleExportResult(result) {
@@ -2579,7 +3408,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 return;
             }
 
-            const message = 'Exported ' + formatCount(result.rowsExported) + ' rows to ' + formatExportLabel(result.format);
+            const message = result.filesExported
+                ? 'Exported ' + formatCount(result.filesExported) + ' files with ' + formatCount(result.rowsExported) + ' rows to ZIP'
+                : 'Exported ' + formatCount(result.rowsExported) + ' rows to ' + formatExportLabel(result.format);
             setExportMessage(message, false);
             setStatus(message, 'status-success');
         }
@@ -2853,7 +3684,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             renderEditPanel();
         }
 
-        function saveEditedParquet() {
+        function saveEditedData() {
             if (!currentColumns.length) {
                 setStatus('No editable data loaded', 'status-error');
                 return;
@@ -2871,9 +3702,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 return;
             }
 
-            setStatus('Saving new Parquet...', 'status-loading');
+            setStatus('Saving edited ' + formatFileTypeLabel(currentSourceFormat || currentFileType) + '...', 'status-loading');
             vscode.postMessage({
-                type: 'saveEditedParquet',
+                type: 'saveEditedData',
+                sourceFormat: currentSourceFormat || currentFileType,
                 columns: columnValidation.columns,
                 rows: buildRenamedEditRows(columnValidation.columns)
             });
@@ -2897,9 +3729,10 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 return;
             }
 
-            const outputPath = result.outputPath || 'the new Parquet file';
-            const successText = 'Saved ' + formatCount(result.rowsExported) + ' rows as a new Parquet file. To view the changes, open ' + outputPath + '.';
-            setStatus('Saved new Parquet', 'status-success');
+            const formatLabel = formatExportLabel(result.format || 'parquet');
+            const outputPath = result.outputPath || 'the new ' + formatLabel + ' file';
+            const successText = 'Saved ' + formatCount(result.rowsExported) + ' rows as a new ' + formatLabel + ' file. To view the changes, open ' + outputPath + '.';
+            setStatus('Saved new ' + formatLabel, 'status-success');
 
             if (message) {
                 message.textContent = successText;
@@ -3263,7 +4096,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             doctorRequestInFlight = true;
             setActiveView('doctor');
             setStatus('Running data file doctor checks...', 'status-loading');
-            vscode.postMessage({ type: 'runDoctor' });
+            vscode.postMessage({
+                type: 'runDoctor',
+                selectedRelation: getSelectedRelationPayload(),
+                sourceOptions: getSourceOptionsPayload()
+            });
         }
 
         function renderDoctorNotLoadedState(message) {
@@ -3794,6 +4631,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         }
 
         function updateView(data) {
+            const previousActiveView = getActiveViewName();
             const statusElement = document.getElementById('status');
             const errorContainer = document.getElementById('error-container');
             const errorText = document.getElementById('error-text');
@@ -3802,13 +4640,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const queryLimitMessage = document.getElementById('query-limit-message');
 
             currentFileType = normalizeFileType(data && data.fileType);
-            currentSourceFormat = normalizeExportFormat(data && (data.sourceFormat || data.fileType));
+            currentSourceFormat = normalizeSourceFormat(data && (data.sourceFormat || data.fileType));
+            currentSourceOptions = normalizeSourceOptions(data && data.sourceOptions, currentSourceFormat || currentFileType);
+            currentTextPreview = data && data.textPreview ? data.textPreview : null;
             updateSourceTypeBadge();
+            updateRelations(data);
 
-            // Hide loading container
             loadingContainer.classList.add('hidden');
 
-            // Reset all states
             errorContainer.classList.add('hidden');
             dataContainer.classList.add('hidden');
             statusElement.classList.remove('status-success', 'status-error', 'status-loading');
@@ -3821,6 +4660,18 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 } else if (!currentDoctor) {
                     renderDoctorPanel(null);
                 }
+                currentColumns = [];
+                currentRows = [];
+                currentOffset = 0;
+                currentHasMore = false;
+                currentTextPreview = null;
+                applyFeatureAvailability(data);
+                renderFlatFileOptions();
+                renderJsonFileOptions();
+                renderExcelFileOptions();
+                renderTextEditorOption();
+                renderTextPreviewPanel();
+                setActiveView(currentDoctor ? 'doctor' : 'data');
                 errorText.textContent = data.error || 'Unknown error occurred';
                 errorContainer.classList.remove('hidden');
                 statusElement.textContent = 'Error';
@@ -3829,9 +4680,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             }
             
             // Update summary information
-            document.getElementById('total-rows').textContent = typeof data.totalRows === 'number'
-                ? formatCount(data.totalRows)
-                : '-';
+            const loadedStart = data.rowCount > 0 ? data.offset + 1 : 0;
+            const loadedEnd = data.offset + data.rowCount;
+            document.getElementById('total-rows').textContent = data.hasMore ? formatCount(loadedEnd) + '+' : formatCount(loadedEnd);
             document.getElementById('showing-rows').textContent = formatCount(data.rowCount);
             document.getElementById('column-count').textContent = data.columns ? data.columns.length : 0;
             if (data.query) {
@@ -3842,28 +4693,53 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 }
             }
 
-            if (data.resultLimited) {
-                queryLimitMessage.classList.remove('hidden');
+            // Update pagination UI
+            const paginationControls = document.getElementById('pagination-controls');
+            if (paginationControls) {
+                paginationControls.classList.remove('hidden');
+                
+                const prevBtn = document.getElementById('prev-page-btn');
+                if (prevBtn) {
+                    prevBtn.disabled = data.offset === 0;
+                }
+                
+                const nextBtn = document.getElementById('next-page-btn');
+                if (nextBtn) {
+                    nextBtn.disabled = !data.hasMore;
+                }
+                
+                const pageInfo = document.getElementById('page-info');
+                if (pageInfo) {
+                    pageInfo.textContent = formatCount(loadedStart) + ' - ' + formatCount(loadedEnd);
+                }
+
+                const pageSizeSelect = document.getElementById('page-size-select');
+                if (pageSizeSelect) {
+                    pageSizeSelect.value = String(data.limit || 1000);
+                }
             }
 
             if (data.schema) {
                 currentSchema = data.schema;
                 renderSchemaPanel(currentSchema);
+            } else {
+                currentSchema = null;
             }
 
             if (data.doctor) {
                 currentDoctor = data.doctor;
                 renderDoctorPanel(currentDoctor);
-            } else if (!currentDoctor) {
+            } else if (isTextOnlySource() || !currentDoctor) {
+                currentDoctor = null;
                 renderDoctorPanel(null);
             }
 
             currentColumns = data.columns || [];
             currentRows = cloneRows(data.data || []);
-            currentTotalRows = typeof data.totalRows === 'number'
-                ? data.totalRows
-                : currentRows.length;
-            currentResultLimited = Boolean(data.resultLimited);
+            currentOffset = data.offset || 0;
+            currentLimit = data.limit || 1000;
+            currentHasMore = Boolean(data.hasMore);
+            
             editRows = cloneRows(currentRows);
             resetEditColumnNames();
             renderEditPanel();
@@ -3873,16 +4749,31 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             renderEdaPanel();
             refreshWritePreview();
             refreshExportPanel();
+            renderTransformControls();
             populateVisualizerControls();
             renderVisualizer();
+            applyFeatureAvailability(data);
+            renderFlatFileOptions();
+            renderJsonFileOptions();
+            renderExcelFileOptions();
+            renderTextEditorOption();
+            renderTextPreviewPanel();
+            setActiveView(isViewAvailable(previousActiveView) ? previousActiveView : getFirstAvailableView());
+
+            if (isTextOnlySource()) {
+                dataContainer.classList.add('hidden');
+                statusElement.textContent = 'Loaded Markdown';
+                statusElement.classList.add('status-success');
+                return;
+            }
              
             // Create table
             if (data.columns) {
                 applyTableView();
                 dataContainer.classList.remove('hidden');
                 statusElement.textContent = 'Loaded ' + formatCount(data.rowCount) + ' rows';
-                if (data.resultLimited) {
-                    statusElement.textContent += ' (limited)';
+                if (data.hasMore) {
+                    statusElement.textContent += ' (more available)';
                 }
                 statusElement.classList.add('status-success');
             } else {
@@ -4171,6 +5062,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         document.addEventListener('DOMContentLoaded', () => {
             
             const refreshBtn = document.getElementById('refresh-btn');
+            const headerOpenTextEditorBtn = document.getElementById('header-open-text-editor-btn');
             const exploreTab = document.getElementById('explore-tab');
             const transformTab = document.getElementById('transform-tab');
             const combineTab = document.getElementById('combine-tab');
@@ -4187,6 +5079,8 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const joinTab = document.getElementById('join-tab');
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
+            const openTextEditorBtn = document.getElementById('open-text-editor-btn');
+            const dataControlsToggleBtn = document.getElementById('data-controls-toggle-btn');
             const runAggregationBtn = document.getElementById('run-aggregation-btn');
             const resetAggregationBtn = document.getElementById('reset-aggregation-btn');
             const aggregationFunction = document.getElementById('aggregation-function');
@@ -4225,6 +5119,13 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const joinType = document.getElementById('join-type');
             const joinLimit = document.getElementById('join-limit');
             const queryInput = document.getElementById('query-input');
+            const relationPicker = document.getElementById('relation-picker');
+            const applyFlatFileOptionsBtn = document.getElementById('apply-flat-file-options-btn');
+            const resetFlatFileOptionsBtn = document.getElementById('reset-flat-file-options-btn');
+            const applyJsonOptionsBtn = document.getElementById('apply-json-options-btn');
+            const resetJsonOptionsBtn = document.getElementById('reset-json-options-btn');
+            const applyExcelOptionsBtn = document.getElementById('apply-excel-options-btn');
+            const resetExcelOptionsBtn = document.getElementById('reset-excel-options-btn');
             const schemaSearchInput = document.getElementById('schema-search-input');
             const copySchemaJsonBtn = document.getElementById('copy-schema-json-btn');
             const generateSchemaDocsBtn = document.getElementById('generate-schema-docs-btn');
@@ -4324,20 +5225,109 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     setActiveView('join');
                 });
             }
+
+            [headerOpenTextEditorBtn, openTextEditorBtn].forEach((textEditorButton) => {
+                if (!textEditorButton) {
+                    return;
+                }
+
+                textEditorButton.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'openAsText' });
+                });
+            });
+
+            if (dataControlsToggleBtn) {
+                dataControlsToggleBtn.addEventListener('click', () => {
+                    dataControlsCollapsed = !dataControlsCollapsed;
+                    applyDataControlsCollapsedState();
+                });
+            }
             
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
                     currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : currentQuery;
                     setLoading('Refreshing...');
-                    vscode.postMessage({ type: 'refresh', query: currentQuery });
+                    vscode.postMessage({
+                        type: 'refresh',
+                        query: currentQuery,
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload(),
+                        offset: currentOffset,
+                        limit: currentLimit
+                    });
                 });
             }
 
             if (runQueryBtn) {
                 runQueryBtn.addEventListener('click', () => {
                     currentQuery = queryInput ? queryInput.value.trim() || DEFAULT_QUERY : DEFAULT_QUERY;
+                    currentOffset = 0; // Reset pagination when running a new query
                     setLoading('Running query...');
-                    vscode.postMessage({ type: 'query', query: currentQuery });
+                    vscode.postMessage({
+                        type: 'query',
+                        query: currentQuery,
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload(),
+                        offset: currentOffset,
+                        limit: currentLimit
+                    });
+                });
+            }
+
+            const prevPageBtn = document.getElementById('prev-page-btn');
+            const nextPageBtn = document.getElementById('next-page-btn');
+            const pageSizeSelect = document.getElementById('page-size-select');
+
+            if (prevPageBtn) {
+                prevPageBtn.addEventListener('click', () => {
+                    if (currentOffset > 0) {
+                        currentOffset = Math.max(0, currentOffset - currentLimit);
+                        setLoading('Loading previous page...');
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: currentOffset,
+                            limit: currentLimit
+                        });
+                    }
+                });
+            }
+
+            if (nextPageBtn) {
+                nextPageBtn.addEventListener('click', () => {
+                    if (currentHasMore) {
+                        currentOffset += currentLimit;
+                        setLoading('Loading next page...');
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: currentOffset,
+                            limit: currentLimit
+                        });
+                    }
+                });
+            }
+
+            if (pageSizeSelect) {
+                pageSizeSelect.addEventListener('change', (e) => {
+                    const newLimit = parseInt(e.target.value, 10);
+                    if (!isNaN(newLimit) && newLimit > 0) {
+                        currentLimit = newLimit;
+                        currentOffset = 0; // Reset offset when page size changes
+                        setLoading('Changing page size...');
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: currentOffset,
+                            limit: currentLimit
+                        });
+                    }
                 });
             }
 
@@ -4348,7 +5338,14 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                         queryInput.value = currentQuery;
                     }
                     setLoading('Resetting query...');
-                    vscode.postMessage({ type: 'query', query: currentQuery });
+                    vscode.postMessage({
+                        type: 'query',
+                        query: currentQuery,
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload(),
+                        offset: 0,
+                        limit: currentLimit
+                    });
                 });
             }
 
@@ -4359,8 +5356,55 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                         event.preventDefault();
                         currentQuery = queryInput.value.trim() || DEFAULT_QUERY;
                         setLoading('Running query...');
-                        vscode.postMessage({ type: 'query', query: currentQuery });
+                        vscode.postMessage({
+                            type: 'query',
+                            query: currentQuery,
+                            selectedRelation: getSelectedRelationPayload(),
+                            sourceOptions: getSourceOptionsPayload(),
+                            offset: 0,
+                            limit: currentLimit
+                        });
                     }
+                });
+            }
+
+            if (relationPicker) {
+                relationPicker.addEventListener('change', selectRelationFromPicker);
+            }
+
+            if (applyFlatFileOptionsBtn) {
+                applyFlatFileOptionsBtn.addEventListener('click', () => {
+                    reloadWithFlatFileOptions(false);
+                });
+            }
+
+            if (resetFlatFileOptionsBtn) {
+                resetFlatFileOptionsBtn.addEventListener('click', () => {
+                    reloadWithFlatFileOptions(true);
+                });
+            }
+
+            if (applyJsonOptionsBtn) {
+                applyJsonOptionsBtn.addEventListener('click', () => {
+                    reloadWithJsonOptions(false);
+                });
+            }
+
+            if (resetJsonOptionsBtn) {
+                resetJsonOptionsBtn.addEventListener('click', () => {
+                    reloadWithJsonOptions(true);
+                });
+            }
+
+            if (applyExcelOptionsBtn) {
+                applyExcelOptionsBtn.addEventListener('click', () => {
+                    reloadWithExcelOptions(false);
+                });
+            }
+
+            if (resetExcelOptionsBtn) {
+                resetExcelOptionsBtn.addEventListener('click', () => {
+                    reloadWithExcelOptions(true);
                 });
             }
 
@@ -4460,7 +5504,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
             if (saveEditsBtn) {
                 saveEditsBtn.addEventListener('click', () => {
-                    saveEditedParquet();
+                    saveEditedData();
                 });
             }
 
@@ -4516,7 +5560,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 doctorSchemaDriftBtn.addEventListener('click', () => {
                     setActiveView('doctor');
                     setStatus('Choosing reference file...', 'status-loading');
-                    vscode.postMessage({ type: 'selectDoctorReferenceFile' });
+                    vscode.postMessage({
+                        type: 'selectDoctorReferenceFile',
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload()
+                    });
                 });
             }
 
@@ -4534,7 +5582,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     setStatus('Choosing compare file...', 'status-loading');
                     vscode.postMessage({
                         type: 'selectCompareFile',
-                        customMappingEnabled: customCompareToggle ? customCompareToggle.checked : false
+                        customMappingEnabled: customCompareToggle ? customCompareToggle.checked : false,
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload()
                     });
                 });
             }
@@ -4548,7 +5598,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
                     setActiveView('compare');
                     setStatus('Running Smart Diff...', 'status-loading');
-                    vscode.postMessage({ type: 'runSmartDiff' });
+                    vscode.postMessage({
+                        type: 'runSmartDiff',
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload()
+                    });
                 });
             }
 
@@ -4556,7 +5610,11 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                 selectJoinFileBtn.addEventListener('click', () => {
                     setActiveView('join');
                     setStatus('Choosing join file...', 'status-loading');
-                    vscode.postMessage({ type: 'selectJoinFile' });
+                    vscode.postMessage({
+                        type: 'selectJoinFile',
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload()
+                    });
                 });
             }
 
@@ -4588,7 +5646,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
                     setActiveView('compare');
                     setStatus('Running strict compare...', 'status-loading');
-                    vscode.postMessage({ type: 'runStrictCompare', orderMapping });
+                    vscode.postMessage({
+                        type: 'runStrictCompare',
+                        orderMapping,
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload()
+                    });
                 });
             }
 
@@ -4608,7 +5671,13 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
                     setActiveView('compare');
                     setStatus('Running custom compare...', 'status-loading');
-                    vscode.postMessage({ type: 'runCustomCompare', mappings, orderMapping });
+                    vscode.postMessage({
+                        type: 'runCustomCompare',
+                        mappings,
+                        orderMapping,
+                        selectedRelation: getSelectedRelationPayload(),
+                        sourceOptions: getSourceOptionsPayload()
+                    });
                 });
             }
 
@@ -4715,6 +5784,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     break;
                 case 'doctorResult':
                     doctorRequestInFlight = false;
+                    updateRelations(message.result);
                     currentDoctor = message.result && message.result.doctor ? message.result.doctor : null;
                     renderDoctorPanel(currentDoctor);
                     setStatus(message.result && message.result.success ? 'Doctor checks complete' : (message.result && message.result.error) || 'Doctor checks failed', message.result && message.result.success ? 'status-success' : 'status-error');
@@ -4862,6 +5932,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             text-transform: uppercase;
         }
         .query-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+        .data-controls-body {
+            display: flex; flex-direction: column; gap: 8px;
+        }
         #query-input {
             width: 100%; min-height: 96px; resize: vertical; padding: 10px;
             border: 1px solid var(--vscode-input-border);
@@ -4882,6 +5955,95 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         .query-meta code {
             font-family: var(--vscode-editor-font-family);
             color: var(--vscode-textPreformat-foreground);
+        }
+        .relation-picker {
+            display: inline-flex; align-items: center; gap: 6px;
+            color: var(--vscode-descriptionForeground);
+        }
+        .relation-picker select {
+            min-width: 180px; max-width: min(420px, 70vw); min-height: 28px;
+            padding: 4px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+        }
+        .flat-file-options {
+            display: grid; grid-template-columns: minmax(98px, auto) repeat(5, minmax(74px, 1fr)) auto;
+            gap: 8px; align-items: end; padding: 10px 12px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .flat-file-options label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .flat-file-header-toggle {
+            min-height: 32px; justify-content: center;
+        }
+        .flat-file-header-toggle input {
+            width: auto;
+        }
+        .flat-file-options input[type="text"], .flat-file-options select {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+        .flat-file-actions {
+            display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr));
+            gap: 8px;
+        }
+        .json-file-options {
+            display: grid; grid-template-columns: minmax(150px, auto) minmax(180px, 1fr) auto;
+            gap: 8px; align-items: end; padding: 10px 12px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .json-file-options label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .json-flatten-toggle {
+            min-height: 32px; justify-content: center;
+        }
+        .json-flatten-toggle input {
+            width: auto;
+        }
+        .json-file-options input[type="text"] {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+        .json-file-actions {
+            display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr));
+            gap: 8px;
+        }
+        .excel-file-options {
+            display: grid; grid-template-columns: repeat(2, minmax(120px, 180px)) minmax(110px, auto) auto;
+            gap: 8px; align-items: end; padding: 10px 12px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .excel-file-options label {
+            display: flex; flex-direction: column; gap: 5px;
+            color: var(--vscode-descriptionForeground); font-size: 12px;
+        }
+        .excel-file-options input[type="number"] {
+            width: 100%; min-height: 32px; padding: 6px 8px; border-radius: 3px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+        .excel-infer-toggle {
+            min-height: 32px; justify-content: center;
+        }
+        .excel-infer-toggle input {
+            width: auto;
+        }
+        .excel-file-actions {
+            display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr));
+            gap: 8px;
         }
         .quick-aggregation {
             display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)) auto;
@@ -4905,6 +6067,23 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             color: var(--vscode-dropdown-foreground);
         }
         .data-container { display: flex; flex-direction: column; gap: 15px; }
+        .text-preview-container {
+            display: flex; flex-direction: column; gap: 14px;
+            padding: 14px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-sideBar-background);
+        }
+        .text-preview-summary {
+            display: flex; flex-wrap: wrap; gap: 10px;
+        }
+        .text-preview-content {
+            margin: 0; min-height: 360px; max-height: 70vh; overflow: auto;
+            padding: 14px; border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px; background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            font-family: var(--vscode-editor-font-family);
+            font-size: var(--vscode-editor-font-size);
+            line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+        }
         .table-tools {
             display: grid; grid-template-columns: minmax(130px, 1fr) minmax(120px, 0.7fr) minmax(240px, 1.4fr) auto;
             gap: 10px; align-items: end;
@@ -5567,6 +6746,12 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             min-width: 760px;
         }
         @media (max-width: 820px) {
+            .flat-file-options { grid-template-columns: 1fr; }
+            .flat-file-actions { grid-template-columns: 1fr; }
+            .json-file-options { grid-template-columns: 1fr; }
+            .json-file-actions { grid-template-columns: 1fr; }
+            .excel-file-options { grid-template-columns: 1fr; }
+            .excel-file-actions { grid-template-columns: 1fr; }
             .quick-aggregation { grid-template-columns: 1fr; }
             .aggregation-actions { grid-template-columns: 1fr; }
             .table-tools { grid-template-columns: 1fr; }

@@ -2,6 +2,51 @@
 
 All notable changes to File Hive, formerly Parquet-X, are documented here.
 
+## 1.2.x
+
+### [1.2.2] - 2026-09-04
+
+#### Added
+- Added a Data tab collapse control that hides query, source option, aggregation, and table tool controls so the data grid can use more space.
+
+#### Changed
+- Quick aggregations now hide the metric selector when using Count because Count runs against rows with `COUNT(*)`.
+
+### [1.2.1] - 2026-08-26
+
+#### Added
+- Added `.xlsx` (Excel) and `.sqlite3` file support to the data viewer.
+- Added `.xlsx` reload options for choosing the header row and first data row.
+- Excel reads default to text columns to avoid failures when a column mixes values like numbers and labels.
+- Added a **Mount Workspace Database** command that mounts the entire workspace as queryable views.
+- Added UI Pagination for viewing large datasets without performance degradation.
+- Dataset scans (partition analysis) are now available for all tabular datasets, not just Parquet.
+
+#### Changed
+- Removed `.markdown` and `.md` file support, as well as automatic `.json` interception for a less intrusive user experience.
+- The "Create Parquet" tool is now available for all tabular sources (CSV, DuckDB, JSON, Excel, etc.), not just Parquet files.
+
+#### Performance
+- Rewrote the "Create Parquet" (Write) engine to execute a native DuckDB `COPY` operation instead of serializing JSON between V8 and Python. File conversion overhead is gone!
+- Rewrote data "Export" engine to execute DuckDB native `COPY` for CSV, TSV, PSV, JSON, JSONL, and NDJSON files, making exports incredibly fast.
+
+### [1.2.0] - 2026-08-24
+
+#### Added
+- Added table/view discovery for multi-table DuckDB and SQLite files.
+- Added multi-relation export choices for database sources: export the current SQL result, one selected table/view, or every table/view as separate files in a ZIP archive.
+- Added table/view selection for multi-relation DuckDB and SQLite files used as Compare, Join, and Schema Drift secondary inputs.
+- Added CSV, TSV, and PSV reload options for header rows, delimiter overrides, encodings, quote characters, escape characters, and null-string handling.
+- Added JSON, JSONL, and NDJSON reload options for nested-field flattening and record-path selection.
+- Added Markdown file support with a text-only preview and only applicable viewer actions.
+- Added an Open as Text action for CSV, TSV, PSV, JSON, JSONL, NDJSON, and Markdown sources.
+
+#### Changed
+- DuckDB and SQLite files now expose available tables/views in the Data tab and preserve the selected relation across query, refresh, export, quick aggregation, and Doctor workflows.
+- Export save defaults now include the selected table/view name when exporting one relation from a multi-relation source.
+- Viewer tabs, subtabs, and Doctor panels now hide workflows that do not apply to the loaded source or current query result.
+- Edited result saves now write a same-format copy; use Export for format conversion.
+
 ## 1.1.x
 
 ### [1.1.5] - 2026-08-21

@@ -8,6 +8,8 @@ import difflib
 import hashlib
 import re
 import traceback
+import tempfile
+import zipfile
 
 MAX_RESULT_ROWS = 1000
 MAX_COMPARE_MISMATCHES = 1000
@@ -17,13 +19,16 @@ COMPARE_TABLE_NAME = "compare_data"
 SOURCE_INFO_TABLE_NAME = "__file_hive_source_info"
 SCHEMA_ROOT_NAMES = ("schema", "root")
 DUCKDB_FILE_EXTENSIONS = (".duckdb",)
-SQLITE_FILE_EXTENSIONS = (".sqlite", ".db")
+SQLITE_FILE_EXTENSIONS = (".sqlite", ".db", ".sqlite3")
+EXCEL_FILE_EXTENSIONS = (".xlsx", ".xls")
 AVRO_FILE_EXTENSIONS = (".avro",)
 ORC_FILE_EXTENSIONS = (".orc",)
 ARROW_FILE_EXTENSIONS = (".arrow",)
 FEATHER_FILE_EXTENSIONS = (".feather",)
 IPC_FILE_EXTENSIONS = (".ipc",)
 JSON_FILE_EXTENSIONS = (".json", ".jsonl", ".ndjson")
+MARKDOWN_FILE_EXTENSIONS = (".md", ".markdown")
+MAX_TEXT_PREVIEW_CHARS = 200000
 SUPPORTED_EXPORT_FORMATS = (
     "csv",
     "tsv",
@@ -43,6 +48,9 @@ SUPPORTED_EXPORT_FORMATS = (
 
 def sql_string(value):
     return "'" + value.replace("'", "''") + "'"
+
+def sql_bool(value):
+    return "TRUE" if bool(value) else "FALSE"
 
 def get_file_type(file_path):
     lower_path = str(file_path or "").lower()
@@ -70,12 +78,15 @@ def get_file_type(file_path):
         return "psv"
     if lower_path.endswith(JSON_FILE_EXTENSIONS):
         return "json"
+    if lower_path.endswith(EXCEL_FILE_EXTENSIONS):
+        return "excel"
 
-    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported.")
-
+    if lower_path.endswith(".workspace"):
+        return "workspace"
+    raise ValueError("Only .parquet, .workspace, .duckdb, .sqlite, .sqlite3, .db, .xlsx, .xls, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported.")
 def get_source_format(file_path):
     lower_path = str(file_path or "").lower()
-    if lower_path.endswith(".db"):
+    if lower_path.endswith((".db", ".sqlite3")):
         return "sqlite"
     if lower_path.endswith(".jsonl"):
         return "jsonl"
@@ -85,12 +96,56 @@ def get_source_format(file_path):
         return "duckdb"
     if lower_path.endswith(".sqlite"):
         return "sqlite"
+    if lower_path.endswith(".xlsx"):
+        return "xlsx"
+    if lower_path.endswith(".xls"):
+        return "xls"
 
     extension = os.path.splitext(lower_path)[1].lstrip(".")
     if extension in SUPPORTED_EXPORT_FORMATS:
         return extension
 
     return get_file_type(file_path)
+
+def read_markdown_file(file_path):
+    file_size = os.path.getsize(file_path)
+    with open(file_path, "r", encoding="utf-8", errors="replace") as markdown_file:
+        content = markdown_file.read(MAX_TEXT_PREVIEW_CHARS + 1)
+
+    truncated = len(content) > MAX_TEXT_PREVIEW_CHARS
+    if truncated:
+        content = content[:MAX_TEXT_PREVIEW_CHARS]
+
+    line_count = content.count("\n") + (1 if content else 0)
+    return {
+        "success": True,
+        "data": [],
+        "columns": [],
+        "rowCount": 0,
+        "totalRows": 0,
+        "query": None,
+        "resultLimited": False,
+        "fileType": "markdown",
+        "sourceFormat": "markdown",
+        "sourceOptions": {},
+        "relations": None,
+        "selectedRelation": None,
+        "schema": None,
+        "textPreview": {
+            "content": content,
+            "lineCount": line_count,
+            "sizeBytes": file_size,
+            "truncated": truncated
+        },
+        "debug": {
+            "file_path": file_path,
+            "file_type": "markdown",
+            "source_format": "markdown",
+            "file_size": file_size,
+            "preview_chars": len(content),
+            "preview_truncated": truncated
+        }
+    }
 
 def normalize_query(query):
     if query is None or not query.strip():
@@ -134,21 +189,291 @@ def create_legacy_table_alias(conn):
         f"SELECT * FROM {duckdb_identifier(TABLE_NAME)}"
     )
 
-def create_csv_view(conn, table_name, file_path):
+def default_delimited_text_options(file_type):
+    delimiter = ","
+    if file_type == "tsv":
+        delimiter = "\t"
+    elif file_type == "psv":
+        delimiter = "|"
+
+    return {
+        "header": True,
+        "delimiter": delimiter,
+        "encoding": "utf-8",
+        "quote": "\"",
+        "escape": "\"",
+        "nullString": ""
+    }
+
+SUPPORTED_DELIMITED_ENCODINGS = {
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
+    "latin-1": "latin-1",
+    "latin1": "latin-1",
+    "iso-8859-1": "latin-1",
+    "utf-16": "utf-16",
+    "utf16": "utf-16"
+}
+
+def normalize_delimited_text_options(file_type, source_options=None):
+    options = default_delimited_text_options(file_type)
+    delimited_options = {}
+
+    if isinstance(source_options, dict) and isinstance(source_options.get("delimitedText"), dict):
+        delimited_options = source_options.get("delimitedText") or {}
+
+    if "header" in delimited_options:
+        options["header"] = bool(delimited_options.get("header"))
+
+    for key, max_length in (("delimiter", 8), ("quote", 1), ("escape", 1), ("nullString", 64)):
+        if key not in delimited_options:
+            continue
+        value = delimited_options.get(key)
+        if value is None:
+            continue
+        text = str(value)
+        if key == "delimiter" and not text:
+            continue
+        options[key] = text[:max_length]
+
+    if "encoding" in delimited_options:
+        encoding = str(delimited_options.get("encoding") or "").strip().lower()
+        if encoding in SUPPORTED_DELIMITED_ENCODINGS:
+            options["encoding"] = SUPPORTED_DELIMITED_ENCODINGS[encoding]
+
+    return options
+
+def normalize_json_record_path(value):
+    text = str(value or "").strip()
+    if text.startswith("$."):
+        text = text[2:]
+    elif text == "$":
+        text = ""
+    elif text.startswith("."):
+        text = text[1:]
+
+    return text[:240]
+
+def normalize_json_options(source_options=None):
+    options = {
+        "flatten": False,
+        "recordPath": ""
+    }
+
+    json_options = {}
+    if isinstance(source_options, dict) and isinstance(source_options.get("json"), dict):
+        json_options = source_options.get("json") or {}
+
+    if "flatten" in json_options:
+        options["flatten"] = bool(json_options.get("flatten"))
+    if "recordPath" in json_options:
+        options["recordPath"] = normalize_json_record_path(json_options.get("recordPath"))
+
+    return options
+
+def normalize_excel_options(source_options=None):
+    options = {
+        "headerRow": 1,
+        "dataStartRow": 2,
+        "inferTypes": False
+    }
+
+    excel_options = {}
+    if isinstance(source_options, dict) and isinstance(source_options.get("excel"), dict):
+        excel_options = source_options.get("excel") or {}
+
+    def read_row_number(key, fallback, minimum):
+        try:
+            value = int(excel_options.get(key, fallback))
+        except (TypeError, ValueError):
+            value = fallback
+
+        return max(minimum, min(value, 1048576))
+
+    header_row = read_row_number("headerRow", options["headerRow"], 0)
+    minimum_data_start = header_row + 1 if header_row > 0 else 1
+    data_start_row = read_row_number(
+        "dataStartRow",
+        max(options["dataStartRow"], minimum_data_start),
+        minimum_data_start
+    )
+
+    return {
+        "headerRow": header_row,
+        "dataStartRow": data_start_row,
+        "inferTypes": bool(excel_options.get("inferTypes", options["inferTypes"]))
+    }
+
+def normalize_source_options(file_type, source_options=None):
+    if file_type in ("csv", "tsv", "psv"):
+        return {
+            "delimitedText": normalize_delimited_text_options(file_type, source_options)
+        }
+
+    if file_type == "json":
+        return {
+            "json": normalize_json_options(source_options)
+        }
+
+    if file_type == "excel":
+        return {
+            "excel": normalize_excel_options(source_options)
+        }
+
+    return None
+
+def source_options_key(file_type, source_options=None):
+    normalized = normalize_source_options(file_type, source_options)
+    if not normalized:
+        return None
+
+    return json.dumps(normalized, sort_keys=True)
+
+def build_delimited_read_options(options):
+    read_options = [
+        f"HEADER = {sql_bool(options.get('header', True))}",
+        f"DELIM = {sql_string(options.get('delimiter') or ',')}",
+        f"ENCODING = {sql_string(options.get('encoding') or 'utf-8')}"
+    ]
+
+    quote = options.get("quote")
+    if quote:
+        read_options.append(f"QUOTE = {sql_string(quote)}")
+
+    escape = options.get("escape")
+    if escape:
+        read_options.append(f"ESCAPE = {sql_string(escape)}")
+
+    null_string = options.get("nullString")
+    if null_string:
+        read_options.append(f"NULLSTR = {sql_string(null_string)}")
+
+    return ", ".join(read_options)
+
+def create_csv_view(conn, table_name, file_path, source_options=None):
     csv_path = sql_string(file_path)
+    options = normalize_delimited_text_options("csv", source_options)
+    read_options = build_delimited_read_options(options)
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
-        f"SELECT * FROM read_csv_auto({csv_path}, HEADER = TRUE)"
+        f"SELECT * FROM read_csv_auto({csv_path}, {read_options})"
     )
 
-def create_delimited_view(conn, table_name, file_path, delimiter):
+def create_delimited_view(conn, table_name, file_path, delimiter, source_options=None):
     data_path = sql_string(file_path)
+    file_type = "tsv" if delimiter == "\t" else "psv" if delimiter == "|" else "csv"
+    options = normalize_delimited_text_options(file_type, source_options)
+    read_options = build_delimited_read_options(options)
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
-        f"SELECT * FROM read_csv_auto({data_path}, HEADER = TRUE, DELIM = {sql_string(delimiter)})"
+        f"SELECT * FROM read_csv_auto({data_path}, {read_options})"
     )
 
-def create_json_view(conn, table_name, file_path):
+def split_json_record_path(record_path):
+    return [part for part in normalize_json_record_path(record_path).split(".") if part]
+
+def extract_json_record_path(value, record_path):
+    current = value
+    for part in split_json_record_path(record_path):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            index = int(part)
+            current = current[index] if 0 <= index < len(current) else None
+        else:
+            return None
+
+        if current is None:
+            return None
+
+    return current
+
+def coerce_json_record(value):
+    if isinstance(value, dict):
+        return value
+
+    return {"value": value}
+
+def flatten_json_record(value, prefix="", result=None):
+    if result is None:
+        result = {}
+
+    if isinstance(value, dict):
+        if not value and prefix:
+            result[prefix] = None
+        for key, child_value in value.items():
+            child_key = str(key)
+            next_prefix = f"{prefix}.{child_key}" if prefix else child_key
+            flatten_json_record(child_value, next_prefix, result)
+        return result
+
+    if isinstance(value, list):
+        result[prefix or "value"] = json.dumps(value, ensure_ascii=False)
+        return result
+
+    result[prefix or "value"] = value
+    return result
+
+def iter_json_records(file_path, record_path=""):
+    lower_path = str(file_path or "").lower()
+
+    def emit_from_value(value):
+        selected = extract_json_record_path(value, record_path) if record_path else value
+        if selected is None:
+            return []
+        if isinstance(selected, list):
+            return selected
+        return [selected]
+
+    if lower_path.endswith((".jsonl", ".ndjson")):
+        with open(file_path, "r", encoding="utf-8-sig") as source_file:
+            for line in source_file:
+                text = line.strip()
+                if not text:
+                    continue
+                for record in emit_from_value(json.loads(text)):
+                    yield record
+        return
+
+    with open(file_path, "r", encoding="utf-8-sig") as source_file:
+        value = json.load(source_file)
+
+    for record in emit_from_value(value):
+        yield record
+
+def create_transformed_json_table(conn, table_name, file_path, options):
+    temp_path = None
+    record_count = 0
+
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False, encoding="utf-8") as temp_file:
+            temp_path = temp_file.name
+            for raw_record in iter_json_records(file_path, options.get("recordPath") or ""):
+                record = flatten_json_record(raw_record) if options.get("flatten") else coerce_json_record(raw_record)
+                temp_file.write(json.dumps(record, ensure_ascii=False))
+                temp_file.write("\n")
+                record_count += 1
+
+        if record_count == 0:
+            raise ValueError("No JSON records matched the selected record path.")
+
+        conn.execute(
+            f"CREATE OR REPLACE TEMP TABLE {duckdb_identifier(table_name)} AS "
+            f"SELECT * FROM read_json_auto({sql_string(temp_path)})"
+        )
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+def create_json_view(conn, table_name, file_path, source_options=None):
+    options = normalize_json_options(source_options)
+    if options.get("flatten") or options.get("recordPath"):
+        create_transformed_json_table(conn, table_name, file_path, options)
+        return
+
     json_path = sql_string(file_path)
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
@@ -176,6 +501,132 @@ def create_avro_view(conn, table_name, file_path):
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
         f"SELECT * FROM read_avro({avro_path})"
+    )
+
+def ensure_spatial_extension(conn):
+    try:
+        conn.execute("LOAD spatial")
+        return
+    except Exception:
+        pass
+    try:
+        conn.execute("INSTALL spatial")
+        conn.execute("LOAD spatial")
+    except Exception as error:
+        raise RuntimeError(
+            "DuckDB spatial extension is not available. Run the environment setup with network access so DuckDB can install the spatial extension for reading Excel files."
+        ) from error
+
+def ensure_excel_extension(conn):
+    try:
+        conn.execute("LOAD excel")
+        return
+    except Exception:
+        pass
+    try:
+        conn.execute("INSTALL excel")
+        conn.execute("LOAD excel")
+    except Exception as error:
+        raise RuntimeError(
+            "DuckDB excel extension is not available. Run the environment setup with network access so DuckDB can install the excel extension for reading XLSX files."
+        ) from error
+
+def xlsx_column_index(cell_reference):
+    match = re.match(r"^([A-Za-z]+)", str(cell_reference or ""))
+    if not match:
+        return None
+
+    index = 0
+    for char in match.group(1).upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+def xlsx_column_name(index):
+    index = max(1, min(int(index or 1), 16384))
+    letters = []
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters.append(chr(ord("A") + remainder))
+    return "".join(reversed(letters))
+
+def infer_xlsx_last_column(file_path, *row_numbers):
+    target_rows = {int(row_number) for row_number in row_numbers if int(row_number or 0) > 0}
+    if not target_rows:
+        return "XFD"
+
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            worksheet_names = sorted(
+                name for name in archive.namelist()
+                if re.match(r"^xl/worksheets/sheet\d+\.xml$", name)
+            )
+            if not worksheet_names:
+                return "XFD"
+
+            import xml.etree.ElementTree as etree
+            max_column = 0
+            max_target_row = max(target_rows)
+            with archive.open(worksheet_names[0]) as worksheet_file:
+                for _, element in etree.iterparse(worksheet_file, events=("end",)):
+                    if not element.tag.endswith("}row"):
+                        continue
+
+                    row_number = int(element.attrib.get("r") or 0)
+                    if row_number in target_rows:
+                        for cell in element:
+                            if not cell.tag.endswith("}c"):
+                                continue
+                            column_index = xlsx_column_index(cell.attrib.get("r"))
+                            if column_index:
+                                max_column = max(max_column, column_index)
+
+                    element.clear()
+                    if row_number >= max_target_row:
+                        break
+
+            return xlsx_column_name(max_column or 16384)
+    except Exception:
+        return "XFD"
+
+def create_excel_view(conn, table_name, file_path, source_options=None):
+    excel_path = sql_string(file_path)
+    if not str(file_path or "").lower().endswith(".xlsx"):
+        ensure_spatial_extension(conn)
+        conn.execute(
+            f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+            f"SELECT * FROM st_read({excel_path})"
+        )
+        return
+
+    ensure_excel_extension(conn)
+    options = normalize_excel_options(source_options)
+    header_row = options["headerRow"]
+    data_start_row = options["dataStartRow"]
+    header_sql = sql_bool(header_row > 0)
+    range_start_row = header_row if header_row > 0 else data_start_row
+    range_end_column = infer_xlsx_last_column(file_path, header_row, data_start_row)
+    read_sql = (
+        f"read_xlsx({excel_path}, "
+        f"header = {header_sql}, "
+        f"all_varchar = {sql_bool(not options['inferTypes'])}, "
+        f"range = {sql_string(f'A{range_start_row}:{range_end_column}1048576')}, "
+        f"stop_at_empty = TRUE)"
+    )
+
+    if header_row > 0 and data_start_row > header_row + 1:
+        row_number_column = duckdb_identifier("__file_hive_excel_row_number")
+        first_data_row_number = data_start_row - header_row
+        conn.execute(
+            f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+            f"SELECT * EXCLUDE ({row_number_column}) FROM ("
+            f"SELECT row_number() OVER () AS {row_number_column}, * FROM {read_sql}"
+            f") AS excel_source WHERE {row_number_column} >= {first_data_row_number}"
+        )
+        return
+
+    conn.execute(
+        f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
+        f"SELECT * FROM {read_sql}"
     )
 
 def create_orc_view(conn, table_name, file_path):
@@ -281,7 +732,9 @@ def list_duckdb_relations(conn, database_name=None):
             "type": row[3]
         }
         for row in rows
-        if row[1] not in ("information_schema", "pg_catalog", "temp") and not str(row[2]).startswith("sqlite_")
+        if row[0] != "temp"
+        and row[1] not in ("information_schema", "pg_catalog", "temp")
+        and not str(row[2]).startswith("sqlite_")
     ]
 
 def get_primary_duckdb_relation(conn, database_name=None):
@@ -291,26 +744,72 @@ def get_primary_duckdb_relation(conn, database_name=None):
 
     return relations[0], relations
 
-def remember_duckdb_source_info(conn, relation, relations):
+def select_relation(relations, selected_relation):
+    if not selected_relation:
+        return relations[0], relations
+
+    selected_schema = str(selected_relation.get("schema") or "")
+    selected_name = str(selected_relation.get("name") or "")
+    selected_type = str(selected_relation.get("type") or "")
+    selected_database = selected_relation.get("database")
+    selected_database = str(selected_database) if selected_database else None
+
+    for relation in relations:
+        if selected_schema and relation["schema"] != selected_schema:
+            continue
+        if selected_name and relation["name"] != selected_name:
+            continue
+        if selected_type and relation["type"] != selected_type:
+            continue
+        if selected_database and relation.get("database") != selected_database:
+            continue
+        return relation, relations
+
+    if selected_database:
+        for relation in relations:
+            if selected_schema and relation["schema"] != selected_schema:
+                continue
+            if selected_name and relation["name"] != selected_name:
+                continue
+            if selected_type and relation["type"] != selected_type:
+                continue
+            return relation, relations
+
+    raise ValueError(f"Selected relation was not found: {selected_schema}.{selected_name}")
+
+def relation_to_json(relation):
+    result = {
+        "schema": relation.get("schema") or "main",
+        "name": relation.get("name") or "",
+        "type": relation.get("type") or "BASE TABLE"
+    }
+    if relation.get("database"):
+        result["database"] = relation.get("database")
+    return result
+
+def remember_source_info(conn, relation, relations):
     conn.execute(f"DROP TABLE IF EXISTS {duckdb_identifier(SOURCE_INFO_TABLE_NAME)}")
     conn.execute(
         f"CREATE TEMP TABLE {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} ("
-        "selected_schema VARCHAR, selected_name VARCHAR, table_count BIGINT, view_count BIGINT)"
+        "selected_database VARCHAR, selected_schema VARCHAR, selected_name VARCHAR, "
+        "selected_type VARCHAR, table_count BIGINT, view_count BIGINT)"
     )
     conn.execute(
-        f"INSERT INTO {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} VALUES (?, ?, ?, ?)",
+        f"INSERT INTO {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} VALUES (?, ?, ?, ?, ?, ?)",
         [
+            relation.get("database"),
             relation["schema"],
             relation["name"],
+            relation.get("type") or "BASE TABLE",
             len([item for item in relations if item.get("type") == "BASE TABLE"]),
             len([item for item in relations if item.get("type") == "VIEW"])
         ]
     )
 
-def read_duckdb_source_info(conn):
+def read_source_info(conn):
     try:
         row = conn.execute(
-            f"SELECT selected_schema, selected_name, table_count, view_count "
+            f"SELECT selected_database, selected_schema, selected_name, selected_type, table_count, view_count "
             f"FROM {duckdb_identifier(SOURCE_INFO_TABLE_NAME)} LIMIT 1"
         ).fetchone()
     except Exception:
@@ -320,11 +819,32 @@ def read_duckdb_source_info(conn):
         return None
 
     return {
-        "selectedSchema": row[0],
-        "selectedName": row[1],
-        "tableCount": row[2],
-        "viewCount": row[3]
+        "selectedRelation": relation_to_json({
+            "database": row[0],
+            "schema": row[1],
+            "name": row[2],
+            "type": row[3]
+        }),
+        "tableCount": row[4],
+        "viewCount": row[5]
     }
+
+def get_relation_catalog(file_path, conn=None):
+    file_type = get_file_type(file_path)
+    if file_type == "duckdb":
+        if conn is not None:
+            return [relation_to_json(relation) for relation in list_duckdb_relations(conn)]
+
+        conn = duckdb.connect(file_path, read_only=True)
+        try:
+            return [relation_to_json(relation) for relation in list_duckdb_relations(conn)]
+        finally:
+            conn.close()
+
+    if file_type == "sqlite":
+        return [relation_to_json(relation) for relation in list_sqlite_relations(file_path)]
+
+    return None
 
 def create_duckdb_alias_view(conn, table_name, relation, database_name=None):
     if database_name:
@@ -337,15 +857,16 @@ def create_duckdb_alias_view(conn, table_name, relation, database_name=None):
         f"SELECT * FROM {relation_name}"
     )
 
-def create_duckdb_view(conn, file_path):
-    relation, relations = get_primary_duckdb_relation(conn)
-    remember_duckdb_source_info(conn, relation, relations)
-    if relation["schema"] == "main" and relation["name"] == TABLE_NAME:
-        return
+def create_duckdb_view(conn, file_path, selected_relation=None):
+    relations = list_duckdb_relations(conn)
+    if not relations:
+        raise ValueError("DuckDB database does not contain any user tables or views.")
 
+    relation, relations = select_relation(relations, selected_relation)
+    remember_source_info(conn, relation, relations)
     create_duckdb_alias_view(conn, TABLE_NAME, relation)
 
-def create_named_duckdb_view(conn, table_name, file_path):
+def create_named_duckdb_view(conn, table_name, file_path, selected_relation=None):
     alias = duckdb_attach_alias(file_path, table_name)
     try:
         conn.execute(f"DETACH {duckdb_identifier(alias)}")
@@ -353,31 +874,34 @@ def create_named_duckdb_view(conn, table_name, file_path):
         pass
 
     conn.execute(f"ATTACH {sql_string(file_path)} AS {duckdb_identifier(alias)} (READ_ONLY)")
-    relation, _ = get_primary_duckdb_relation(conn, alias)
+    relations = list_duckdb_relations(conn, alias)
+    if not relations:
+        raise ValueError("DuckDB database does not contain any user tables or views.")
+    relation, _ = select_relation(relations, selected_relation)
     create_duckdb_alias_view(conn, table_name, relation, alias)
 
-def create_data_view(conn, file_path):
+def create_data_view(conn, file_path, selected_relation=None, source_options=None):
     file_type = get_file_type(file_path)
     if file_type == "parquet":
         create_parquet_view(conn, file_path)
         return
     if file_type == "duckdb":
-        create_duckdb_view(conn, file_path)
+        create_duckdb_view(conn, file_path, selected_relation)
         return
     if file_type == "sqlite":
-        create_sqlite_view(conn, TABLE_NAME, file_path)
+        create_sqlite_view(conn, TABLE_NAME, file_path, selected_relation)
         return
     if file_type == "csv":
-        create_csv_view(conn, TABLE_NAME, file_path)
+        create_csv_view(conn, TABLE_NAME, file_path, source_options)
         return
     if file_type == "tsv":
-        create_delimited_view(conn, TABLE_NAME, file_path, "\t")
+        create_delimited_view(conn, TABLE_NAME, file_path, "\t", source_options)
         return
     if file_type == "psv":
-        create_delimited_view(conn, TABLE_NAME, file_path, "|")
+        create_delimited_view(conn, TABLE_NAME, file_path, "|", source_options)
         return
     if file_type == "json":
-        create_json_view(conn, TABLE_NAME, file_path)
+        create_json_view(conn, TABLE_NAME, file_path, source_options)
         return
     if file_type == "avro":
         create_avro_view(conn, TABLE_NAME, file_path)
@@ -391,25 +915,86 @@ def create_data_view(conn, file_path):
     if file_type == "feather":
         create_feather_view(conn, TABLE_NAME, file_path)
         return
+    if file_type == "excel":
+        create_excel_view(conn, TABLE_NAME, file_path, source_options)
+        return
+    if file_type == "workspace":
+        create_workspace_views(conn, file_path)
+        return
 
-    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files can be opened directly.")
+    raise ValueError("Only .parquet, .workspace, .duckdb, .sqlite, .sqlite3, .db, .xlsx, .xls, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files can be opened directly as tabular data.")
 
-def create_named_data_view(conn, table_name, file_path):
+def create_workspace_views(conn, workspace_path):
+    workspace_dir = os.path.dirname(workspace_path)
+    supported_exts = {
+        ".parquet",
+        ".duckdb",
+        ".sqlite",
+        ".sqlite3",
+        ".db",
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".tsv",
+        ".psv",
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".avro",
+        ".orc",
+        ".arrow",
+        ".feather",
+        ".ipc",
+    }
+    mounted_files = []
+    used_names = set()
+    
+    for root, dirs, files in os.walk(workspace_dir):
+        # Exclude common large/unrelated directories
+        dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build')]
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in supported_exts:
+                file_path = os.path.join(root, file)
+                try:
+                    relative_path = os.path.relpath(file_path, workspace_dir)
+                    name_without_ext = os.path.splitext(relative_path)[0]
+                    table_name = re.sub(r"[^A-Za-z0-9_]+", "_", name_without_ext).strip("_") or "data"
+                    if table_name[0].isdigit():
+                        table_name = "_" + table_name
+                    base_table_name = table_name
+                    suffix = 2
+                    while table_name.lower() in used_names:
+                        table_name = f"{base_table_name}_{suffix}"
+                        suffix += 1
+                    used_names.add(table_name.lower())
+                    create_named_data_view(conn, table_name, file_path)
+                    mounted_files.append(table_name)
+                except Exception as e:
+                    print(f"DEBUG: Failed to mount {file_path}: {e}", file=sys.stderr)
+                
+    if not mounted_files:
+        conn.execute(f"CREATE VIEW {TABLE_NAME} AS SELECT 'No tabular files found in workspace' AS status")
+    else:
+        # Create a default view for the UI to display initially
+        conn.execute(f"CREATE VIEW {TABLE_NAME} AS SELECT 'Workspace mounted successfully. Try running custom queries!' AS status, {len(mounted_files)} AS files_mounted")
+
+def create_named_data_view(conn, table_name, file_path, selected_relation=None, source_options=None):
     file_type = get_file_type(file_path)
     if file_type == "csv":
-        create_csv_view(conn, table_name, file_path)
+        create_csv_view(conn, table_name, file_path, source_options)
         return
 
     if file_type == "tsv":
-        create_delimited_view(conn, table_name, file_path, "\t")
+        create_delimited_view(conn, table_name, file_path, "\t", source_options)
         return
 
     if file_type == "psv":
-        create_delimited_view(conn, table_name, file_path, "|")
+        create_delimited_view(conn, table_name, file_path, "|", source_options)
         return
 
     if file_type == "json":
-        create_json_view(conn, table_name, file_path)
+        create_json_view(conn, table_name, file_path, source_options)
         return
 
     if file_type == "avro":
@@ -433,22 +1018,37 @@ def create_named_data_view(conn, table_name, file_path):
         return
 
     if file_type == "duckdb":
-        create_named_duckdb_view(conn, table_name, file_path)
+        create_named_duckdb_view(conn, table_name, file_path, selected_relation)
         return
 
     if file_type == "sqlite":
-        create_sqlite_view(conn, table_name, file_path)
+        create_sqlite_view(conn, table_name, file_path, selected_relation)
         return
 
-    raise ValueError("Only .parquet, .duckdb, .sqlite, .db, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported for joins.")
+    if file_type == "excel":
+        create_excel_view(conn, table_name, file_path, source_options)
+        return
 
-def connect_data_file(file_path):
+    raise ValueError("Only .parquet, .duckdb, .sqlite, .sqlite3, .db, .xlsx, .xls, .csv, .tsv, .psv, .json, .jsonl, .ndjson, .avro, .orc, .arrow, .feather, and .ipc files are supported for joins.")
+
+def selected_relation_key(selected_relation):
+    if not selected_relation:
+        return None
+
+    return (
+        selected_relation.get("database"),
+        selected_relation.get("schema"),
+        selected_relation.get("name"),
+        selected_relation.get("type")
+    )
+
+def connect_data_file(file_path, selected_relation=None, source_options=None):
     if get_file_type(file_path) == "duckdb":
         conn = duckdb.connect(file_path, read_only=True)
     else:
         conn = duckdb.connect()
 
-    create_data_view(conn, file_path)
+    create_data_view(conn, file_path, selected_relation, source_options)
     create_legacy_table_alias(conn)
     return conn
 
@@ -461,7 +1061,7 @@ class WorkerSessionManager:
         stat = os.stat(absolute_path)
         return (absolute_path, stat.st_mtime_ns, stat.st_size)
 
-    def get_session_connection(self, session_id, file_path):
+    def get_session_connection(self, session_id, file_path, selected_relation=None, source_options=None):
         if not session_id:
             raise ValueError("Worker request missing sessionId.")
 
@@ -469,13 +1069,17 @@ class WorkerSessionManager:
             raise ValueError(f"File does not exist: {file_path}")
 
         fingerprint = self._file_fingerprint(file_path)
+        relation_key = selected_relation_key(selected_relation)
+        options_key = source_options_key(get_file_type(file_path), source_options)
         session = self._sessions.get(session_id)
 
         if session is None:
-            conn = connect_data_file(file_path)
+            conn = connect_data_file(file_path, selected_relation, source_options)
             self._sessions[session_id] = {
                 "conn": conn,
-                "fingerprint": fingerprint
+                "fingerprint": fingerprint,
+                "relation_key": relation_key,
+                "options_key": options_key
             }
             return conn
 
@@ -485,9 +1089,16 @@ class WorkerSessionManager:
                 conn.close()
             except Exception:
                 pass
-            conn = connect_data_file(file_path)
+            conn = connect_data_file(file_path, selected_relation, source_options)
             session["conn"] = conn
             session["fingerprint"] = fingerprint
+            session["relation_key"] = relation_key
+            session["options_key"] = options_key
+        elif (relation_key is not None and session.get("relation_key") != relation_key) or session.get("options_key") != options_key:
+            create_data_view(conn, file_path, selected_relation, source_options)
+            create_legacy_table_alias(conn)
+            session["relation_key"] = relation_key
+            session["options_key"] = options_key
 
         return conn
 
@@ -590,6 +1201,13 @@ def get_primary_sqlite_relation(file_path):
 
     return relations[0], relations
 
+def get_selected_sqlite_relation(file_path, selected_relation=None):
+    relations = list_sqlite_relations(file_path)
+    if not relations:
+        raise ValueError("SQLite database does not contain any user tables or views.")
+
+    return select_relation(relations, selected_relation)
+
 def read_sqlite_relation_table(file_path, relation_name):
     try:
         import pyarrow as pyarrow
@@ -628,8 +1246,9 @@ def read_sqlite_relation_table(file_path, relation_name):
         for column in unique_columns
     ]))
 
-def create_sqlite_view(conn, table_name, file_path):
-    relation, _ = get_primary_sqlite_relation(file_path)
+def create_sqlite_view(conn, table_name, file_path, selected_relation=None):
+    relation, relations = get_selected_sqlite_relation(file_path, selected_relation)
+    remember_source_info(conn, relation, relations)
     create_arrow_table_view(conn, table_name, read_sqlite_relation_table(file_path, relation["name"]))
 
 def export_delimited(cursor, columns, output_path, delimiter=","):
@@ -748,6 +1367,25 @@ def export_parquet_query(conn, query, output_path):
     )
     return rows_exported
 
+def export_delimited_query(conn, query, output_path, delimiter):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    conn.execute(
+        f"COPY ({query}) TO {sql_string(output_path)} (HEADER, DELIMITER {sql_string(delimiter)})"
+    )
+    return rows_exported
+
+def export_json_query(conn, query, output_path, array_format=True):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+    options = "(FORMAT JSON, ARRAY TRUE)" if array_format else "(FORMAT JSON)"
+    conn.execute(
+        f"COPY ({query}) TO {sql_string(output_path)} {options}"
+    )
+    return rows_exported
+
 def export_duckdb_query(conn, query, output_path):
     remove_database_files(output_path)
     rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
@@ -834,6 +1472,64 @@ def export_feather_query(conn, query, output_path):
     arrow_table = fetch_query_arrow_table(conn, query)
     pyarrow_feather.write_feather(arrow_table, output_path)
     return arrow_table.num_rows
+
+def safe_export_base_name(relation):
+    raw_name = f"{relation.get('schema') or 'main'}_{relation.get('name') or 'table'}"
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_name).strip("._")
+    return safe_name or "table"
+
+def unique_export_file_name(base_name, extension, used_names):
+    candidate = f"{base_name}.{extension}"
+    index = 2
+    while candidate.lower() in used_names:
+        candidate = f"{base_name}_{index}.{extension}"
+        index += 1
+
+    used_names.add(candidate.lower())
+    return candidate
+
+def export_all_relations_zip(conn, file_path, output_path, export_format):
+    relations = get_relation_catalog(file_path, conn) or []
+    if not relations:
+        raise ValueError("This file does not contain any exportable tables or views.")
+
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
+    rows_exported = 0
+    files_exported = 0
+    used_names = set()
+
+    with tempfile.TemporaryDirectory(prefix="file-hive-export-") as temp_dir:
+        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for relation in relations:
+                create_data_view(conn, file_path, relation)
+                create_legacy_table_alias(conn)
+                file_name = unique_export_file_name(
+                    safe_export_base_name(relation),
+                    export_format,
+                    used_names
+                )
+                temp_output_path = os.path.join(temp_dir, file_name)
+                result = export_data_file_from_connection(
+                    conn,
+                    temp_output_path,
+                    export_format,
+                    f"SELECT * FROM {TABLE_NAME}",
+                    "query"
+                )
+                archive.write(temp_output_path, file_name)
+                rows_exported += result.get("rowsExported") or 0
+                files_exported += 1
+
+    return {
+        "success": True,
+        "format": export_format,
+        "outputPath": output_path,
+        "rowsExported": rows_exported,
+        "filesExported": files_exported,
+        "query": None
+    }
 
 def safe_int(value):
     if value is None:
@@ -1678,10 +2374,11 @@ def analyze_duckdb_schema_validation(schema, report):
     }
 
 def analyze_duckdb_integrity(conn, file_path, file_size, report):
-    source_info = read_duckdb_source_info(conn)
+    source_info = read_source_info(conn)
     relation, relations = get_primary_duckdb_relation(conn)
-    selected_schema = source_info["selectedSchema"] if source_info else relation["schema"]
-    selected_name = source_info["selectedName"] if source_info else relation["name"]
+    selected_relation = source_info["selectedRelation"] if source_info else relation_to_json(relation)
+    selected_schema = selected_relation["schema"]
+    selected_name = selected_relation["name"]
     table_count = source_info["tableCount"] if source_info else len([item for item in relations if item.get("type") == "BASE TABLE"])
     view_count = source_info["viewCount"] if source_info else len([item for item in relations if item.get("type") == "VIEW"])
 
@@ -1713,7 +2410,7 @@ def analyze_duckdb_integrity(conn, file_path, file_size, report):
         "tableCount": table_count,
         "viewCount": view_count,
         "selectedTable": f"{selected_schema}.{selected_name}",
-        "tables": relations
+        "tables": [relation_to_json(item) for item in relations]
     }
 
 def analyze_duckdb_doctor(conn, file_path, schema, file_size):
@@ -1834,6 +2531,12 @@ def analyze_tabular_file_doctor(conn, file_path, schema, file_size, source_label
 def analyze_csv_doctor(conn, file_path, schema, file_size):
     return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "CSV")
 
+def analyze_sqlite_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "SQLite")
+
+def analyze_excel_doctor(conn, file_path, schema, file_size):
+    return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Excel")
+
 def analyze_avro_doctor(conn, file_path, schema, file_size):
     return analyze_tabular_file_doctor(conn, file_path, schema, file_size, "Avro")
 
@@ -1942,8 +2645,8 @@ def type_signature(column):
         return "BOOLEAN"
     return type_text
 
-def read_compare_columns(conn, file_path):
-    create_named_data_view(conn, TABLE_NAME, file_path)
+def read_compare_columns(conn, file_path, selected_relation=None, source_options=None):
+    create_named_data_view(conn, TABLE_NAME, file_path, selected_relation, source_options)
     schema = read_data_schema(conn, file_path, TABLE_NAME)
     schema_by_name = {
         column["name"]: column
@@ -1973,8 +2676,8 @@ def read_compare_columns(conn, file_path):
 
     return columns
 
-def read_join_columns(conn, table_name, file_path):
-    create_named_data_view(conn, table_name, file_path)
+def read_join_columns(conn, table_name, file_path, selected_relation=None, source_options=None):
+    create_named_data_view(conn, table_name, file_path, selected_relation, source_options)
     schema = read_data_schema(conn, file_path, table_name)
     schema_by_name = {
         column["name"]: column
@@ -2004,7 +2707,7 @@ def read_join_columns(conn, table_name, file_path):
 
     return columns
 
-def get_join_metadata(base_path, join_path):
+def get_join_metadata(base_path, join_path, selected_relation=None, join_selected_relation=None, source_options=None):
     if not os.path.exists(base_path):
         return {
             "success": False,
@@ -2020,8 +2723,8 @@ def get_join_metadata(base_path, join_path):
     conn = None
     try:
         conn = duckdb.connect()
-        base_columns = read_join_columns(conn, TABLE_NAME, base_path)
-        join_columns = read_join_columns(conn, COMPARE_TABLE_NAME, join_path)
+        base_columns = read_join_columns(conn, TABLE_NAME, base_path, selected_relation, source_options)
+        join_columns = read_join_columns(conn, COMPARE_TABLE_NAME, join_path, join_selected_relation)
         conn.close()
         conn = None
 
@@ -2074,7 +2777,7 @@ def build_join_select_columns(base_columns, join_columns):
 
     return select_parts, output_columns
 
-def join_data_files(base_path, join_path, options):
+def join_data_files(base_path, join_path, options, selected_relation=None, join_selected_relation=None, source_options=None):
     if not os.path.exists(base_path):
         return {
             "success": False,
@@ -2100,8 +2803,8 @@ def join_data_files(base_path, join_path, options):
             raise ValueError("Both baseColumn and joinColumn are required.")
 
         conn = duckdb.connect()
-        base_columns = read_join_columns(conn, TABLE_NAME, base_path)
-        join_columns = read_join_columns(conn, COMPARE_TABLE_NAME, join_path)
+        base_columns = read_join_columns(conn, TABLE_NAME, base_path, selected_relation, source_options)
+        join_columns = read_join_columns(conn, COMPARE_TABLE_NAME, join_path, join_selected_relation)
         base_names = {column["name"] for column in base_columns}
         join_names = {column["name"] for column in join_columns}
 
@@ -2158,7 +2861,7 @@ def join_data_files(base_path, join_path, options):
             "traceback": traceback.format_exc()
         }
 
-def get_compare_metadata(base_path, compare_path):
+def get_compare_metadata(base_path, compare_path, selected_relation=None, compare_selected_relation=None, source_options=None):
     if not os.path.exists(base_path):
         return {
             "success": False,
@@ -2177,8 +2880,8 @@ def get_compare_metadata(base_path, compare_path):
     try:
         base_conn = duckdb.connect()
         compare_conn = duckdb.connect()
-        base_columns = read_compare_columns(base_conn, base_path)
-        compare_columns = read_compare_columns(compare_conn, compare_path)
+        base_columns = read_compare_columns(base_conn, base_path, selected_relation, source_options)
+        compare_columns = read_compare_columns(compare_conn, compare_path, compare_selected_relation)
 
         base_conn.close()
         compare_conn.close()
@@ -2239,7 +2942,7 @@ def schema_signature(columns):
         sort_keys=True
     )
 
-def detect_schema_drift(current_path, reference_path):
+def detect_schema_drift(current_path, reference_path, selected_relation=None, reference_selected_relation=None, source_options=None):
     if not os.path.exists(current_path):
         return {"success": False, "error": f"Current file does not exist: {current_path}"}
 
@@ -2252,8 +2955,8 @@ def detect_schema_drift(current_path, reference_path):
     try:
         current_conn = duckdb.connect()
         reference_conn = duckdb.connect()
-        current_columns = read_compare_columns(current_conn, current_path)
-        reference_columns = read_compare_columns(reference_conn, reference_path)
+        current_columns = read_compare_columns(current_conn, current_path, selected_relation, source_options)
+        reference_columns = read_compare_columns(reference_conn, reference_path, reference_selected_relation)
 
         current_by_name = column_lookup(current_columns)
         reference_by_name = column_lookup(reference_columns)
@@ -2347,7 +3050,7 @@ def extract_partition_values(root_path, file_path):
 
     return partitions
 
-def scan_single_parquet_file(root_path, file_path):
+def scan_single_dataset_file(root_path, file_path):
     file_size = os.path.getsize(file_path)
     conn = duckdb.connect()
 
@@ -2383,22 +3086,25 @@ def analyze_dataset_partitions(folder_path):
     if not os.path.isdir(folder_path):
         return {"success": False, "error": f"Dataset folder does not exist: {folder_path}"}
 
-    parquet_files = []
+    data_files = []
     for current_root, _, files in os.walk(folder_path):
         for filename in files:
-            if filename.lower().endswith(".parquet"):
-                parquet_files.append(os.path.join(current_root, filename))
+            try:
+                if get_file_type(filename) != "workspace":
+                    data_files.append(os.path.join(current_root, filename))
+            except ValueError:
+                pass
 
-    parquet_files.sort()
+    data_files.sort()
 
-    if not parquet_files:
+    if not data_files:
         return {
             "success": False,
             "folderPath": folder_path,
-            "error": "No .parquet files found in the selected folder."
+            "error": "No tabular data files found in the selected folder."
         }
 
-    files = [scan_single_parquet_file(folder_path, parquet_file) for parquet_file in parquet_files]
+    files = [scan_single_dataset_file(folder_path, data_file) for data_file in data_files]
     schema_groups = {}
     for file_info in files:
         signature = file_info.get("schemaSignature") or "unreadable"
@@ -2512,26 +3218,27 @@ def analyze_dataset_partitions(folder_path):
         "recommendations": list(dict.fromkeys(recommendations))
     }
 
-def read_data_file_from_connection(conn, file_path, user_query=None):
+def read_data_file_from_connection(conn, file_path, user_query=None, source_options=None, offset=0, limit=MAX_RESULT_ROWS):
     file_size = os.path.getsize(file_path)
     file_type = get_file_type(file_path)
     source_format = get_source_format(file_path)
+    normalized_source_options = normalize_source_options(file_type, source_options)
+    source_info = read_source_info(conn)
+    relations = get_relation_catalog(file_path, conn) if source_info else None
     schema = read_data_schema(conn, file_path)
     query = normalize_query(user_query)
 
-    limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {MAX_RESULT_ROWS + 1}"
-    print(f"DEBUG: Executing query: {query}", file=sys.stderr)
+    limited_query = f"SELECT * FROM ({query}) AS query_result LIMIT {limit + 1} OFFSET {offset}"
+    print(f"DEBUG: Executing query: {query} with offset {offset} limit {limit}", file=sys.stderr)
 
     result = conn.execute(limited_query).fetchall()
     columns = [desc[0] for desc in conn.description]
-    result_limited = len(result) > MAX_RESULT_ROWS
-    if result_limited:
-        result = result[:MAX_RESULT_ROWS]
-
-    total_rows = None if result_limited else len(result)
+    
+    has_more = len(result) > limit
+    if has_more:
+        result = result[:limit]
 
     print(f"DEBUG: Retrieved {len(result)} rows, {len(columns)} columns", file=sys.stderr)
-    print(f"DEBUG: Columns: {columns}", file=sys.stderr)
 
     data = convert_rows_to_json(columns, result)
 
@@ -2540,24 +3247,32 @@ def read_data_file_from_connection(conn, file_path, user_query=None):
         'data': data,
         'columns': columns,
         'rowCount': len(data),
-        'totalRows': total_rows,
+        'offset': offset,
+        'limit': limit,
+        'hasMore': has_more,
         'query': query,
-        'resultLimited': result_limited,
         'fileType': file_type,
         'sourceFormat': source_format,
+        'sourceOptions': normalized_source_options,
+        'relations': relations,
+        'selectedRelation': source_info.get("selectedRelation") if source_info else None,
         'schema': schema,
         'debug': {
             'file_path': file_path,
             'file_type': file_type,
             'source_format': source_format,
+            'source_options': normalized_source_options,
+            'selected_relation': source_info.get("selectedRelation") if source_info else None,
             'file_size': file_size,
             'columns_count': len(columns),
             'rows_returned': len(data),
-            'result_limited': result_limited
+            'has_more': has_more,
+            'offset': offset,
+            'limit': limit
         }
     }
 
-def read_data_file(file_path, user_query=None):
+def read_data_file(file_path, user_query=None, source_options=None):
     """
     Read a supported data file and return data as JSON
     """
@@ -2569,13 +3284,16 @@ def read_data_file(file_path, user_query=None):
             'success': False,
             'error': f"File does not exist: {file_path}"
         }
+
+    if get_file_type(file_path) == "markdown":
+        return read_markdown_file(file_path)
     
     conn = None
 
     try:
-        conn = connect_data_file(file_path)
+        conn = connect_data_file(file_path, None, source_options)
         print("DEBUG: DuckDB connected successfully", file=sys.stderr)
-        result = read_data_file_from_connection(conn, file_path, user_query)
+        result = read_data_file_from_connection(conn, file_path, user_query, source_options)
 
         conn.close()
         conn = None
@@ -2595,6 +3313,9 @@ def read_data_file(file_path, user_query=None):
             'error': str(e),
             'traceback': traceback.format_exc(),
             'query': user_query,
+            'fileType': get_file_type(file_path) if file_path else None,
+            'sourceFormat': get_source_format(file_path) if file_path else None,
+            'sourceOptions': normalize_source_options(get_file_type(file_path), source_options) if file_path else None,
             'debug': {
                 'file_path': file_path,
                 'file_exists': True,
@@ -2602,10 +3323,13 @@ def read_data_file(file_path, user_query=None):
             }
         }
 
-def run_file_doctor_from_connection(conn, file_path):
+def run_file_doctor_from_connection(conn, file_path, source_options=None):
     file_size = os.path.getsize(file_path)
     file_type = get_file_type(file_path)
     source_format = get_source_format(file_path)
+    normalized_source_options = normalize_source_options(file_type, source_options)
+    source_info = read_source_info(conn)
+    relations = get_relation_catalog(file_path, conn) if source_info else None
     schema = read_data_schema(conn, file_path)
     if file_type == "duckdb":
         doctor = analyze_duckdb_doctor(conn, file_path, schema, file_size)
@@ -2627,16 +3351,23 @@ def run_file_doctor_from_connection(conn, file_path):
         doctor = analyze_feather_doctor(conn, file_path, schema, file_size)
     elif file_type == "ipc":
         doctor = analyze_ipc_doctor(conn, file_path, schema, file_size)
+    elif file_type == "sqlite":
+        doctor = analyze_sqlite_doctor(conn, file_path, schema, file_size)
+    elif file_type == "excel":
+        doctor = analyze_excel_doctor(conn, file_path, schema, file_size)
     else:
         doctor = analyze_parquet_doctor(conn, file_path, schema, file_size)
     return {
         "success": True,
         "fileType": file_type,
         "sourceFormat": source_format,
+        "sourceOptions": normalized_source_options,
+        "relations": relations,
+        "selectedRelation": source_info.get("selectedRelation") if source_info else None,
         "doctor": doctor
     }
 
-def run_file_doctor(file_path):
+def run_file_doctor(file_path, source_options=None):
     if not os.path.exists(file_path):
         return {
             "success": False,
@@ -2648,8 +3379,8 @@ def run_file_doctor(file_path):
 
     try:
         file_size = os.path.getsize(file_path)
-        conn = connect_data_file(file_path)
-        result = run_file_doctor_from_connection(conn, file_path)
+        conn = connect_data_file(file_path, None, source_options)
+        result = run_file_doctor_from_connection(conn, file_path, source_options)
         conn.close()
         conn = None
         return result
@@ -2665,7 +3396,12 @@ def run_file_doctor(file_path):
             "doctor": analyze_failed_parquet_doctor(file_path, file_size, str(e))
         }
 
-def export_data_file_from_connection(conn, output_path, export_format, user_query=None):
+def export_data_file_from_connection(conn, output_path, export_format, user_query=None, export_scope="query", file_path=None):
+    if export_scope == "allRelations":
+        if not file_path:
+            raise ValueError("All-table export requires the source file path.")
+        return export_all_relations_zip(conn, file_path, output_path, export_format)
+
     query = normalize_query(user_query)
 
     if export_format == "parquet":
@@ -2728,21 +3464,19 @@ def export_data_file_from_connection(conn, output_path, export_format, user_quer
             "query": query
         }
 
-    cursor = conn.execute(query)
-    columns = [desc[0] for desc in conn.description]
-    unique_columns = make_unique_column_names(columns)
-
     if export_format == "csv":
-        rows_exported = export_csv(cursor, columns, output_path)
+        rows_exported = export_delimited_query(conn, query, output_path, ",")
     elif export_format == "tsv":
-        rows_exported = export_delimited(cursor, columns, output_path, "\t")
+        rows_exported = export_delimited_query(conn, query, output_path, "\t")
     elif export_format == "psv":
-        rows_exported = export_delimited(cursor, columns, output_path, "|")
+        rows_exported = export_delimited_query(conn, query, output_path, "|")
     elif export_format == "json":
-        rows_exported = export_json(cursor, unique_columns, output_path)
+        rows_exported = export_json_query(conn, query, output_path, array_format=True)
     elif export_format in ("jsonl", "ndjson"):
-        rows_exported = export_json_lines(cursor, unique_columns, output_path)
+        rows_exported = export_json_query(conn, query, output_path, array_format=False)
     else:
+        cursor = conn.execute(query)
+        columns = [desc[0] for desc in conn.description]
         rows_exported = export_sqlite(cursor, columns, output_path)
 
     return {
@@ -2753,7 +3487,7 @@ def export_data_file_from_connection(conn, output_path, export_format, user_quer
         "query": query
     }
 
-def export_data_file(file_path, output_path, export_format, user_query=None):
+def export_data_file(file_path, output_path, export_format, user_query=None, export_scope="query", source_options=None):
     print(f"DEBUG: Starting export for data file: {file_path}", file=sys.stderr)
     print(f"DEBUG: Export format: {export_format}", file=sys.stderr)
     print(f"DEBUG: Export output: {output_path}", file=sys.stderr)
@@ -2773,8 +3507,8 @@ def export_data_file(file_path, output_path, export_format, user_query=None):
     conn = None
 
     try:
-        conn = connect_data_file(file_path)
-        result = export_data_file_from_connection(conn, output_path, export_format, user_query)
+        conn = connect_data_file(file_path, None, source_options)
+        result = export_data_file_from_connection(conn, output_path, export_format, user_query, export_scope, file_path)
 
         conn.close()
         conn = None
@@ -2797,15 +3531,24 @@ def export_data_file(file_path, output_path, export_format, user_query=None):
             "query": user_query
         }
 
-def save_edited_parquet_file(source_path, output_path, edits_path):
-    print(f"DEBUG: Saving edited parquet based on: {source_path}", file=sys.stderr)
-    print(f"DEBUG: Edited parquet output: {output_path}", file=sys.stderr)
+def save_edited_parquet_file(source_path, output_path, edits_path, export_format="parquet"):
+    print(f"DEBUG: Saving edited data based on: {source_path}", file=sys.stderr)
+    print(f"DEBUG: Edited data output: {output_path}", file=sys.stderr)
+    print(f"DEBUG: Edited data format: {export_format}", file=sys.stderr)
     print(f"DEBUG: Edited rows payload: {edits_path}", file=sys.stderr)
+
+    if export_format not in SUPPORTED_EXPORT_FORMATS:
+        return {
+            "success": False,
+            "format": export_format,
+            "outputPath": output_path,
+            "error": f"Unsupported export format: {export_format}"
+        }
 
     if not os.path.exists(source_path):
         return {
             "success": False,
-            "format": "parquet",
+            "format": export_format,
             "outputPath": output_path,
             "error": f"Source file does not exist: {source_path}"
         }
@@ -2813,7 +3556,7 @@ def save_edited_parquet_file(source_path, output_path, edits_path):
     if not os.path.exists(edits_path):
         return {
             "success": False,
-            "format": "parquet",
+            "format": export_format,
             "outputPath": output_path,
             "error": f"Edited rows payload does not exist: {edits_path}"
         }
@@ -2861,8 +3604,8 @@ def save_edited_parquet_file(source_path, output_path, edits_path):
                 for column in unique_columns
             )
             conn.execute(
-                f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
-                f"TO {sql_string(output_path)} (FORMAT PARQUET)"
+                f"CREATE TEMP TABLE edited_data AS "
+                f"SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})"
             )
         else:
             column_definitions = ", ".join(
@@ -2870,18 +3613,22 @@ def save_edited_parquet_file(source_path, output_path, edits_path):
                 for column in unique_columns
             )
             conn.execute(f"CREATE TEMP TABLE edited_data ({column_definitions})")
-            conn.execute(
-                f"COPY edited_data TO {sql_string(output_path)} (FORMAT PARQUET)"
-            )
+
+        export_result = export_data_file_from_connection(
+            conn,
+            output_path,
+            export_format,
+            "SELECT * FROM edited_data"
+        )
 
         conn.close()
         conn = None
 
         return {
             "success": True,
-            "format": "parquet",
+            "format": export_format,
             "outputPath": output_path,
-            "rowsExported": len(normalized_rows),
+            "rowsExported": export_result.get("rowsExported", len(normalized_rows)),
             "columnsExported": len(unique_columns)
         }
 
@@ -2890,12 +3637,12 @@ def save_edited_parquet_file(source_path, output_path, edits_path):
             conn.close()
 
         import traceback
-        print(f"DEBUG: Error saving edited parquet file: {str(e)}", file=sys.stderr)
+        print(f"DEBUG: Error saving edited data file: {str(e)}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
 
         return {
             "success": False,
-            "format": "parquet",
+            "format": export_format,
             "outputPath": output_path,
             "error": str(e),
             "traceback": traceback.format_exc()
@@ -2928,12 +3675,13 @@ def normalize_write_type(value):
 
 def normalize_write_payload(payload):
     columns = payload.get("columns") or []
-    rows = payload.get("rows") or []
+    rows = payload.get("rows")
+    query = payload.get("query")
 
     if not isinstance(columns, list) or not columns:
         raise ValueError("Write payload columns must be a non-empty list.")
-    if not isinstance(rows, list) or not rows:
-        raise ValueError("Write payload rows must be a non-empty list.")
+    if not isinstance(rows, list) and not isinstance(query, str):
+        raise ValueError("Write payload must provide either rows or query.")
 
     normalized_columns = []
     seen_names = set()
@@ -2958,18 +3706,19 @@ def normalize_write_payload(payload):
         })
 
     normalized_rows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise ValueError("Each row must be an object.")
+    if rows is not None:
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Each row must be an object.")
 
-        normalized_row = {}
-        for column in normalized_columns:
-            value = row.get(column["name"])
-            if isinstance(value, (dict, list)):
-                normalized_row[column["name"]] = json.dumps(value, ensure_ascii=False)
-            else:
-                normalized_row[column["name"]] = value
-        normalized_rows.append(normalized_row)
+            normalized_row = {}
+            for column in normalized_columns:
+                value = row.get(column["name"])
+                if isinstance(value, (dict, list)):
+                    normalized_row[column["name"]] = json.dumps(value, ensure_ascii=False)
+                else:
+                    normalized_row[column["name"]] = value
+            normalized_rows.append(normalized_row)
 
     compression = str(payload.get("compression") or "snappy").lower()
     if compression not in SUPPORTED_WRITE_COMPRESSIONS:
@@ -2979,7 +3728,7 @@ def normalize_write_payload(payload):
     if row_group_size is not None:
         row_group_size = max(1, min(int(row_group_size), 10000000))
 
-    return normalized_columns, normalized_rows, compression, row_group_size
+    return normalized_columns, normalized_rows, query, compression, row_group_size
 
 def build_create_parquet_copy_options(compression, row_group_size):
     options = [
@@ -2992,7 +3741,7 @@ def build_create_parquet_copy_options(compression, row_group_size):
 
     return ", ".join(options)
 
-def create_parquet_file(output_path, payload_path):
+def create_parquet_file(conn_from_session, output_path, payload_path):
     if not os.path.exists(payload_path):
         return {
             "success": False,
@@ -3003,40 +3752,56 @@ def create_parquet_file(output_path, payload_path):
 
     conn = None
     rows_path = None
+    rows_exported = 0
 
     try:
         with open(payload_path, "r", encoding="utf-8") as payload_file:
             payload = json.load(payload_file)
 
-        columns, rows, compression, row_group_size = normalize_write_payload(payload)
-        rows_path = os.path.join(os.path.dirname(payload_path), "normalized-write-rows.json")
-
-        with open(rows_path, "w", encoding="utf-8") as rows_file:
-            json.dump(rows, rows_file, ensure_ascii=False)
-
-        conn = duckdb.connect()
+        columns, rows, query, compression, row_group_size = normalize_write_payload(payload)
 
         if os.path.exists(output_path):
             os.remove(output_path)
 
-        select_columns = ", ".join(
-            f"TRY_CAST({duckdb_identifier(column['name'])} AS {column['type']}) AS {duckdb_identifier(column['name'])}"
-            for column in columns
-        )
         copy_options = build_create_parquet_copy_options(compression, row_group_size)
-        conn.execute(
-            f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
-            f"TO {sql_string(output_path)} ({copy_options})"
-        )
 
-        conn.close()
-        conn = None
+        if query:
+            # Fast path: query native export
+            conn = conn_from_session
+            # Execute query to get row count
+            rows_exported = conn.execute(f"SELECT COUNT(*) FROM ({query}) AS export_count").fetchone()[0]
+            conn.execute(
+                f"COPY ({query}) TO {sql_string(output_path)} ({copy_options})"
+            )
+            # do NOT close the connection because it is managed by the session manager
+            conn = None
+        else:
+            # Slow path: json text piping
+            rows_path = os.path.join(os.path.dirname(payload_path), "normalized-write-rows.json")
+            with open(rows_path, "w", encoding="utf-8") as rows_file:
+                json.dump(rows, rows_file, ensure_ascii=False)
+    
+            conn = duckdb.connect()
+            
+            select_columns = ", ".join(
+                f"TRY_CAST({duckdb_identifier(column['name'])} AS {column['type']}) AS {duckdb_identifier(column['name'])}"
+                for column in columns
+            )
+            
+            rows_exported = len(rows)
+            conn.execute(
+                f"COPY (SELECT {select_columns} FROM read_json_auto({sql_string(rows_path)})) "
+                f"TO {sql_string(output_path)} ({copy_options})"
+            )
+    
+            conn.close()
+            conn = None
 
         return {
             "success": True,
             "format": "parquet",
             "outputPath": output_path,
-            "rowsExported": len(rows),
+            "rowsExported": rows_exported,
             "columnsExported": len(columns),
             "compression": compression,
             "rowGroupSize": row_group_size
@@ -3332,16 +4097,16 @@ def infer_smart_key_mapping(conn, base_columns, compare_columns, mappings):
 
     return best_candidate
 
-def create_smart_diff_view(conn, table_name, file_path):
+def create_smart_diff_view(conn, table_name, file_path, selected_relation=None, source_options=None):
     source_table_name = f"{table_name}_source"
     row_id_column = duckdb_identifier("__parquet_x_smart_row_id")
-    create_named_data_view(conn, source_table_name, file_path)
+    create_named_data_view(conn, source_table_name, file_path, selected_relation, source_options)
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(table_name)} AS "
         f"SELECT row_number() OVER () AS {row_id_column}, * FROM {duckdb_identifier(source_table_name)}"
     )
 
-def smart_diff_data_files(base_path, compare_path):
+def smart_diff_data_files(base_path, compare_path, selected_relation=None, compare_selected_relation=None, source_options=None):
     print(f"DEBUG: Starting smart data diff: {base_path} vs {compare_path}", file=sys.stderr)
 
     if not os.path.exists(base_path):
@@ -3363,8 +4128,8 @@ def smart_diff_data_files(base_path, compare_path):
     try:
         base_metadata_conn = duckdb.connect()
         compare_metadata_conn = duckdb.connect()
-        base_columns = read_compare_columns(base_metadata_conn, base_path)
-        compare_columns = read_compare_columns(compare_metadata_conn, compare_path)
+        base_columns = read_compare_columns(base_metadata_conn, base_path, selected_relation, source_options)
+        compare_columns = read_compare_columns(compare_metadata_conn, compare_path, compare_selected_relation)
         base_metadata_conn.close()
         compare_metadata_conn.close()
         base_metadata_conn = None
@@ -3381,8 +4146,8 @@ def smart_diff_data_files(base_path, compare_path):
             }
 
         diff_conn = duckdb.connect()
-        create_smart_diff_view(diff_conn, "smart_base_data", base_path)
-        create_smart_diff_view(diff_conn, "smart_compare_data", compare_path)
+        create_smart_diff_view(diff_conn, "smart_base_data", base_path, selected_relation, source_options)
+        create_smart_diff_view(diff_conn, "smart_compare_data", compare_path, compare_selected_relation)
 
         key_mapping = infer_smart_key_mapping(
             diff_conn,
@@ -3543,7 +4308,7 @@ def smart_diff_data_files(base_path, compare_path):
             "traceback": traceback.format_exc()
         }
 
-def compare_data_files(base_path, compare_path, mappings=None, order_mapping=None):
+def compare_data_files(base_path, compare_path, mappings=None, order_mapping=None, selected_relation=None, compare_selected_relation=None, source_options=None):
     print(f"DEBUG: Starting parquet compare: {base_path} vs {compare_path}", file=sys.stderr)
 
     if not os.path.exists(base_path):
@@ -3564,8 +4329,8 @@ def compare_data_files(base_path, compare_path, mappings=None, order_mapping=Non
     try:
         base_conn = duckdb.connect()
         compare_conn = duckdb.connect()
-        base_columns = read_compare_columns(base_conn, base_path)
-        compare_columns = read_compare_columns(compare_conn, compare_path)
+        base_columns = read_compare_columns(base_conn, base_path, selected_relation, source_options)
+        compare_columns = read_compare_columns(compare_conn, compare_path, compare_selected_relation)
         mapping_result = normalize_compare_mappings(base_columns, compare_columns, mappings)
         order_result = normalize_order_mapping(base_columns, compare_columns, order_mapping)
 
@@ -3702,6 +4467,33 @@ def _worker_payload_text(payload, key):
     value = payload.get(key)
     return value if isinstance(value, str) else None
 
+def _worker_payload_relation(payload, key):
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        return None
+
+    relation_type = value.get("type")
+    if relation_type not in ("BASE TABLE", "VIEW"):
+        return None
+
+    schema = value.get("schema")
+    name = value.get("name")
+    if not isinstance(schema, str) or not schema:
+        return None
+    if not isinstance(name, str) or not name:
+        return None
+
+    relation = {
+        "schema": schema,
+        "name": name,
+        "type": relation_type
+    }
+    database = value.get("database")
+    if isinstance(database, str) and database:
+        relation["database"] = database
+
+    return relation
+
 def handle_worker_request(session_manager, request):
     request_id = request.get("requestId")
     command = request.get("command")
@@ -3715,61 +4507,96 @@ def handle_worker_request(session_manager, request):
             session_id = _worker_payload_text(payload, "sessionId")
             file_path = _worker_payload_text(payload, "filePath")
             query = payload.get("query") if isinstance(payload.get("query"), str) else None
-            conn = session_manager.get_session_connection(session_id, file_path)
-            result = read_data_file_from_connection(conn, file_path, query)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            offset = int(payload.get("offset", 0)) if str(payload.get("offset")).isdigit() else 0
+            limit = int(payload.get("limit", MAX_RESULT_ROWS)) if str(payload.get("limit")).isdigit() else MAX_RESULT_ROWS
+
+            conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
+            result = read_data_file_from_connection(conn, file_path, query, source_options, offset, limit)
         elif command == "doctor":
             session_id = _worker_payload_text(payload, "sessionId")
             file_path = _worker_payload_text(payload, "filePath")
-            conn = session_manager.get_session_connection(session_id, file_path)
-            result = run_file_doctor_from_connection(conn, file_path)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
+            result = run_file_doctor_from_connection(conn, file_path, source_options)
         elif command == "export":
             session_id = _worker_payload_text(payload, "sessionId")
             file_path = _worker_payload_text(payload, "filePath")
             output_path = _worker_payload_text(payload, "outputPath")
             export_format = _worker_payload_text(payload, "format")
             query = payload.get("query") if isinstance(payload.get("query"), str) else None
+            export_scope = payload.get("exportScope") if payload.get("exportScope") in ("query", "relation", "allRelations") else "query"
             if export_format not in SUPPORTED_EXPORT_FORMATS:
                 raise ValueError(f"Unsupported export format: {export_format}")
             if not output_path:
                 raise ValueError("Worker export request missing outputPath.")
-            conn = session_manager.get_session_connection(session_id, file_path)
-            result = export_data_file_from_connection(conn, output_path, export_format, query)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
+            result = export_data_file_from_connection(conn, output_path, export_format, query, export_scope, file_path)
         elif command == "save_edits":
             file_path = _worker_payload_text(payload, "filePath")
             output_path = _worker_payload_text(payload, "outputPath")
             edits_path = _worker_payload_text(payload, "editsPath")
-            result = save_edited_parquet_file(file_path, output_path, edits_path)
+            export_format = payload.get("format") if payload.get("format") in SUPPORTED_EXPORT_FORMATS else "parquet"
+            result = save_edited_parquet_file(file_path, output_path, edits_path, export_format)
         elif command == "create_parquet":
+            session_id = _worker_payload_text(payload, "sessionId")
+            file_path = _worker_payload_text(payload, "filePath")
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            conn = session_manager.get_session_connection(session_id, file_path, selected_relation, source_options)
+            
             output_path = _worker_payload_text(payload, "outputPath")
             payload_path = _worker_payload_text(payload, "payloadPath")
-            result = create_parquet_file(output_path, payload_path)
+            result = create_parquet_file(conn, output_path, payload_path)
         elif command == "compare_metadata":
             file_path = _worker_payload_text(payload, "filePath")
             compare_path = _worker_payload_text(payload, "comparePath")
-            result = get_compare_metadata(file_path, compare_path)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            compare_selected_relation = _worker_payload_relation(payload, "compareSelectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            result = get_compare_metadata(file_path, compare_path, selected_relation, compare_selected_relation, source_options)
         elif command == "compare":
             file_path = _worker_payload_text(payload, "filePath")
             compare_path = _worker_payload_text(payload, "comparePath")
             mappings = payload.get("mappings") if isinstance(payload.get("mappings"), list) else None
             order_mapping = payload.get("orderMapping") if isinstance(payload.get("orderMapping"), dict) else None
-            result = compare_data_files(file_path, compare_path, mappings, order_mapping)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            compare_selected_relation = _worker_payload_relation(payload, "compareSelectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            result = compare_data_files(file_path, compare_path, mappings, order_mapping, selected_relation, compare_selected_relation, source_options)
         elif command == "smart_diff":
             file_path = _worker_payload_text(payload, "filePath")
             compare_path = _worker_payload_text(payload, "comparePath")
-            result = smart_diff_data_files(file_path, compare_path)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            compare_selected_relation = _worker_payload_relation(payload, "compareSelectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            result = smart_diff_data_files(file_path, compare_path, selected_relation, compare_selected_relation, source_options)
         elif command == "join_metadata":
             file_path = _worker_payload_text(payload, "filePath")
             join_path = _worker_payload_text(payload, "joinPath")
-            result = get_join_metadata(file_path, join_path)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            join_selected_relation = _worker_payload_relation(payload, "joinSelectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            result = get_join_metadata(file_path, join_path, selected_relation, join_selected_relation, source_options)
         elif command == "join":
             file_path = _worker_payload_text(payload, "filePath")
             join_path = _worker_payload_text(payload, "joinPath")
             options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
-            result = join_data_files(file_path, join_path, options)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            join_selected_relation = _worker_payload_relation(payload, "joinSelectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            result = join_data_files(file_path, join_path, options, selected_relation, join_selected_relation, source_options)
         elif command == "schema_drift":
             file_path = _worker_payload_text(payload, "filePath")
             reference_path = _worker_payload_text(payload, "referencePath")
-            result = detect_schema_drift(file_path, reference_path)
+            selected_relation = _worker_payload_relation(payload, "selectedRelation")
+            reference_selected_relation = _worker_payload_relation(payload, "referenceSelectedRelation")
+            source_options = payload.get("sourceOptions") if isinstance(payload.get("sourceOptions"), dict) else None
+            result = detect_schema_drift(file_path, reference_path, selected_relation, reference_selected_relation, source_options)
         elif command == "dataset_scan":
             folder_path = _worker_payload_text(payload, "folderPath")
             result = analyze_dataset_partitions(folder_path)
@@ -3784,12 +4611,23 @@ def handle_worker_request(session_manager, request):
     except Exception as error:
         print(f"DEBUG: Worker command failed ({command}): {error}", file=sys.stderr)
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr)
+        file_path = _worker_payload_text(payload, "filePath")
+        file_type = None
+        source_format = None
+        if file_path:
+            try:
+                file_type = get_file_type(file_path)
+                source_format = get_source_format(file_path)
+            except Exception:
+                pass
         return {
             "requestId": request_id,
             "result": {
                 "success": False,
                 "error": str(error),
-                "traceback": traceback.format_exc()
+                "traceback": traceback.format_exc(),
+                "fileType": file_type,
+                "sourceFormat": source_format
             }
         }
 

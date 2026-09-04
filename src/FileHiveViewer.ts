@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { IDataFileReader, DataFileCompareMapping, DataFileCompareOrderMapping, DataFileExportFormat, DataFileJoinOptions, ParquetWriteOptions } from './interfaces/IDataFileReader';
+import { IDataFileReader, DataFileCompareMapping, DataFileCompareOrderMapping, DataFileExportFormat, DataFileJoinOptions, ParquetWriteOptions, DataFileRelation, DataFileExportScope, DataFileSourceOptions } from './interfaces/IDataFileReader';
 import { IWebviewRenderer } from './interfaces/IWebviewRenderer';
 
 export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
@@ -24,6 +24,8 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
     ];
     private readonly compareFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
     private readonly joinFiles = new WeakMap<vscode.WebviewPanel, vscode.Uri>();
+    private readonly compareFileRelations = new WeakMap<vscode.WebviewPanel, DataFileRelation>();
+    private readonly joinFileRelations = new WeakMap<vscode.WebviewPanel, DataFileRelation>();
 
     /**
      * Constructs a FileHiveViewer object.
@@ -129,49 +131,53 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
             switch (message.type) {
                 case 'refresh':
-                    await this.refreshWebviewContent(webviewPanel, document.uri, message.query);
+                    await this.refreshWebviewContent(webviewPanel, document.uri, message.query, message.selectedRelation, message.sourceOptions, message.offset, message.limit);
                     break;
                 case 'query':
-                    await this.queryWebviewContent(webviewPanel, document.uri, message.query);
+                    await this.queryWebviewContent(webviewPanel, document.uri, message.query, message.selectedRelation, message.sourceOptions, message.offset, message.limit);
                     break;
                 case 'export':
-                    await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query);
+                    await this.exportWebviewContent(webviewPanel, document.uri, message.format, message.query, message.selectedRelation, message.relations, message.sourceOptions);
                     break;
+                case 'openAsText':
+                    await this.openAsTextEditor(document.uri);
+                    break;
+                case 'saveEditedData':
                 case 'saveEditedParquet':
-                    await this.saveEditedParquet(webviewPanel, document.uri, message.columns, message.rows);
+                    await this.saveEditedData(webviewPanel, document.uri, message.columns, message.rows, message.sourceFormat);
                     break;
                 case 'createParquet':
-                    await this.createParquet(webviewPanel, document.uri, message.options);
+                    await this.createParquet(webviewPanel, document.uri, message.options, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'selectCompareFile':
-                    await this.selectCompareFile(webviewPanel, document.uri, message.customMappingEnabled);
+                    await this.selectCompareFile(webviewPanel, document.uri, message.customMappingEnabled, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'selectJoinFile':
-                    await this.selectJoinFile(webviewPanel, document.uri);
+                    await this.selectJoinFile(webviewPanel, document.uri, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'runJoin':
-                    await this.runJoin(webviewPanel, document.uri, message.options);
+                    await this.runJoin(webviewPanel, document.uri, message.options, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'exportJoinPreview':
                     await this.exportJoinPreview(webviewPanel, document.uri, message.columns, message.rows);
                     break;
                 case 'runStrictCompare':
-                    await this.runCompare(webviewPanel, document.uri, undefined, message.orderMapping);
+                    await this.runCompare(webviewPanel, document.uri, undefined, message.orderMapping, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'runCustomCompare':
-                    await this.runCompare(webviewPanel, document.uri, message.mappings, message.orderMapping);
+                    await this.runCompare(webviewPanel, document.uri, message.mappings, message.orderMapping, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'runSmartDiff':
-                    await this.runSmartDiff(webviewPanel, document.uri);
+                    await this.runSmartDiff(webviewPanel, document.uri, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'selectDoctorReferenceFile':
-                    await this.selectDoctorReferenceFile(webviewPanel, document.uri);
+                    await this.selectDoctorReferenceFile(webviewPanel, document.uri, message.selectedRelation, message.sourceOptions);
                     break;
                 case 'selectDoctorDatasetFolder':
                     await this.selectDoctorDatasetFolder(webviewPanel, document.uri);
                     break;
                 case 'runDoctor':
-                    await this.runDoctorChecks(webviewPanel, document.uri);
+                    await this.runDoctorChecks(webviewPanel, document.uri, message.selectedRelation, message.sourceOptions);
                     break;
             }
         });
@@ -201,9 +207,17 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
      * @param uri The uri of the data file to refresh the content with.
      * @returns A promise that resolves when the webview content is refreshed.
      */
-    private async refreshWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: unknown): Promise<void> {
+    private async refreshWebviewContent(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        query?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown,
+        offset?: number,
+        limit?: number
+    ): Promise<void> {
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        await this.updateWebviewContent(webviewPanel, uri, sqlQuery);
+        await this.updateWebviewContent(webviewPanel, uri, sqlQuery, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions), offset, limit);
     }
 
     /**
@@ -213,9 +227,17 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
      * @param uri The data file URI to query.
      * @param query The SQL query received from the webview.
      */
-    private async queryWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: unknown): Promise<void> {
+    private async queryWebviewContent(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        query?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown,
+        offset?: number,
+        limit?: number
+    ): Promise<void> {
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        const dataFileData = await this.dataFileReader.readDataFile(uri, sqlQuery);
+        const dataFileData = await this.dataFileReader.readDataFile(uri, sqlQuery, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions), offset, limit);
         await webviewPanel.webview.postMessage({ type: 'data', data: dataFileData });
     }
 
@@ -231,7 +253,10 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
         format?: unknown,
-        query?: unknown
+        query?: unknown,
+        selectedRelation?: unknown,
+        relations?: unknown,
+        sourceOptions?: unknown
     ): Promise<void> {
         if (typeof format !== 'string' || !FileHiveViewer.exportFormats.includes(format as DataFileExportFormat)) {
             await webviewPanel.webview.postMessage({
@@ -242,11 +267,32 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         const exportFormat = format as DataFileExportFormat;
-        const defaultUri = this.getDefaultExportUri(uri, exportFormat);
+        const parsedRelations = this.parseRelations(relations);
+        const currentRelation = this.parseSelectedRelation(selectedRelation);
+        const parsedSourceOptions = this.parseSourceOptions(sourceOptions);
+        const exportChoice = await this.chooseExportScope(parsedRelations, currentRelation);
+
+        if (!exportChoice) {
+            await webviewPanel.webview.postMessage({
+                type: 'exportResult',
+                result: { success: false, error: 'Export cancelled.' }
+            });
+            return;
+        }
+
+        const defaultUri = exportChoice.scope === 'allRelations'
+            ? this.getDefaultExportZipUri(uri, exportFormat)
+            : exportChoice.scope === 'relation' && exportChoice.selectedRelation
+                ? this.getDefaultRelationExportUri(uri, exportFormat, exportChoice.selectedRelation)
+                : this.getDefaultExportUri(uri, exportFormat);
         const outputUri = await vscode.window.showSaveDialog({
             defaultUri,
-            filters: this.getExportFilters(exportFormat),
-            saveLabel: `Export ${this.getExportLabel(exportFormat)}`
+            filters: exportChoice.scope === 'allRelations'
+                ? { 'ZIP Archives': ['zip'] }
+                : this.getExportFilters(exportFormat),
+            saveLabel: exportChoice.scope === 'allRelations'
+                ? `Export All ${this.getExportLabel(exportFormat)} Files`
+                : `Export ${this.getExportLabel(exportFormat)}`
         });
 
         if (!outputUri) {
@@ -266,11 +312,22 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         const sqlQuery = typeof query === 'string' ? query : undefined;
-        const result = await this.dataFileReader.exportDataFile(uri, exportFormat, outputUri, sqlQuery);
+        const exportQuery = exportChoice.scope === 'relation' ? undefined : sqlQuery;
+        const result = await this.dataFileReader.exportDataFile(
+            uri,
+            exportFormat,
+            outputUri,
+            exportQuery,
+            exportChoice.selectedRelation,
+            exportChoice.scope,
+            parsedSourceOptions
+        );
 
         if (result.success) {
             vscode.window.showInformationMessage(
-                `Exported ${result.rowsExported ?? 0} rows to ${outputUri.fsPath}`
+                exportChoice.scope === 'allRelations'
+                    ? `Exported ${result.filesExported ?? 0} files with ${result.rowsExported ?? 0} rows to ${outputUri.fsPath}`
+                    : `Exported ${result.rowsExported ?? 0} rows to ${outputUri.fsPath}`
             );
         } else {
             vscode.window.showErrorMessage(result.error || 'Export failed.');
@@ -286,6 +343,18 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             ? `${parsedPath.name}_export`
             : parsedPath.name;
         return vscode.Uri.file(path.join(parsedPath.dir, `${outputName}.${extension}`));
+    }
+
+    private getDefaultExportZipUri(uri: vscode.Uri, format: DataFileExportFormat): vscode.Uri {
+        const parsedPath = path.parse(uri.fsPath);
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_${format}_tables.zip`));
+    }
+
+    private getDefaultRelationExportUri(uri: vscode.Uri, format: DataFileExportFormat, relation: DataFileRelation): vscode.Uri {
+        const extension = this.getExportExtension(format);
+        const parsedPath = path.parse(uri.fsPath);
+        const relationName = `${relation.schema}_${relation.name}`.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^[._]+|[._]+$/g, '') || 'table';
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_${relationName}.${extension}`));
     }
 
     private getExportExtension(format: DataFileExportFormat): string {
@@ -320,7 +389,7 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             json: { 'JSON Files': ['json'] },
             jsonl: { 'JSON Lines Files': ['jsonl'] },
             ndjson: { 'NDJSON Files': ['ndjson'] },
-            sqlite: { 'SQLite Databases': ['sqlite', 'db'] },
+            sqlite: { 'SQLite Databases': ['sqlite', 'sqlite3', 'db'] },
             parquet: { 'Parquet Files': ['parquet'] },
             duckdb: { 'DuckDB Databases': ['duckdb'] },
             avro: { 'Avro Files': ['avro'] },
@@ -332,11 +401,12 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         return filters[format];
     }
 
-    private async saveEditedParquet(
+    private async saveEditedData(
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
         columns?: unknown,
-        rows?: unknown
+        rows?: unknown,
+        sourceFormat?: unknown
     ): Promise<void> {
         const parsedColumns = this.parseEditColumns(columns);
         const parsedRows = this.parseEditRows(rows);
@@ -349,11 +419,20 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const defaultUri = this.getDefaultEditedParquetUri(uri);
+        const saveFormat = this.getEditedSaveFormat(sourceFormat);
+        if (!saveFormat) {
+            await webviewPanel.webview.postMessage({
+                type: 'editSaveResult',
+                result: { success: false, error: 'The current source format cannot be saved from Transform. Use Export for conversions.' }
+            });
+            return;
+        }
+
+        const defaultUri = this.getDefaultEditedDataUri(uri, saveFormat);
         const outputUri = await vscode.window.showSaveDialog({
             defaultUri,
-            filters: { 'Parquet Files': ['parquet'] },
-            saveLabel: 'Save New Parquet'
+            filters: this.getExportFilters(saveFormat),
+            saveLabel: `Save Edited ${this.getExportLabel(saveFormat)}`
         });
 
         if (!outputUri) {
@@ -364,32 +443,47 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.dataFileReader.saveEditedParquetFile(uri, outputUri, parsedColumns, parsedRows);
+        const result = await this.dataFileReader.saveEditedParquetFile(uri, outputUri, saveFormat, parsedColumns, parsedRows);
 
         if (result.success) {
-            const openAction = 'Open New Parquet';
-            const message = `Saved edited data as a new Parquet file: ${outputUri.fsPath}. To view the changes, open the new Parquet file.`;
+            const openAction = 'Open New File';
+            const message = `Saved edited data as a new ${this.getExportLabel(saveFormat)} file: ${outputUri.fsPath}.`;
             const action = await vscode.window.showInformationMessage(message, openAction);
 
             if (action === openAction) {
                 await vscode.commands.executeCommand('vscode.openWith', outputUri, FileHiveViewer.viewType);
             }
         } else {
-            vscode.window.showErrorMessage(result.error || 'Could not save edited Parquet file.');
+            vscode.window.showErrorMessage(result.error || `Could not save edited ${this.getExportLabel(saveFormat)} file.`);
         }
 
         await webviewPanel.webview.postMessage({ type: 'editSaveResult', result });
     }
 
-    private getDefaultEditedParquetUri(uri: vscode.Uri): vscode.Uri {
+    private async openAsTextEditor(uri: vscode.Uri): Promise<void> {
+        await vscode.commands.executeCommand('vscode.openWith', uri, 'default', {
+            preview: false,
+            viewColumn: vscode.ViewColumn.Active
+        });
+    }
+
+    private getEditedSaveFormat(sourceFormat?: unknown): DataFileExportFormat | undefined {
+        return typeof sourceFormat === 'string' && FileHiveViewer.exportFormats.includes(sourceFormat as DataFileExportFormat)
+            ? sourceFormat as DataFileExportFormat
+            : undefined;
+    }
+
+    private getDefaultEditedDataUri(uri: vscode.Uri, format: DataFileExportFormat): vscode.Uri {
         const parsedPath = path.parse(uri.fsPath);
-        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_edited.parquet`));
+        return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}_edited.${this.getExportExtension(format)}`));
     }
 
     private async createParquet(
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
-        options?: unknown
+        options?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
     ): Promise<void> {
         const writeOptions = this.parseWriteOptions(options);
 
@@ -424,7 +518,9 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.dataFileReader.createParquetFile(uri, outputUri, writeOptions);
+        const parsedRelation = this.parseSelectedRelation(selectedRelation);
+        const parsedSourceOptions = this.parseSourceOptions(sourceOptions);
+        const result = await this.dataFileReader.createParquetFile(uri, outputUri, writeOptions, parsedRelation, parsedSourceOptions);
 
         if (result.success) {
             const openAction = 'Open Created Parquet';
@@ -448,17 +544,18 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
 
     private parseWriteOptions(options?: unknown): ParquetWriteOptions | undefined {
         if (typeof options !== 'object' || options === null ||
-            !('columns' in options) || !('rows' in options) || !('compression' in options)) {
+            !('columns' in options) || !('compression' in options)) {
             return undefined;
         }
 
         const rawColumns = (options as { columns?: unknown }).columns;
         const rawRows = (options as { rows?: unknown }).rows;
+        const rawQuery = (options as { query?: unknown }).query;
         const rawCompression = String((options as { compression?: unknown }).compression || '').toLowerCase();
         const rawRowGroupSize = (options as { rowGroupSize?: unknown }).rowGroupSize;
         const allowedCompressions = ['uncompressed', 'snappy', 'gzip', 'brotli', 'zstd'];
 
-        if (!Array.isArray(rawColumns) || !Array.isArray(rawRows) || !allowedCompressions.includes(rawCompression)) {
+        if (!Array.isArray(rawColumns) || !allowedCompressions.includes(rawCompression)) {
             return undefined;
         }
 
@@ -472,22 +569,31 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             }))
             .filter((column) => column.name.length > 0 && column.type.length > 0);
 
-        const rows = rawRows.filter((row): row is Record<string, any> => {
-            return typeof row === 'object' && row !== null && !Array.isArray(row);
-        });
+        let rows: Record<string, any>[] | undefined = undefined;
+        if (Array.isArray(rawRows)) {
+            rows = rawRows.filter((row): row is Record<string, any> => {
+                return typeof row === 'object' && row !== null && !Array.isArray(row);
+            });
+        }
+        
+        let query: string | undefined = undefined;
+        if (typeof rawQuery === 'string') {
+            query = rawQuery;
+        }
 
         const rowGroupSize = Number(rawRowGroupSize);
         const normalizedRowGroupSize = Number.isFinite(rowGroupSize)
             ? Math.min(10_000_000, Math.max(1, Math.trunc(rowGroupSize)))
             : undefined;
 
-        if (!columns.length || !rows.length) {
+        if (!columns.length || (!rows && !query)) {
             return undefined;
         }
 
         return {
             columns,
             rows,
+            query,
             compression: rawCompression as ParquetWriteOptions['compression'],
             rowGroupSize: normalizedRowGroupSize
         };
@@ -516,17 +622,20 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
     private async selectCompareFile(
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
-        customMappingEnabled?: unknown
+        customMappingEnabled?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
     ): Promise<void> {
         const selectedFiles = await vscode.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'sqlite3', 'db', 'xlsx', 'xls', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
                 'DuckDB Databases': ['duckdb'],
-                'SQLite Databases': ['sqlite', 'db'],
+                'SQLite Databases': ['sqlite', 'sqlite3', 'db'],
+                'Excel Workbooks': ['xlsx', 'xls'],
                 'CSV Files': ['csv'],
                 'Delimited Files': ['tsv', 'psv'],
                 'JSON Files': ['json', 'jsonl', 'ndjson'],
@@ -547,9 +656,31 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         const compareUri = selectedFiles[0];
-        this.compareFiles.set(webviewPanel, compareUri);
+        const compareRelation = await this.chooseRelationForFile(compareUri, 'Compare');
+        if (compareRelation === null) {
+            this.compareFiles.delete(webviewPanel);
+            this.compareFileRelations.delete(webviewPanel);
+            await webviewPanel.webview.postMessage({
+                type: 'compareResult',
+                result: { success: false, error: 'Compare cancelled.' }
+            });
+            return;
+        }
 
-        const metadataResult = await this.dataFileReader.getCompareMetadata(uri, compareUri);
+        this.compareFiles.set(webviewPanel, compareUri);
+        if (compareRelation) {
+            this.compareFileRelations.set(webviewPanel, compareRelation);
+        } else {
+            this.compareFileRelations.delete(webviewPanel);
+        }
+
+        const metadataResult = await this.dataFileReader.getCompareMetadata(
+            uri,
+            compareUri,
+            this.parseSelectedRelation(selectedRelation),
+            compareRelation,
+            this.parseSourceOptions(sourceOptions)
+        );
         await webviewPanel.webview.postMessage({ type: 'compareMetadata', result: metadataResult });
 
         if (!metadataResult.success) {
@@ -558,16 +689,22 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         }
     }
 
-    private async selectJoinFile(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+    private async selectJoinFile(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
+    ): Promise<void> {
         const selectedFiles = await vscode.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'sqlite3', 'db', 'xlsx', 'xls', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
                 'DuckDB Databases': ['duckdb'],
-                'SQLite Databases': ['sqlite', 'db'],
+                'SQLite Databases': ['sqlite', 'sqlite3', 'db'],
+                'Excel Workbooks': ['xlsx', 'xls'],
                 'CSV Files': ['csv'],
                 'Delimited Files': ['tsv', 'psv'],
                 'JSON Files': ['json', 'jsonl', 'ndjson'],
@@ -588,9 +725,31 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         }
 
         const joinUri = selectedFiles[0];
-        this.joinFiles.set(webviewPanel, joinUri);
+        const joinRelation = await this.chooseRelationForFile(joinUri, 'Join');
+        if (joinRelation === null) {
+            this.joinFiles.delete(webviewPanel);
+            this.joinFileRelations.delete(webviewPanel);
+            await webviewPanel.webview.postMessage({
+                type: 'joinMetadata',
+                result: { success: false, error: 'Join cancelled.' }
+            });
+            return;
+        }
 
-        const metadataResult = await this.dataFileReader.getJoinMetadata(uri, joinUri);
+        this.joinFiles.set(webviewPanel, joinUri);
+        if (joinRelation) {
+            this.joinFileRelations.set(webviewPanel, joinRelation);
+        } else {
+            this.joinFileRelations.delete(webviewPanel);
+        }
+
+        const metadataResult = await this.dataFileReader.getJoinMetadata(
+            uri,
+            joinUri,
+            this.parseSelectedRelation(selectedRelation),
+            joinRelation,
+            this.parseSourceOptions(sourceOptions)
+        );
         await webviewPanel.webview.postMessage({ type: 'joinMetadata', result: metadataResult });
 
         if (!metadataResult.success) {
@@ -598,7 +757,13 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         }
     }
 
-    private async runJoin(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, options?: unknown): Promise<void> {
+    private async runJoin(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        options?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
+    ): Promise<void> {
         const joinUri = this.joinFiles.get(webviewPanel);
 
         if (!joinUri) {
@@ -618,7 +783,14 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.dataFileReader.joinDataFile(uri, joinUri, joinOptions);
+        const result = await this.dataFileReader.joinDataFile(
+            uri,
+            joinUri,
+            joinOptions,
+            this.parseSelectedRelation(selectedRelation),
+            this.joinFileRelations.get(webviewPanel),
+            this.parseSourceOptions(sourceOptions)
+        );
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Join failed.');
@@ -719,7 +891,9 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         webviewPanel: vscode.WebviewPanel,
         uri: vscode.Uri,
         mappings?: unknown,
-        orderMapping?: unknown
+        orderMapping?: unknown,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
     ): Promise<void> {
         const compareUri = this.compareFiles.get(webviewPanel);
 
@@ -746,7 +920,10 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             uri,
             compareUri,
             compareMappings,
-            compareOrderMapping
+            compareOrderMapping,
+            this.parseSelectedRelation(selectedRelation),
+            this.compareFileRelations.get(webviewPanel),
+            this.parseSourceOptions(sourceOptions)
         );
 
         if (!result.success) {
@@ -756,7 +933,12 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         await webviewPanel.webview.postMessage({ type: 'compareResult', result });
     }
 
-    private async runSmartDiff(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+    private async runSmartDiff(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
+    ): Promise<void> {
         const compareUri = this.compareFiles.get(webviewPanel);
 
         if (!compareUri) {
@@ -767,7 +949,13 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.dataFileReader.smartDiffDataFile(uri, compareUri);
+        const result = await this.dataFileReader.smartDiffDataFile(
+            uri,
+            compareUri,
+            this.parseSelectedRelation(selectedRelation),
+            this.compareFileRelations.get(webviewPanel),
+            this.parseSourceOptions(sourceOptions)
+        );
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Smart Diff failed.');
@@ -811,16 +999,22 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             : undefined;
     }
 
-    private async selectDoctorReferenceFile(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
+    private async selectDoctorReferenceFile(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
+    ): Promise<void> {
         const selectedFiles = await vscode.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
             filters: {
-                'Data Files': ['parquet', 'duckdb', 'sqlite', 'db', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
+                'Data Files': ['parquet', 'duckdb', 'sqlite', 'sqlite3', 'db', 'xlsx', 'xls', 'csv', 'tsv', 'psv', 'json', 'jsonl', 'ndjson', 'avro', 'orc', 'arrow', 'feather', 'ipc'],
                 'Parquet Files': ['parquet'],
                 'DuckDB Databases': ['duckdb'],
-                'SQLite Databases': ['sqlite', 'db'],
+                'SQLite Databases': ['sqlite', 'sqlite3', 'db'],
+                'Excel Workbooks': ['xlsx', 'xls'],
                 'CSV Files': ['csv'],
                 'Delimited Files': ['tsv', 'psv'],
                 'JSON Files': ['json', 'jsonl', 'ndjson'],
@@ -839,7 +1033,23 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
             return;
         }
 
-        const result = await this.dataFileReader.detectSchemaDrift(uri, selectedFiles[0]);
+        const referenceUri = selectedFiles[0];
+        const referenceRelation = await this.chooseRelationForFile(referenceUri, 'Reference');
+        if (referenceRelation === null) {
+            await webviewPanel.webview.postMessage({
+                type: 'doctorSchemaDriftResult',
+                result: { success: false, error: 'Schema drift check cancelled.' }
+            });
+            return;
+        }
+
+        const result = await this.dataFileReader.detectSchemaDrift(
+            uri,
+            referenceUri,
+            this.parseSelectedRelation(selectedRelation),
+            referenceRelation,
+            this.parseSourceOptions(sourceOptions)
+        );
 
         if (!result.success) {
             vscode.window.showErrorMessage(result.error || 'Schema drift check failed.');
@@ -873,8 +1083,13 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
         await webviewPanel.webview.postMessage({ type: 'doctorDatasetResult', result });
     }
 
-    private async runDoctorChecks(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri): Promise<void> {
-        const result = await this.dataFileReader.runFileDoctor(uri);
+    private async runDoctorChecks(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        selectedRelation?: unknown,
+        sourceOptions?: unknown
+    ): Promise<void> {
+        const result = await this.dataFileReader.runFileDoctor(uri, this.parseSelectedRelation(selectedRelation), this.parseSourceOptions(sourceOptions));
         await webviewPanel.webview.postMessage({ type: 'doctorResult', result });
     }
 
@@ -889,9 +1104,218 @@ export class FileHiveViewer implements vscode.CustomReadonlyEditorProvider {
          * @param uri The uri of the data file to update the content with.
          * @returns A promise that resolves when the webview content is updated.
          */
-    private async updateWebviewContent(webviewPanel: vscode.WebviewPanel, uri: vscode.Uri, query?: string): Promise<void> {
-        const dataFileData = await this.dataFileReader.readDataFile(uri, query);
+    private async updateWebviewContent(
+        webviewPanel: vscode.WebviewPanel,
+        uri: vscode.Uri,
+        query?: string,
+        selectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions,
+        offset?: number,
+        limit?: number
+    ): Promise<void> {
+        const dataFileData = await this.dataFileReader.readDataFile(uri, query, selectedRelation, sourceOptions, offset, limit);
         webviewPanel.webview.html = this.webviewRenderer.getWebviewContent(webviewPanel.webview, dataFileData);
+    }
+
+    private isRelationSelectableDataFile(uri: vscode.Uri): boolean {
+        const extension = path.extname(uri.fsPath).toLowerCase();
+        return extension === '.duckdb' || extension === '.sqlite' || extension === '.sqlite3' || extension === '.db';
+    }
+
+    private async chooseRelationForFile(uri: vscode.Uri, actionLabel: string): Promise<DataFileRelation | undefined | null> {
+        if (!this.isRelationSelectableDataFile(uri)) {
+            return undefined;
+        }
+
+        const result = await this.dataFileReader.readDataFile(uri);
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.error || `Could not inspect ${actionLabel.toLowerCase()} file relations.`);
+            return null;
+        }
+
+        const relations = (result.relations || [])
+            .map((relation) => this.parseSelectedRelation(relation))
+            .filter((relation): relation is DataFileRelation => Boolean(relation));
+
+        if (relations.length <= 1) {
+            return this.parseSelectedRelation(result.selectedRelation) || relations[0];
+        }
+
+        type RelationPick = vscode.QuickPickItem & {
+            relation: DataFileRelation;
+        };
+
+        const selected = await vscode.window.showQuickPick<RelationPick>(
+            relations.map((relation) => ({
+                label: relation.type === 'VIEW'
+                    ? `View: ${relation.schema}.${relation.name}`
+                    : `Table: ${relation.schema}.${relation.name}`,
+                description: relation.database,
+                relation
+            })),
+            {
+                placeHolder: `Choose ${actionLabel.toLowerCase()} table or view`
+            }
+        );
+
+        return selected ? selected.relation : null;
+    }
+
+    private async chooseExportScope(
+        relations: DataFileRelation[],
+        currentRelation?: DataFileRelation
+    ): Promise<{ scope: DataFileExportScope; selectedRelation?: DataFileRelation } | undefined> {
+        if (relations.length <= 1) {
+            return { scope: 'query', selectedRelation: currentRelation };
+        }
+
+        type ExportPick = vscode.QuickPickItem & {
+            scope?: DataFileExportScope;
+            relation?: DataFileRelation;
+        };
+
+        const picks: ExportPick[] = [
+            {
+                label: 'Current SQL Result',
+                description: 'Export the query currently in the SQL editor',
+                scope: 'query',
+                relation: currentRelation
+            },
+            {
+                label: 'All Tables/Views as ZIP',
+                description: 'Export one file per table/view and package them together',
+                scope: 'allRelations',
+                relation: currentRelation
+            },
+            {
+                label: 'Tables and Views',
+                kind: vscode.QuickPickItemKind.Separator
+            },
+            ...relations.map((relation) => ({
+                label: relation.type === 'VIEW'
+                    ? `View: ${relation.schema}.${relation.name}`
+                    : `Table: ${relation.schema}.${relation.name}`,
+                description: 'Export this relation only',
+                scope: 'relation' as DataFileExportScope,
+                relation
+            }))
+        ];
+
+        const selected = await vscode.window.showQuickPick(picks, {
+            placeHolder: 'Choose what to export'
+        });
+
+        if (!selected || !selected.scope) {
+            return undefined;
+        }
+
+        return {
+            scope: selected.scope,
+            selectedRelation: selected.relation
+        };
+    }
+
+    private parseRelations(relations?: unknown): DataFileRelation[] {
+        if (!Array.isArray(relations)) {
+            return [];
+        }
+
+        return relations
+            .map((relation) => this.parseSelectedRelation(relation))
+            .filter((relation): relation is DataFileRelation => Boolean(relation));
+    }
+
+    private parseSelectedRelation(selectedRelation?: unknown): DataFileRelation | undefined {
+        if (typeof selectedRelation !== 'object' || selectedRelation === null ||
+            !('schema' in selectedRelation) || !('name' in selectedRelation) || !('type' in selectedRelation)) {
+            return undefined;
+        }
+
+        const relationType = String(selectedRelation.type);
+        if (relationType !== 'BASE TABLE' && relationType !== 'VIEW') {
+            return undefined;
+        }
+
+        const schema = String(selectedRelation.schema);
+        const name = String(selectedRelation.name);
+        if (!schema || !name) {
+            return undefined;
+        }
+
+        const database = 'database' in selectedRelation && selectedRelation.database
+            ? String(selectedRelation.database)
+            : undefined;
+
+        return { database, schema, name, type: relationType };
+    }
+
+    private parseSourceOptions(sourceOptions?: unknown): DataFileSourceOptions | undefined {
+        if (typeof sourceOptions !== 'object' || sourceOptions === null) {
+            return undefined;
+        }
+
+        const parsedOptions: DataFileSourceOptions = {};
+
+        if ('delimitedText' in sourceOptions && typeof sourceOptions.delimitedText === 'object' && sourceOptions.delimitedText !== null) {
+            const delimitedText = sourceOptions.delimitedText;
+            const readText = (key: string, maxLength: number): string | undefined => {
+                if (!(key in delimitedText)) {
+                    return undefined;
+                }
+
+                const value = String((delimitedText as Record<string, unknown>)[key] ?? '');
+                return value.length <= maxLength ? value : value.slice(0, maxLength);
+            };
+
+            const parsed = {
+                header: 'header' in delimitedText ? Boolean((delimitedText as Record<string, unknown>).header) : undefined,
+                delimiter: readText('delimiter', 8),
+                encoding: readText('encoding', 24),
+                quote: readText('quote', 1),
+                escape: readText('escape', 1),
+                nullString: readText('nullString', 64)
+            };
+
+            if (Object.values(parsed).some((value) => value !== undefined)) {
+                parsedOptions.delimitedText = parsed;
+            }
+        }
+
+        if ('json' in sourceOptions && typeof sourceOptions.json === 'object' && sourceOptions.json !== null) {
+            const jsonOptions = sourceOptions.json as Record<string, unknown>;
+            parsedOptions.json = {
+                flatten: 'flatten' in jsonOptions ? Boolean(jsonOptions.flatten) : undefined,
+                recordPath: 'recordPath' in jsonOptions
+                    ? String(jsonOptions.recordPath ?? '').trim().slice(0, 240)
+                    : undefined
+            };
+        }
+
+        if ('excel' in sourceOptions && typeof sourceOptions.excel === 'object' && sourceOptions.excel !== null) {
+            const excelOptions = sourceOptions.excel as Record<string, unknown>;
+            const readRowNumber = (key: string): number | undefined => {
+                if (!(key in excelOptions)) {
+                    return undefined;
+                }
+
+                const value = Number(excelOptions[key]);
+                return Number.isFinite(value)
+                    ? Math.min(1_048_576, Math.max(0, Math.trunc(value)))
+                    : undefined;
+            };
+
+            const parsed = {
+                headerRow: readRowNumber('headerRow'),
+                dataStartRow: readRowNumber('dataStartRow'),
+                inferTypes: 'inferTypes' in excelOptions ? Boolean(excelOptions.inferTypes) : undefined
+            };
+
+            if (Object.values(parsed).some((value) => value !== undefined)) {
+                parsedOptions.excel = parsed;
+            }
+        }
+
+        return Object.keys(parsedOptions).length ? parsedOptions : undefined;
     }
 
     private getLoadingWebviewContent(): string {

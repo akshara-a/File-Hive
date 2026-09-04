@@ -1,37 +1,77 @@
 import * as vscode from 'vscode';
 
 export interface IDataFileReader {
-    readDataFile(uri: vscode.Uri, query?: string): Promise<DataFileReadResult>;
-    runFileDoctor(uri: vscode.Uri): Promise<DataFileDoctorRunResult>;
+    readDataFile(uri: vscode.Uri, query?: string, selectedRelation?: DataFileRelation, sourceOptions?: DataFileSourceOptions, offset?: number, limit?: number): Promise<DataFileReadResult>;
+    runFileDoctor(uri: vscode.Uri, selectedRelation?: DataFileRelation, sourceOptions?: DataFileSourceOptions): Promise<DataFileDoctorRunResult>;
     releaseFileSession(uri: vscode.Uri): Promise<void>;
     exportDataFile(
         uri: vscode.Uri,
         format: DataFileExportFormat,
         outputUri: vscode.Uri,
-        query?: string
+        query?: string,
+        selectedRelation?: DataFileRelation,
+        exportScope?: DataFileExportScope,
+        sourceOptions?: DataFileSourceOptions
     ): Promise<DataFileExportResult>;
     saveEditedParquetFile(
         uri: vscode.Uri,
         outputUri: vscode.Uri,
+        format: DataFileExportFormat,
         columns: string[],
         rows: Record<string, any>[]
     ): Promise<ParquetEditSaveResult>;
     createParquetFile(
         uri: vscode.Uri,
         outputUri: vscode.Uri,
-        options: ParquetWriteOptions
+        options: ParquetWriteOptions,
+        selectedRelation?: DataFileRelation | null,
+        sourceOptions?: DataFileSourceOptions | null
     ): Promise<ParquetWriteResult>;
-    getCompareMetadata(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareMetadataResult>;
+    getCompareMetadata(
+        uri: vscode.Uri,
+        compareUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        compareSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileCompareMetadataResult>;
     compareDataFile(
         uri: vscode.Uri,
         compareUri: vscode.Uri,
         mappings?: DataFileCompareMapping[],
-        orderMapping?: DataFileCompareOrderMapping
+        orderMapping?: DataFileCompareOrderMapping,
+        selectedRelation?: DataFileRelation,
+        compareSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
     ): Promise<DataFileCompareResult>;
-    smartDiffDataFile(uri: vscode.Uri, compareUri: vscode.Uri): Promise<DataFileCompareResult>;
-    getJoinMetadata(uri: vscode.Uri, joinUri: vscode.Uri): Promise<DataFileJoinResult>;
-    joinDataFile(uri: vscode.Uri, joinUri: vscode.Uri, options: DataFileJoinOptions): Promise<DataFileJoinResult>;
-    detectSchemaDrift(uri: vscode.Uri, referenceUri: vscode.Uri): Promise<DataFileSchemaDriftResult>;
+    smartDiffDataFile(
+        uri: vscode.Uri,
+        compareUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        compareSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileCompareResult>;
+    getJoinMetadata(
+        uri: vscode.Uri,
+        joinUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        joinSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileJoinResult>;
+    joinDataFile(
+        uri: vscode.Uri,
+        joinUri: vscode.Uri,
+        options: DataFileJoinOptions,
+        selectedRelation?: DataFileRelation,
+        joinSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileJoinResult>;
+    detectSchemaDrift(
+        uri: vscode.Uri,
+        referenceUri: vscode.Uri,
+        selectedRelation?: DataFileRelation,
+        referenceSelectedRelation?: DataFileRelation,
+        sourceOptions?: DataFileSourceOptions
+    ): Promise<DataFileSchemaDriftResult>;
     scanParquetDataset(uri: vscode.Uri, folderUri: vscode.Uri): Promise<DataFileDatasetAnalysisResult>;
 }
 
@@ -51,18 +91,25 @@ export type DataFileExportFormat =
     | 'feather'
     | 'ipc';
 
+export type DataFileSourceFormat = DataFileExportFormat | 'excel' | 'xlsx' | 'xls' | 'workspace';
+
 export interface DataFileReadResult {
     success: boolean;
     fileType?: DataFileType;
-    sourceFormat?: DataFileExportFormat;
+    sourceFormat?: DataFileSourceFormat;
     data?: any[];
     columns?: string[];
     rowCount?: number;
-    totalRows?: number;
+    offset?: number;
+    limit?: number;
+    hasMore?: boolean;
     query?: string;
-    resultLimited?: boolean;
     schema?: DataFileSchemaResult;
     doctor?: DataFileDoctorResult;
+    relations?: DataFileRelation[];
+    selectedRelation?: DataFileRelation;
+    sourceOptions?: DataFileSourceOptions;
+    textPreview?: DataFileTextPreview;
     error?: string;
     traceback?: string;
 }
@@ -70,16 +117,56 @@ export interface DataFileReadResult {
 export interface DataFileDoctorRunResult {
     success: boolean;
     fileType?: DataFileType;
-    sourceFormat?: DataFileExportFormat;
+    sourceFormat?: DataFileSourceFormat;
     doctor?: DataFileDoctorResult;
+    relations?: DataFileRelation[];
+    selectedRelation?: DataFileRelation;
+    sourceOptions?: DataFileSourceOptions;
     error?: string;
     traceback?: string;
 }
 
+export interface DataFileRelation {
+    database?: string;
+    schema: string;
+    name: string;
+    type: 'BASE TABLE' | 'VIEW';
+}
+
+export interface DataFileSourceOptions {
+    delimitedText?: DataFileDelimitedTextOptions;
+    json?: DataFileJsonOptions;
+    excel?: DataFileExcelOptions;
+}
+
+export interface DataFileDelimitedTextOptions {
+    header?: boolean;
+    delimiter?: string;
+    encoding?: string;
+    quote?: string;
+    escape?: string;
+    nullString?: string;
+}
+
+export interface DataFileJsonOptions {
+    flatten?: boolean;
+    recordPath?: string;
+}
+
+export interface DataFileExcelOptions {
+    headerRow?: number;
+    dataStartRow?: number;
+    inferTypes?: boolean;
+}
+
+export type DataFileExportScope = 'query' | 'relation' | 'allRelations';
+
 export type DataFileType =
     | 'parquet'
+    | 'workspace'
     | 'duckdb'
     | 'sqlite'
+    | 'excel'
     | 'csv'
     | 'tsv'
     | 'psv'
@@ -89,6 +176,13 @@ export type DataFileType =
     | 'arrow'
     | 'feather'
     | 'ipc';
+
+export interface DataFileTextPreview {
+    content: string;
+    lineCount: number;
+    sizeBytes: number;
+    truncated: boolean;
+}
 
 export interface DataFileDoctorResult {
     healthReport: DataFileDoctorHealthReport;
@@ -171,6 +265,7 @@ export interface DataFileExportResult {
     format?: DataFileExportFormat;
     outputPath?: string;
     rowsExported?: number;
+    filesExported?: number;
     query?: string;
     error?: string;
     traceback?: string;
@@ -178,7 +273,7 @@ export interface DataFileExportResult {
 
 export interface ParquetEditSaveResult {
     success: boolean;
-    format?: 'parquet';
+    format?: DataFileExportFormat;
     outputPath?: string;
     rowsExported?: number;
     columnsExported?: number;
@@ -195,7 +290,8 @@ export interface ParquetWriteColumn {
 
 export interface ParquetWriteOptions {
     columns: ParquetWriteColumn[];
-    rows: Record<string, any>[];
+    rows?: Record<string, any>[];
+    query?: string;
     compression: ParquetCompressionCodec;
     rowGroupSize?: number;
 }
