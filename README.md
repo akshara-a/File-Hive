@@ -12,6 +12,7 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 - Choose tables or views from multi-relation DuckDB and SQLite sources.
 - Navigate grouped tabs for Explore, Transform, Export, Compare & Join, and Quality workflows. Tabs and subtabs are shown only when they apply to the loaded file and current result.
 - Browse rows in a table view with result counts, column counts, sorting, and column visibility.
+- Collapse Data tab controls when you want the table preview to take over the view.
 - Reload CSV, TSV, and PSV files with header, delimiter, encoding, quote, escape, and null-string options.
 - Reload JSON, JSONL, and NDJSON files with nested-field flattening and record-path selection.
 - Run read-only SQL using the `file_data` table alias.
@@ -46,6 +47,8 @@ Select a supported data file in VS Code. File Hive opens it in the custom viewer
 Use the SQL editor in the Explore group's Data subtab to query the open file as `file_data`.
 
 Only read-only `SELECT` and `WITH` queries are supported.
+
+Use **Collapse** in the Data subtab to hide query controls, source options, quick aggregations, and table tools while keeping the current data preview visible.
 
 The older `parquet_data` alias is still available for existing saved queries.
 
@@ -99,7 +102,7 @@ Use the table tools in the Explore group's Data subtab to sort rows, choose visi
 
 ### Quick Aggregations
 
-Use the aggregation controls in the Explore group's Data subtab to choose a group column, metric column, count/sum/average/min/max function, and result limit. File Hive generates the DuckDB SQL and runs it against `file_data`.
+Use the aggregation controls in the Explore group's Data subtab to choose a group column, function, optional metric column, and result limit. Count ignores the metric and counts rows with `COUNT(*)`; sum, average, min, and max require a numeric metric column. File Hive generates the DuckDB SQL and runs it against `file_data`.
 
 ### Explore Data
 

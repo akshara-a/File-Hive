@@ -2,7 +2,7 @@
   "name": "parquet-x",
   "displayName": "File Hive",
   "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, Excel, CSV, TSV, PSV, JSONL, NDJSON, Avro, ORC, Arrow, Feather, and IPC files in VS Code.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",

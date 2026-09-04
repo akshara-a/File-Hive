@@ -4,6 +4,14 @@ All notable changes to File Hive, formerly Parquet-X, are documented here.
 
 ## 1.2.x
 
+### [1.2.2] - 2026-09-04
+
+#### Added
+- Added a Data tab collapse control that hides query, source option, aggregation, and table tool controls so the data grid can use more space.
+
+#### Changed
+- Quick aggregations now hide the metric selector when using Count because Count runs against rows with `COUNT(*)`.
+
 ### [1.2.1] - 2026-08-26
 
 #### Added

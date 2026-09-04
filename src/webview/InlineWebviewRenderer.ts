@@ -451,123 +451,126 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             <div class="query-toolbar">
                 <label for="query-input">SQL Query</label>
                 <div class="query-actions">
+                    <button id="data-controls-toggle-btn" class="btn btn-secondary" type="button" aria-expanded="true">Collapse</button>
                     <button id="open-text-editor-btn" class="btn btn-secondary hidden">Open as Text</button>
                     <button id="run-query-btn" class="btn">Run Query</button>
                     <button id="reset-query-btn" class="btn btn-secondary">Reset</button>
                 </div>
             </div>
-            <textarea id="query-input" spellcheck="false">SELECT * FROM file_data</textarea>
-            <div class="query-meta">
-                Table: <code>file_data</code>
-                <label id="relation-picker-wrap" class="relation-picker hidden">
-                    Table
-                    <select id="relation-picker"></select>
-                </label>
-                <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
-                <div class="pagination-controls hidden" id="pagination-controls" style="display: inline-flex; align-items: center; gap: 8px; margin-left: auto;">
-                    <button id="prev-page-btn" class="btn btn-secondary btn-sm" disabled>&lt; Prev</button>
-                    <span id="page-info">1 - 1000</span>
-                    <button id="next-page-btn" class="btn btn-secondary btn-sm">&gt; Next</button>
-                    <select id="page-size-select" style="margin-left: 8px;">
-                        <option value="100">100</option>
-                        <option value="500">500</option>
-                        <option value="1000" selected>1000</option>
-                        <option value="5000">5000</option>
-                    </select>
+            <div id="data-controls-body" class="data-controls-body">
+                <textarea id="query-input" spellcheck="false">SELECT * FROM file_data</textarea>
+                <div class="query-meta">
+                    Table: <code>file_data</code>
+                    <label id="relation-picker-wrap" class="relation-picker hidden">
+                        Table
+                        <select id="relation-picker"></select>
+                    </label>
+                    <span id="query-limit-message" class="hidden">Showing first 1000 rows.</span>
+                    <div class="pagination-controls hidden" id="pagination-controls" style="display: inline-flex; align-items: center; gap: 8px; margin-left: auto;">
+                        <button id="prev-page-btn" class="btn btn-secondary btn-sm" disabled>&lt; Prev</button>
+                        <span id="page-info">1 - 1000</span>
+                        <button id="next-page-btn" class="btn btn-secondary btn-sm">&gt; Next</button>
+                        <select id="page-size-select" style="margin-left: 8px;">
+                            <option value="100">100</option>
+                            <option value="500">500</option>
+                            <option value="1000" selected>1000</option>
+                            <option value="5000">5000</option>
+                        </select>
+                    </div>
                 </div>
-            </div>
-            <div id="flat-file-options" class="flat-file-options hidden">
-                <label class="flat-file-header-toggle">
-                    <input id="flat-file-header" type="checkbox" checked />
-                    Header row
-                </label>
-                <label>
-                    Delimiter
-                    <input id="flat-file-delimiter" type="text" maxlength="8" />
-                </label>
-                <label>
-                    Encoding
-                    <select id="flat-file-encoding">
-                        <option value="utf-8">UTF-8</option>
-                        <option value="latin-1">Latin-1</option>
-                        <option value="utf-16">UTF-16</option>
-                    </select>
-                </label>
-                <label>
-                    Quote
-                    <input id="flat-file-quote" type="text" maxlength="1" value="&quot;" />
-                </label>
-                <label>
-                    Escape
-                    <input id="flat-file-escape" type="text" maxlength="1" value="&quot;" />
-                </label>
-                <label>
-                    Null
-                    <input id="flat-file-null" type="text" maxlength="64" />
-                </label>
-                <div class="flat-file-actions">
-                    <button id="apply-flat-file-options-btn" class="btn btn-secondary">Reload</button>
-                    <button id="reset-flat-file-options-btn" class="btn btn-secondary">Reset Options</button>
+                <div id="flat-file-options" class="flat-file-options hidden">
+                    <label class="flat-file-header-toggle">
+                        <input id="flat-file-header" type="checkbox" checked />
+                        Header row
+                    </label>
+                    <label>
+                        Delimiter
+                        <input id="flat-file-delimiter" type="text" maxlength="8" />
+                    </label>
+                    <label>
+                        Encoding
+                        <select id="flat-file-encoding">
+                            <option value="utf-8">UTF-8</option>
+                            <option value="latin-1">Latin-1</option>
+                            <option value="utf-16">UTF-16</option>
+                        </select>
+                    </label>
+                    <label>
+                        Quote
+                        <input id="flat-file-quote" type="text" maxlength="1" value="&quot;" />
+                    </label>
+                    <label>
+                        Escape
+                        <input id="flat-file-escape" type="text" maxlength="1" value="&quot;" />
+                    </label>
+                    <label>
+                        Null
+                        <input id="flat-file-null" type="text" maxlength="64" />
+                    </label>
+                    <div class="flat-file-actions">
+                        <button id="apply-flat-file-options-btn" class="btn btn-secondary">Reload</button>
+                        <button id="reset-flat-file-options-btn" class="btn btn-secondary">Reset Options</button>
+                    </div>
                 </div>
-            </div>
-            <div id="json-file-options" class="json-file-options hidden">
-                <label class="json-flatten-toggle">
-                    <input id="json-flatten" type="checkbox" />
-                    Flatten nested fields
-                </label>
-                <label>
-                    Record path
-                    <input id="json-record-path" type="text" maxlength="240" placeholder="data.items" />
-                </label>
-                <div class="json-file-actions">
-                    <button id="apply-json-options-btn" class="btn btn-secondary">Reload</button>
-                    <button id="reset-json-options-btn" class="btn btn-secondary">Reset Options</button>
+                <div id="json-file-options" class="json-file-options hidden">
+                    <label class="json-flatten-toggle">
+                        <input id="json-flatten" type="checkbox" />
+                        Flatten nested fields
+                    </label>
+                    <label>
+                        Record path
+                        <input id="json-record-path" type="text" maxlength="240" placeholder="data.items" />
+                    </label>
+                    <div class="json-file-actions">
+                        <button id="apply-json-options-btn" class="btn btn-secondary">Reload</button>
+                        <button id="reset-json-options-btn" class="btn btn-secondary">Reset Options</button>
+                    </div>
                 </div>
-            </div>
-            <div id="excel-file-options" class="excel-file-options hidden">
-                <label>
-                    Header row
-                    <input id="excel-header-row" type="number" min="0" max="1048576" value="1" />
-                </label>
-                <label>
-                    Data starts
-                    <input id="excel-data-start-row" type="number" min="1" max="1048576" value="2" />
-                </label>
-                <label class="excel-infer-toggle">
-                    <input id="excel-infer-types" type="checkbox" />
-                    Infer types
-                </label>
-                <div class="excel-file-actions">
-                    <button id="apply-excel-options-btn" class="btn btn-secondary">Reload</button>
-                    <button id="reset-excel-options-btn" class="btn btn-secondary">Reset Options</button>
+                <div id="excel-file-options" class="excel-file-options hidden">
+                    <label>
+                        Header row
+                        <input id="excel-header-row" type="number" min="0" max="1048576" value="1" />
+                    </label>
+                    <label>
+                        Data starts
+                        <input id="excel-data-start-row" type="number" min="1" max="1048576" value="2" />
+                    </label>
+                    <label class="excel-infer-toggle">
+                        <input id="excel-infer-types" type="checkbox" />
+                        Infer types
+                    </label>
+                    <div class="excel-file-actions">
+                        <button id="apply-excel-options-btn" class="btn btn-secondary">Reload</button>
+                        <button id="reset-excel-options-btn" class="btn btn-secondary">Reset Options</button>
+                    </div>
                 </div>
-            </div>
-            <div class="quick-aggregation" data-capability-scope="columns">
-                <label>
-                    Group
-                    <select id="aggregation-group-column"></select>
-                </label>
-                <label>
-                    Metric
-                    <select id="aggregation-value-column"></select>
-                </label>
-                <label>
-                    Function
-                    <select id="aggregation-function">
-                        <option value="count">Count</option>
-                        <option value="sum">Sum</option>
-                        <option value="avg">Average</option>
-                        <option value="min">Min</option>
-                        <option value="max">Max</option>
-                    </select>
-                </label>
-                <label>
-                    Limit
-                    <input id="aggregation-limit" type="number" min="1" max="1000" value="100" />
-                </label>
-                <div class="aggregation-actions">
-                    <button id="run-aggregation-btn" class="btn btn-secondary">Run Aggregation</button>
-                    <button id="reset-aggregation-btn" class="btn btn-secondary">Reset</button>
+                <div class="quick-aggregation" data-capability-scope="columns">
+                    <label>
+                        Group
+                        <select id="aggregation-group-column"></select>
+                    </label>
+                    <label id="aggregation-value-column-label">
+                        Metric
+                        <select id="aggregation-value-column"></select>
+                    </label>
+                    <label>
+                        Function
+                        <select id="aggregation-function">
+                            <option value="count">Count</option>
+                            <option value="sum">Sum</option>
+                            <option value="avg">Average</option>
+                            <option value="min">Min</option>
+                            <option value="max">Max</option>
+                        </select>
+                    </label>
+                    <label>
+                        Limit
+                        <input id="aggregation-limit" type="number" min="1" max="1000" value="100" />
+                    </label>
+                    <div class="aggregation-actions">
+                        <button id="run-aggregation-btn" class="btn btn-secondary">Run Aggregation</button>
+                        <button id="reset-aggregation-btn" class="btn btn-secondary">Reset</button>
+                    </div>
                 </div>
             </div>
         </section>`;
@@ -910,6 +913,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
         let currentOffset = 0;
         let currentLimit = 1000;
         let currentHasMore = false;
+        let dataControlsCollapsed = false;
         let editRows = [];
         let editColumnNames = [];
         let writeRows = [];
@@ -1155,6 +1159,20 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             element.classList.toggle('hidden', hidden);
         }
 
+        function applyDataControlsCollapsedState() {
+            const body = document.getElementById('data-controls-body');
+            const toggleButton = document.getElementById('data-controls-toggle-btn');
+            const tableTools = document.querySelector('.table-tools');
+
+            setCapabilityElementHidden(body, dataControlsCollapsed);
+            setCapabilityElementHidden(tableTools, dataControlsCollapsed || currentColumns.length === 0);
+
+            if (toggleButton) {
+                toggleButton.textContent = dataControlsCollapsed ? 'Show Controls' : 'Collapse';
+                toggleButton.setAttribute('aria-expanded', dataControlsCollapsed ? 'false' : 'true');
+            }
+        }
+
         function getAvailableViewsForGroup(groupName) {
             return Object.keys(VIEW_TO_GROUP).filter((viewName) => {
                 return VIEW_TO_GROUP[viewName] === groupName && currentFeatureCapabilities[viewName];
@@ -1201,6 +1219,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             document.querySelectorAll('[data-capability-scope="columns"]').forEach((panel) => {
                 setCapabilityElementHidden(panel, currentColumns.length === 0);
             });
+            applyDataControlsCollapsedState();
             setCapabilityElementHidden(document.getElementById('doctor-dataset-scan-btn'), isTextOnlySource());
         }
 
@@ -3072,12 +3091,17 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
 
         function syncAggregationControls() {
             const aggregationFunction = document.getElementById('aggregation-function');
+            const valueColumnLabel = document.getElementById('aggregation-value-column-label');
             const valueColumn = document.getElementById('aggregation-value-column');
             if (!aggregationFunction || !valueColumn) {
                 return;
             }
 
-            valueColumn.disabled = aggregationFunction.value === 'count';
+            const metricRequired = aggregationFunction.value !== 'count';
+            valueColumn.disabled = !metricRequired;
+            if (valueColumnLabel) {
+                valueColumnLabel.classList.toggle('hidden', !metricRequired);
+            }
         }
 
         function runQuickAggregation() {
@@ -5056,6 +5080,7 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             const runQueryBtn = document.getElementById('run-query-btn');
             const resetQueryBtn = document.getElementById('reset-query-btn');
             const openTextEditorBtn = document.getElementById('open-text-editor-btn');
+            const dataControlsToggleBtn = document.getElementById('data-controls-toggle-btn');
             const runAggregationBtn = document.getElementById('run-aggregation-btn');
             const resetAggregationBtn = document.getElementById('reset-aggregation-btn');
             const aggregationFunction = document.getElementById('aggregation-function');
@@ -5210,6 +5235,13 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
                     vscode.postMessage({ type: 'openAsText' });
                 });
             });
+
+            if (dataControlsToggleBtn) {
+                dataControlsToggleBtn.addEventListener('click', () => {
+                    dataControlsCollapsed = !dataControlsCollapsed;
+                    applyDataControlsCollapsedState();
+                });
+            }
             
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
@@ -5900,6 +5932,9 @@ export class InlineWebviewRenderer implements IWebviewRenderer {
             text-transform: uppercase;
         }
         .query-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+        .data-controls-body {
+            display: flex; flex-direction: column; gap: 8px;
+        }
         #query-input {
             width: 100%; min-height: 96px; resize: vertical; padding: 10px;
             border: 1px solid var(--vscode-input-border);
