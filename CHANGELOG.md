@@ -4,6 +4,11 @@ All notable changes to File Hive, formerly Parquet-X, are documented here.
 
 ## 1.2.x
 
+### [1.2.3] - 2026-09-11
+
+#### Added
+- Added `File Hive: Open JSON Viewer`, a standalone Command Palette tool for pasting JSON, validating it locally, formatting or minifying it, and rendering the parsed result as a table.
+
 ### [1.2.2] - 2026-09-04
 
 #### Added

@@ -16,7 +16,8 @@ export const REGISTER_COMMANDS = {
     SHOW_LOGS: "fileHive.showLogs",
     RESET_ENVIRONMENT: "fileHive.resetEnvironment",
     ENVIRONMENT_DOCTOR: "fileHive.environmentDoctor",
-    MOUNT_WORKSPACE: "fileHive.mountWorkspace"
+    MOUNT_WORKSPACE: "fileHive.mountWorkspace",
+    OPEN_JSON_VIEWER: "fileHive.openJsonViewer"
 };
 export const SHOW_LOGS = "Show Logs";
 export const RESET_ENVIRONMENT = "Reset Environment";

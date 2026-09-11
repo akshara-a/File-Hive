@@ -1,6 +1,6 @@
 # File Hive
 
-File Hive is an open-source Visual Studio Code extension for inspecting local data files without leaving your editor. It provides a local viewer for browsing tabular data, running read-only SQL queries, creating Parquet files, performing exploratory data analysis, exporting results, comparing and joining files, visualizing query results, reviewing schema metadata, and diagnosing common data quality issues.
+File Hive is an open-source Visual Studio Code extension for inspecting Parquet, DuckDB, SQLite, Excel, CSV, TSV, PSV, JSONL, NDJSON, Avro, ORC, Arrow, Feather, and IPC files without leaving your editor. It provides a local viewer for browsing tabular data, running read-only SQL queries, creating Parquet files, performing exploratory data analysis, exporting results, comparing and joining files, visualizing query results, reviewing schema metadata, diagnosing common data quality issues, and pasting JSON into a standalone table viewer.
 
 All file processing runs locally through DuckDB in an isolated Python environment created by the extension. When `uv` is available, File Hive uses it to create the environment and install DuckDB faster, with Python/pip as a fallback.
 
@@ -15,6 +15,7 @@ All file processing runs locally through DuckDB in an isolated Python environmen
 - Collapse Data tab controls when you want the table preview to take over the view.
 - Reload CSV, TSV, and PSV files with header, delimiter, encoding, quote, escape, and null-string options.
 - Reload JSON, JSONL, and NDJSON files with nested-field flattening and record-path selection.
+- Paste JSON into the `File Hive: Open JSON Viewer` command to validate it and render it as a table.
 - Run read-only SQL using the `file_data` table alias.
 - Build quick group-by aggregations without writing SQL.
 - Profile the current query result in the EDA tab with column types, missing values, duplicate rows, numeric summaries, quality checks, and suggested next steps.
@@ -68,6 +69,12 @@ FROM file_data
 WHERE status = 'active'
 LIMIT 100;
 ```
+
+### Open JSON Viewer
+
+Run `File Hive: Open JSON Viewer` from the Command Palette to paste JSON into a standalone viewer. File Hive validates the input locally and renders valid JSON as a table.
+
+Arrays of objects become a row and column grid, single objects become key/type/value rows, primitive arrays become index/type/value rows, and nested values are shown as formatted JSON inside table cells. If JSON text is selected in the active editor when the command runs, the viewer starts with that selection.
 
 ### Applicable Workflows
 
@@ -186,6 +193,8 @@ The following commands are available from the Command Palette:
 - `File Hive: Setup Python Environment`
 - `File Hive: Reset Python Environment`
 - `File Hive: Show Environment Doctor`
+- `File Hive: Mount Workspace Database`
+- `File Hive: Open JSON Viewer`
 - `Refresh`
 
 ## Privacy

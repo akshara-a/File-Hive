@@ -3,6 +3,7 @@ import { FileHiveViewerFactory } from './factories/FileHiveViewerFactory';
 import { PythonEnvironmentManager } from './PythonEnvironmentManager';
 import { CANCEL, ENVIRONMENT_DOCTOR, EXTENSION_NAME, MESSAGES, REGISTER_COMMANDS, RESET_ENVIRONMENT, RETRY_SETUP, SHOW_LOGS } from './common/constant';
 import { LoggingService } from './services/LoggingService';
+import { JsonViewerPanel } from './JsonViewerPanel';
 
 let pythonManager: PythonEnvironmentManager;
 let logger: LoggingService;
@@ -137,6 +138,16 @@ export async function activate(context: vscode.ExtensionContext) {
                 } catch (e) {
                     vscode.window.showErrorMessage("Failed to mount workspace: " + e);
                 }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand(REGISTER_COMMANDS.OPEN_JSON_VIEWER, () => {
+                const editor = vscode.window.activeTextEditor;
+                const selection = editor && !editor.selection.isEmpty
+                    ? editor.document.getText(editor.selection)
+                    : '';
+                JsonViewerPanel.createOrShow(selection);
             })
         );
 
