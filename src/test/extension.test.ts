@@ -15,5 +15,6 @@ suite('File Hive extension commands', () => {
         assert.ok(commands.includes('fileHive.showLogs'), 'show logs command should be registered');
         assert.ok(commands.includes('fileHive.resetEnvironment'), 'reset command should be registered');
         assert.ok(commands.includes('fileHive.environmentDoctor'), 'environment doctor command should be registered');
+        assert.ok(commands.includes('fileHive.openJsonViewer'), 'JSON viewer command should be registered');
     });
 });

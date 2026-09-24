@@ -1,8 +1,8 @@
 {
   "name": "parquet-x",
   "displayName": "File Hive",
-  "description": "View, query, create, compare, diagnose, and export Parquet, DuckDB, SQLite, Excel, CSV, TSV, PSV, JSONL, NDJSON, Avro, ORC, Arrow, Feather, and IPC files in VS Code.",
-  "version": "1.2.2",
+  "description": "Inspect Parquet, DuckDB, SQLite, Excel, CSV/TSV/PSV, JSONL/NDJSON, Avro, ORC, Arrow, Feather, and IPC files with SQL, export, compare, join, diagnostics, charts, and a paste-in JSON table viewer.",
+  "version": "1.2.3",
   "publisher": "CosmicTechnoid",
   "icon": "media/icons/logo.png",
   "license": "MIT",
@@ -58,6 +58,8 @@
     "tsv",
     "psv",
     "json",
+    "json viewer",
+    "json table",
     "jsonl",
     "ndjson",
     "avro",
@@ -75,6 +77,7 @@
     "onCommand:fileHive.resetEnvironment",
     "onCommand:fileHive.environmentDoctor",
     "onCommand:fileHive.mountWorkspace",
+    "onCommand:fileHive.openJsonViewer",
     "onCustomEditor:fileHive.fileViewer"
   ],
   "main": "./out/extension.js",
@@ -170,6 +173,11 @@
       {
         "command": "fileHive.mountWorkspace",
         "title": "Mount Workspace Database",
+        "category": "File Hive"
+      },
+      {
+        "command": "fileHive.openJsonViewer",
+        "title": "Open JSON Viewer",
         "category": "File Hive"
       }
     ]
