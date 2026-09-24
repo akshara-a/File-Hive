@@ -186,7 +186,7 @@ def create_legacy_table_alias(conn):
 
     conn.execute(
         f"CREATE OR REPLACE TEMP VIEW {duckdb_identifier(LEGACY_TABLE_NAME)} AS "
-        f"SELECT * FROM {duckdb_identifier(TABLE_NAME)}"
+        f"SELECT * FROM main.{duckdb_identifier(TABLE_NAME)}"
     )
 
 def default_delimited_text_options(file_type):
@@ -864,7 +864,11 @@ def create_duckdb_view(conn, file_path, selected_relation=None):
 
     relation, relations = select_relation(relations, selected_relation)
     remember_source_info(conn, relation, relations)
-    create_duckdb_alias_view(conn, TABLE_NAME, relation)
+    if not (
+        relation["schema"] == "main"
+        and relation["name"] == TABLE_NAME
+    ):
+        create_duckdb_alias_view(conn, TABLE_NAME, relation)
 
 def create_named_duckdb_view(conn, table_name, file_path, selected_relation=None):
     alias = duckdb_attach_alias(file_path, table_name)
