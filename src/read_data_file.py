@@ -4097,6 +4097,17 @@ def infer_smart_key_mapping(conn, base_columns, compare_columns, mappings):
 
     return best_candidate
 
+def find_duplicate_smart_key(conn, table_name, column_name):
+    """Return the most frequent non-NULL inferred key value and its count."""
+    row = conn.execute(
+        f"SELECT CAST({duckdb_identifier(column_name)} AS VARCHAR), COUNT(*) "
+        f"FROM {duckdb_identifier(table_name)} "
+        f"WHERE {duckdb_identifier(column_name)} IS NOT NULL "
+        f"GROUP BY {duckdb_identifier(column_name)} HAVING COUNT(*) > 1 "
+        "ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    return (row[0], int(row[1])) if row else None
+
 def create_smart_diff_view(conn, table_name, file_path, selected_relation=None, source_options=None):
     source_table_name = f"{table_name}_source"
     row_id_column = duckdb_identifier("__parquet_x_smart_row_id")
@@ -4161,6 +4172,34 @@ def smart_diff_data_files(base_path, compare_path, selected_relation=None, compa
                 "compareColumn": mapping_result["mappings"][0]["compareColumn"],
                 "displayColumn": mapping_result["mappings"][0]["displayColumn"],
                 "score": 0
+            }
+
+        duplicate_base = find_duplicate_smart_key(
+            diff_conn, "smart_base_data", key_mapping["baseColumn"]
+        )
+        duplicate_compare = find_duplicate_smart_key(
+            diff_conn, "smart_compare_data", key_mapping["compareColumn"]
+        )
+        if duplicate_base or duplicate_compare:
+            duplicate_sides = []
+            if duplicate_base:
+                duplicate_sides.append(
+                    f"base file ({key_mapping['baseColumn']}: {duplicate_base[0]!r}, {duplicate_base[1]} rows)"
+                )
+            if duplicate_compare:
+                duplicate_sides.append(
+                    f"compare file ({key_mapping['compareColumn']}: {duplicate_compare[0]!r}, {duplicate_compare[1]} rows)"
+                )
+            return {
+                "success": False,
+                "basePath": base_path,
+                "comparePath": compare_path,
+                "error": (
+                    "Smart Diff cannot compare files because the inferred key "
+                    f"contains duplicate values in the {' and '.join(duplicate_sides)}. "
+                    "Choose a unique key or remove duplicate rows."
+                ),
+                "smartDiff": {"keyMapping": key_mapping}
             }
 
         normalized_mappings = mapping_result["mappings"]
